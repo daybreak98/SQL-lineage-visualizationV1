@@ -52,6 +52,7 @@ function centerOffset(
 
 export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<number | null>(null);
   const graph = useMemo(() => visibleGraph(state), [state]);
   const current = useMemo(() => currentEntitySet(state), [state]);
   const highlights = useMemo(() => viewHighlightSets(state), [state]);
@@ -80,13 +81,21 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const hasActiveSelection = state.selectedEntity && state.selectedEntity !== 'out:group';
   const [drag, setDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [draftPositions, setDraftPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [manualPan, setManualPan] = useState({ x: 0, y: 0 });
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const dragRef = useRef(drag);
+  const panDragRef = useRef(panDrag);
+  const draftPositionsRef = useRef(draftPositions);
+  const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
   const pc = buildPathContext(state);
   const gvm = state.graphViewMode ?? 'table';
   const byEntity = Object.fromEntries(graph.nodes.map((n) => [n.entityId, n]));
-  const positions = { ...Object.fromEntries(graph.nodes.map((n) => [n.id, { x: n.x, y: n.y }])), ...state.positions };
+  const positions = useMemo(
+    () => ({ ...Object.fromEntries(graph.nodes.map((n) => [n.id, { x: n.x, y: n.y }])), ...state.positions, ...draftPositions }),
+    [graph.nodes, state.positions, draftPositions],
+  );
   const graphBounds = useMemo(() => {
     if (!graph.nodes.length) return null;
     let minX = Infinity;
@@ -107,6 +116,10 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const autoOffset = useMemo(() => centerOffset(graphBounds, viewportSize, zoom), [graphBounds, viewportSize, zoom]);
   const viewOffset = useMemo(() => ({ x: autoOffset.x + manualPan.x, y: autoOffset.y + manualPan.y }), [autoOffset, manualPan]);
 
+  dragRef.current = drag;
+  panDragRef.current = panDrag;
+  draftPositionsRef.current = draftPositions;
+
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -121,10 +134,96 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   useEffect(() => {
     setManualPan({ x: 0, y: 0 });
     setZoomOverride(null);
+    setDraftPositions({});
   }, [state.backendGraph, state.graphViewMode]);
+
+  useEffect(() => {
+    if (!drag && !panDrag) return;
+    document.body.style.userSelect = 'none';
+
+    const flushPointer = () => {
+      frameRef.current = null;
+      const point = pendingPointerRef.current;
+      if (!point) return;
+      const clientX = point.x;
+      const clientY = point.y;
+      const activePan = panDragRef.current;
+      if (activePan) {
+        setManualPan({
+          x: activePan.panX + clientX - activePan.x,
+          y: activePan.panY + clientY - activePan.y,
+        });
+        return;
+      }
+
+      const activeDrag = dragRef.current;
+      if (!activeDrag) return;
+      const rect = viewportRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setDraftPositions((prev) => ({
+        ...prev,
+        [activeDrag.id]: {
+          x: (clientX - rect.left - viewOffset.x) / zoom - activeDrag.ox,
+          y: (clientY - rect.top - viewOffset.y) / zoom - activeDrag.oy,
+        },
+      }));
+    };
+
+    const queuePointer = (clientX: number, clientY: number) => {
+      pendingPointerRef.current = { x: clientX, y: clientY };
+      if (frameRef.current != null) return;
+      frameRef.current = window.requestAnimationFrame(flushPointer);
+    };
+
+    const finishInteraction = () => {
+      if (frameRef.current != null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+      if (pendingPointerRef.current) {
+        flushPointer();
+      }
+      pendingPointerRef.current = null;
+      const activeDrag = dragRef.current;
+      if (activeDrag && Object.keys(draftPositionsRef.current).length > 0) {
+        const nextPositions = draftPositionsRef.current;
+        setState((s) => ({
+          ...s,
+          positions: {
+            ...s.positions,
+            ...nextPositions,
+          },
+        }));
+      }
+      setDraftPositions({});
+      setDrag(null);
+      setPanDrag(null);
+      document.body.style.userSelect = '';
+    };
+
+    const handleMove = (event: MouseEvent) => queuePointer(event.clientX, event.clientY);
+    const handleUp = () => finishInteraction();
+    const handleBlur = () => finishInteraction();
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      if (frameRef.current != null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+      pendingPointerRef.current = null;
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [drag, panDrag, setState, viewOffset.x, viewOffset.y, zoom]);
 
   const startDrag = (event: React.MouseEvent, node: GraphNode) => {
     event.stopPropagation();
+    event.preventDefault();
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = positions[node.id] ?? { x: node.x, y: node.y };
@@ -169,37 +268,11 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     zoomBy(zoom * factor, { clientX: event.clientX, clientY: event.clientY });
   };
 
-  const move = (event: React.MouseEvent) => {
-    if (panDrag) {
-      setManualPan({
-        x: panDrag.panX + event.clientX - panDrag.x,
-        y: panDrag.panY + event.clientY - panDrag.y,
-      });
-      return;
-    }
-    if (!drag) return;
-    const rect = viewportRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setState((s) => ({
-      ...s,
-      positions: {
-        ...s.positions,
-        [drag.id]: {
-          x: Math.max(0, (event.clientX - rect.left - viewOffset.x) / zoom - drag.ox),
-          y: Math.max(0, (event.clientY - rect.top - viewOffset.y) / zoom - drag.oy),
-        },
-      },
-    }));
-  };
-
   return (
     <div
       ref={viewportRef}
       className={cx('viewport', panDrag && 'panning')}
       onMouseDown={startPan}
-      onMouseMove={move}
-      onMouseUp={() => { setDrag(null); setPanDrag(null); }}
-      onMouseLeave={() => { setDrag(null); setPanDrag(null); }}
       onWheel={handleWheel}
       style={{ position: 'relative' }}
     >

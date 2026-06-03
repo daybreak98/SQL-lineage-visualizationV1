@@ -82,3 +82,36 @@ class AnalysisResult(BaseModel):
     metadata_context: dict[str, Any] = Field(default_factory=dict)
     semantics_report: Any = None
     summary: dict[str, Any] = Field(default_factory=dict)
+
+
+# ─── 元数据导入 ──────────────────────────────────────────────────────
+
+class MetadataImportRequest(BaseModel):
+    mode: str  # preview | commit
+    payload: dict[str, Any]
+
+
+class ImportChangeItem(BaseModel):
+    change_type: str
+    object_type: str
+    object_ref: dict[str, str | None]
+    message: str | None = None
+
+
+class MetadataImportResponse(BaseModel):
+    status: str  # preview_ready | committed | failed
+    import_batch_id: str | None = None
+    metadata_version: str
+    changes: list[ImportChangeItem] = Field(default_factory=list)
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
+class MetadataTablesResponse(BaseModel):
+    tables: list[dict[str, object]] = Field(default_factory=list)
+    total: int = 0
+
+
+class MetadataColumnsResponse(BaseModel):
+    columns: list[dict[str, object]] = Field(default_factory=list)
+    total: int = 0

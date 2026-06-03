@@ -9,7 +9,8 @@ from sqlglot.errors import ParseError as SqlglotParseError
 
 from app.domain import diagnostics_model as diag_codes
 from app.models import Diagnostic
-from app.services.simple_lineage_service import SimpleColumnLineage
+from app.domain.lineage_model import SimpleColumnLineage
+from app.services.star_expansion_service import _detect_star, expand_star_items
 
 
 @dataclass(frozen=True)
@@ -34,27 +35,30 @@ class NameResolverResult:
         return self.status == "success"
 
 
-def resolve_column_lineage_names(sql: str, dialect: str = "spark") -> NameResolverResult:
+def resolve_column_lineage_names(sql: str, dialect: str = "spark",
+                                  tree: exp.Expression | None = None,
+                                  metadata: dict[str, list[str]] | None = None) -> NameResolverResult:
     started = time.time()
 
-    try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
-    except SqlglotParseError as exc:
-        return _result(
-            started=started,
-            status="failed",
-            confidence_level="unknown",
-            diagnostics=[
-                Diagnostic(
-                    code=diag_codes.SQL_PARSE_ERROR,
-                    level="error",
-                    message=f"SQL parse error: {exc}",
-                )
-            ],
-            stage_status="failed",
-        )
+    if tree is None:
+        try:
+            tree = sqlglot.parse_one(sql, dialect=dialect)
+        except SqlglotParseError as exc:
+            return _result(
+                started=started,
+                status="failed",
+                confidence_level="unknown",
+                diagnostics=[
+                    Diagnostic(
+                        code=diag_codes.SQL_PARSE_ERROR,
+                        level="error",
+                        message=f"SQL parse error: {exc}",
+                    )
+                ],
+                stage_status="failed",
+            )
 
-    unsupported = _detect_unsupported(tree)
+    unsupported = _detect_unsupported(tree, has_metadata=metadata is not None)
     if unsupported is not None:
         code, message, feature = unsupported
         return _result(
@@ -87,8 +91,27 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark") -> NameResolv
     table_names = {table.table_name for table in tables}
     diagnostics: list[Diagnostic] = []
     lineages: list[SimpleColumnLineage] = []
+    unsupported_features: list[str] = []
+
+    # Build metadata lookup: {table_name: set(column_names)}
+    metadata_cols: dict[str, set[str]] = {}
+    if metadata:
+        metadata_cols = {tname: set(cols) for tname, cols in metadata.items()}
+
+    # -- Handle SELECT * via star_expansion_service --
+    if metadata and _has_any_star(tree.selects):
+        source_table_names = list(table_names)
+        columns_by_table = {tname: [{"name": c} for c in cols] for tname, cols in (metadata or {}).items()}
+        star_result = expand_star_items(tree.selects, source_table_names, alias_to_table, columns_by_table)
+        lineages.extend(star_result.lineages)
+        diagnostics.extend(star_result.diagnostics)
+        unsupported_features.extend(star_result.unsupported_features)
 
     for select_item in tree.selects:
+        is_star, _qualifier = _detect_star(select_item)
+        if is_star:
+            continue  # handled above
+
         column = _simple_column_from_select_item(select_item)
         if column is None:
             diagnostics.append(
@@ -117,6 +140,18 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark") -> NameResolv
                 )
                 continue
 
+            # Metadata validation: column exists? (only when metadata is non-empty)
+            cols_for_table = metadata_cols.get(source_table)
+            if cols_for_table and column.name not in cols_for_table:
+                diagnostics.append(
+                    Diagnostic(
+                        code=diag_codes.UNKNOWN_COLUMN,
+                        level="warning",
+                        message=f"Column {column.name} not found in table {source_table} metadata.",
+                    )
+                )
+                continue
+
             lineages.append(
                 SimpleColumnLineage(
                     source_table=source_table,
@@ -126,23 +161,80 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark") -> NameResolv
             )
             continue
 
+        # Unqualified column
         if len(tables) == 1:
+            source_table = tables[0].table_name
+            cols_for_table = metadata_cols.get(source_table)
+            if cols_for_table and column.name not in cols_for_table:
+                diagnostics.append(
+                    Diagnostic(
+                        code=diag_codes.UNKNOWN_COLUMN,
+                        level="warning",
+                        message=f"Column {column.name} not found in table {source_table} metadata.",
+                    )
+                )
+                continue
             lineages.append(
                 SimpleColumnLineage(
-                    source_table=tables[0].table_name,
+                    source_table=source_table,
                     source_column=column.name,
                     output_column=output_column,
                 )
             )
             continue
 
+        # Unqualified + multiple tables: try metadata disambiguation
+        tables_with_meta = [t for t in tables if metadata_cols.get(t.table_name)]
+        tables_without_meta = [t for t in tables if not metadata_cols.get(t.table_name)]
+
+        # Cannot auto-disambiguate when not all source tables have metadata
+        if tables_without_meta:
+            diagnostics.append(
+                Diagnostic(
+                    code=diag_codes.AMBIGUOUS_COLUMN,
+                    level="warning",
+                    message=(
+                        f"Column {column.name} is not qualified. Metadata missing for: "
+                        f"{', '.join(t.table_name for t in tables_without_meta)}. "
+                        f"Cannot determine ownership. Qualify with table alias."
+                    ),
+                )
+            )
+            continue
+
+        # All tables have metadata → safe disambiguation
+        candidates = [t for t in tables if column.name in metadata_cols[t.table_name]]
+        if len(candidates) == 1:
+            lineages.append(
+                SimpleColumnLineage(
+                    source_table=candidates[0].table_name,
+                    source_column=column.name,
+                    output_column=output_column,
+                )
+            )
+            continue
+
+        if len(candidates) > 1:
+            diagnostics.append(
+                Diagnostic(
+                    code=diag_codes.AMBIGUOUS_COLUMN,
+                    level="warning",
+                    message=(
+                        f"Column {column.name} exists in multiple tables: "
+                        f"{', '.join(t.table_name for t in candidates)}. Qualify with table alias."
+                    ),
+                )
+            )
+            continue
+
+        # candidates == 0 + all metadata loaded → column truly unknown
         diagnostics.append(
             Diagnostic(
-                code=diag_codes.AMBIGUOUS_COLUMN,
+                code=diag_codes.UNKNOWN_COLUMN,
                 level="warning",
                 message=(
-                    f"Column {column.name} is not qualified. Without metadata, C04 cannot "
-                    "decide which joined table owns it."
+                    f"Column {column.name} not found in metadata for any source table: "
+                    f"{', '.join(t.table_name for t in tables)}."
                 ),
             )
         )
@@ -155,6 +247,7 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark") -> NameResolv
         confidence_level=confidence_level,
         lineages=lineages,
         diagnostics=diagnostics,
+        unsupported_features=unsupported_features,
         stage_status=status,
         alias_to_table=alias_to_table,
     )
@@ -183,8 +276,8 @@ def _simple_column_from_select_item(select_item: exp.Expression) -> exp.Column |
     return None
 
 
-def _detect_unsupported(tree: exp.Expression) -> tuple[str, str, str] | None:
-    if tree.args.get("with") is not None:
+def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False) -> tuple[str, str, str] | None:
+    if tree.args.get("with_") is not None:
         return (
             diag_codes.UNSUPPORTED_COMPLEX_QUERY,
             "CTE lineage is not supported in C04.",
@@ -198,14 +291,20 @@ def _detect_unsupported(tree: exp.Expression) -> tuple[str, str, str] | None:
             "subquery",
         )
 
-    if any(isinstance(select_item, exp.Star) for select_item in tree.selects):
+    if _has_any_star(tree.selects):
+        if has_metadata:
+            return None  # C07: let star_expansion_service handle it
         return (
-            diag_codes.UNSUPPORTED_SELECT_STAR,
-            "SELECT * lineage requires metadata and is not supported in C04.",
+            diag_codes.SELECT_STAR_METADATA_REQUIRED,
+            "SELECT * requires table metadata. Import metadata or qualify columns explicitly.",
             "select_star",
         )
 
     return None
+
+
+def _has_any_star(select_items: list[exp.Expression]) -> bool:
+    return any(_detect_star(item)[0] for item in select_items)
 
 
 def _result(

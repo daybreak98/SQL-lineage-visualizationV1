@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.domain.graph_view_model import GraphEdge, GraphModel, GraphNode
 from app.services.cte_structure_service import CteStructureResult
-from app.services.simple_lineage_service import SimpleColumnLineage
+from app.domain.lineage_model import SimpleColumnLineage
 from app.services.table_structure_service import TableStructureResult
 
 

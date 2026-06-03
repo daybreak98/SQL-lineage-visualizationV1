@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.models import AnalyzeRequest, AnalysisResult, DiagnosticsReport, GraphViewModel
+from app.repositories import metadata_repository as meta_repo
 from app.services.cte_structure_service import analyze_cte_structure
 from app.services.graph_builder import (
     build_column_lineage_graph,
@@ -30,6 +31,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
             output_fields=parse_result.output_fields,
         )
 
+    tree = parse_result.tree
     graph_view_model = GraphViewModel()
     diagnostics = list(parse_result.diagnostics)
     stage_statuses = list(parse_result.stage_statuses)
@@ -39,7 +41,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
 
     if request.analysis_options.include_graph:
         if _looks_like_cte(request.sql):
-            structure_result = analyze_cte_structure(request.sql, request.dialect)
+            structure_result = analyze_cte_structure(request.sql, request.dialect, tree=tree)
             diagnostics.extend(structure_result.diagnostics)
             stage_statuses.extend(structure_result.stage_statuses)
             unsupported_features.extend(structure_result.unsupported_features)
@@ -59,12 +61,15 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
                     }
                 )
         else:
-            table_structure_result = analyze_table_structure(request.sql, request.dialect)
+            table_structure_result = analyze_table_structure(request.sql, request.dialect, tree=tree)
             diagnostics.extend(table_structure_result.diagnostics)
             stage_statuses.extend(table_structure_result.stage_statuses)
             unsupported_features.extend(table_structure_result.unsupported_features)
 
-            lineage_result = resolve_column_lineage_names(request.sql, request.dialect)
+            source_table_names = _extract_source_table_names(tree)
+            metadata = _load_metadata(source_table_names)
+
+            lineage_result = resolve_column_lineage_names(request.sql, request.dialect, tree=tree, metadata=metadata)
             diagnostics.extend(lineage_result.diagnostics)
             stage_statuses.extend(lineage_result.stage_statuses)
             unsupported_features.extend(lineage_result.unsupported_features)
@@ -146,3 +151,25 @@ def _assemble_result(
 
 def _looks_like_cte(sql: str) -> bool:
     return sql.lstrip().lower().startswith("with ")
+
+
+def _extract_source_table_names(tree) -> list[str]:
+    from sqlglot import exp
+    names: list[str] = []
+    for table in tree.find_all(exp.Table):
+        parts = [p for p in [table.catalog, table.db, table.name] if p]
+        name = ".".join(parts) if parts else table.name
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _load_metadata(table_names: list[str]) -> dict[str, list[str]]:
+    columns_by_table = meta_repo.get_columns_for_tables(table_names)
+    result: dict[str, list[str]] = {}
+    for tname in table_names:
+        if tname in columns_by_table:
+            result[tname] = [str(c.get("name", "")) for c in columns_by_table[tname]]
+        else:
+            result[tname] = []  # table requested but no metadata found
+    return result

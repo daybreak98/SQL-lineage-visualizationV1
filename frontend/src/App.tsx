@@ -141,7 +141,6 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
     return { graph: { nodes, edges }, searchItems, colToTables };
   }
 
-  // ── Build table-level graph with Query Result node ──
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   let outputCols: string[] = [];
@@ -159,7 +158,6 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
   const structureNodeTypes = new Set(['table', 'cte', 'subquery', 'output']);
 
   if (apiNodes.length) {
-    // Process backend graph_view_model: separate tables from outputs
     apiNodes.forEach((node, i) => {
       const ntype = node.node_type || node.type || '';
       const label = node.label || node.name || '';
@@ -211,8 +209,6 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
       }
     });
 
-    // ── CTE 层级布局 ──
-    // Build dependency graph: entityId → [dependent entityIds]
     const deps: Record<string, string[]> = {};
     apiEdges.forEach((edge) => {
       const src = edge.source || '';
@@ -222,13 +218,10 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
         deps[tgt].push(src);
       }
     });
-    // BFS level assignment: physical tables = 0, CTE = max(source levels) + 1
     const levels: Record<string, number> = {};
-    // Initialize physical tables
     nodes.forEach(n => {
       if (n.type === 'table') levels[n.entityId] = 0;
     });
-    // Iterate until all CTE/subquery nodes get a level
     let changed = true;
     while (changed) {
       changed = false;
@@ -248,9 +241,8 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
         }
       });
     }
-    // Apply levels to positioning – 同层多节点按行号均匀分布，避免堆叠
     const yGap = 56;
-    const levelRows: Record<number, number> = {};  // level → 当前行号
+    const levelRows: Record<number, number> = {};
     const structureNodes = nodes.filter(n => structureNodeTypes.has(n.type));
     maxLevel = Math.max(0, ...Object.values(levels));
     structureNodes
@@ -285,9 +277,7 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
         outputNode.x = baseX + (maxLevel + 1) * levelGap;
         outputNode.y = avgY;
       });
-    // Build mapping: output column entityId → source table entityIds (from edges)
     colToTables = {};
-    // Collect all physical table entityIds for fallback
     const physicalTableIds = new Set<string>();
     apiNodes.forEach((node) => {
       if (node.node_type === 'table' || node.type === 'table') {
@@ -299,7 +289,6 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
       const tgt = edge.target || '';
       if (src && tgt) {
         colToTables[tgt] = colToTables[tgt] || [];
-        // Check if the source directly references one of our physical tables
         let matched = false;
         for (const tid of physicalTableIds) {
           if (src.includes(tid.split(':').pop() || '')) {
@@ -307,7 +296,6 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
             matched = true;
           }
         }
-        // Fallback: if source is a CTE column and no match, connect to all physical tables
         if (!matched && src.includes(':cte.')) {
           physicalTableIds.forEach(tid => {
             if (!colToTables[tgt].includes(tid)) colToTables[tgt].push(tid);
@@ -323,28 +311,23 @@ function analysisToGraph(result: BackendAnalysisResult): { graph: { nodes: Graph
       }
     });
   } else {
-    // Fallback: use tables_extracted
     const tables = result.tables_extracted || [];
     outputCols = result.columns_extracted || [];
     tables.forEach((table, index) => {
       nodes.push({ id: `api-table-${index}`, entityId: `table:${table}`, type: 'table', label: table.split('.').pop() || table, x: 60, y: startY + index * rowH });
     });
     tableCol = tables.length;
-    // Redirect existing edges or create table-to-result edges.
     tables.forEach((table, index) => {
       edges.push({ id: `api-table-edge-${index}`, source: `table:${table}`, target: 'out:query_result', type: 'table' });
     });
   }
 
-  // Ensure all table-type nodes have an edge to Query Result
   const existingResult = nodes.find(n => n.type === 'output');
   const resultId = existingResult?.entityId || 'out:query_result';
   const tableNodes = nodes.filter(n => n.type === 'table' || n.type === 'cte' || n.type === 'subquery');
 
-  // Add final Query Result node when backend did not provide one.
   const shortCols = outputColEntities.map(c => c.label.includes('.') ? c.label.split('.').pop()! : c.label);
   const resultLabel = shortCols.length > 0 ? `Query Result (${shortCols.length} cols)` : 'Query Result';
-  // Place Query Result at avg Y of all table/CTE/subquery nodes
   const avgY = tableNodes.length > 0
     ? tableNodes.reduce((sum, n) => sum + n.y, 0) / tableNodes.length
     : startY;
@@ -406,18 +389,14 @@ export default function App() {
   const [state, setState] = useState<WorkbenchState>(initialState);
   const [metadataOpen, setMetadataOpen] = useState(false);
 
-  // ── Bidirectional linking: Monaco ↔ Canvas ──
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
 
-  /** Called by SqlEditorPanel when Monaco editor mounts */
   const handleEditorMounted = useCallback((editor: monacoEditor.IStandaloneCodeEditor) => {
     editorRef.current = editor;
   }, []);
 
-  /** Called by LineageCanvas (double-click node) or DetailPanel (Locate SQL button) */
   const handleRevealInEditor = useCallback((entityId: string) => {
     revealInEditor(editorRef.current, entityId, state.sourceLocations, (id) => {
-      // Graceful degradation: no SourceLocation found
       setState((s) => ({
         ...s,
         backendMessage: `No source location available for entity ${id}. Use the graph view to explore lineage.`,
@@ -425,11 +404,9 @@ export default function App() {
     });
   }, [state.sourceLocations]);
 
-  /** Called by SqlEditorPanel when cursor position matches a source location */
   const handleCursorEntityChange = useCallback((entityId: string | null) => {
     if (!entityId) return;
     setState((s) => {
-      // Don't override if user explicitly selected something different
       if (s.selectedEntity === entityId) return s;
       return { ...s, selectedEntity: entityId };
     });
@@ -528,12 +505,10 @@ export default function App() {
 
   const onSelectResult = (item: SearchItem) => {
     setState((s) => {
-      // In table view, clicking an output column highlights its source table
       let targetEntity = item.entityId;
       if (item.type === 'output' && item.entityId !== 'out:query_result' && s.graphViewMode !== 'column') {
         const ct = s.colToTables?.[item.entityId];
         if (ct && ct.length > 0) {
-          // Find the first source table node in backendGraph
           const graph = s.backendGraph;
           if (graph) {
             const tableNode = graph.nodes.find(n =>
