@@ -45,14 +45,16 @@ class CteStructureResult:
         return any(node.node_type == "cte" for node in self.nodes)
 
 
-def analyze_cte_structure(sql: str, dialect: str = "spark") -> CteStructureResult:
+def analyze_cte_structure(sql: str, dialect: str = "spark",
+                           tree: exp.Expression | None = None) -> CteStructureResult:
     started = time.time()
 
-    try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
-    except SqlglotParseError as exc:
-        return _result(
-            started=started,
+    if tree is None:
+        try:
+            tree = sqlglot.parse_one(sql, dialect=dialect)
+        except SqlglotParseError as exc:
+            return _result(
+                started=started,
             status="failed",
             confidence_level="unknown",
             diagnostics=[

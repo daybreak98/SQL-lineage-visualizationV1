@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlglot
 from sqlglot.errors import ParseError as SqlglotParseError
-from sqlglot.expressions import Column
+from sqlglot.expressions import Column, Expression
 
 
 class ParseResult:
@@ -11,10 +11,12 @@ class ParseResult:
         success: bool,
         output_fields: list[dict[str, str]],
         error_message: str | None = None,
+        tree: Expression | None = None,
     ):
         self.success = success
         self.output_fields = output_fields
         self.error_message = error_message
+        self.tree = tree
 
 
 def parse_and_extract(sql: str, dialect: str = "spark") -> ParseResult:
@@ -25,6 +27,7 @@ def parse_and_extract(sql: str, dialect: str = "spark") -> ParseResult:
             success=False,
             output_fields=[],
             error_message=f"SQL parse error: {e}",
+            tree=None,
         )
 
     output_fields: list[dict[str, str]] = []
@@ -54,4 +57,4 @@ def parse_and_extract(sql: str, dialect: str = "spark") -> ParseResult:
                 }
             )
 
-    return ParseResult(success=True, output_fields=output_fields)
+    return ParseResult(success=True, output_fields=output_fields, tree=tree)

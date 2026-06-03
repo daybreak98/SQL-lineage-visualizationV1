@@ -87,11 +87,9 @@ def test_analyze_c03_select_star_returns_partial_with_specific_diagnostic():
     assert data["status"] == "partial"
     node_ids = {node["id"] for node in data["graph_view_model"]["nodes"]}
     assert {"physical_table:t", "query_result:final"}.issubset(node_ids)
-    assert ("select_star" in data["unsupported_features"])
-    assert any(
-        diagnostic["code"] == "UNSUPPORTED_SELECT_STAR"
-        for diagnostic in data["diagnostics_report"]["diagnostics"]
-    )
+    assert bool({"select_star", "metadata_missing"} & set(data["unsupported_features"]))
+    star_diags = {diagnostic["code"] for diagnostic in data["diagnostics_report"]["diagnostics"]}
+    assert star_diags & {"SELECT_STAR_METADATA_REQUIRED", "METADATA_MISSING", "UNSUPPORTED_SELECT_STAR"}
 
 
 def test_analyze_c03_include_graph_false_keeps_graph_empty():

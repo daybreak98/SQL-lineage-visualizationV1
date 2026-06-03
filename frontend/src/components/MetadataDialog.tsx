@@ -36,6 +36,83 @@ function parsePayload(text: string): MetadataPayload {
   return JSON.parse(text) as MetadataPayload;
 }
 
+interface ColumnDisplay {
+  name: string;
+  data_type: string;
+  comment: string;
+}
+
+function extractColumnsFromPayload(payloadText: string): Map<string, ColumnDisplay[]> {
+  const map = new Map<string, ColumnDisplay[]>();
+  try {
+    const parsed = JSON.parse(payloadText);
+    const tables: Array<Record<string, unknown>> = parsed?.tables ?? [];
+    for (const t of tables) {
+      const tableName = String(t.table_name || t.name || '');
+      const columns: ColumnDisplay[] = ((t.columns || []) as Array<Record<string, unknown>>).map((c) => ({
+        name: String(c.name || ''),
+        data_type: String(c.data_type || ''),
+        comment: String(c.comment || ''),
+      }));
+      map.set(tableName, columns);
+    }
+  } catch {
+    // ignore parse errors — payload may not be valid JSON
+  }
+  return map;
+}
+
+interface TableGroup {
+  table: string;
+  change_type: string;
+  columns: ColumnDisplay[];
+}
+
+function buildTableGroups(result: MetadataImportResult, payloadText: string): TableGroup[] {
+  const payloadColumns = extractColumnsFromPayload(payloadText);
+  const tableMap = new Map<string, { change_type: string }>();
+
+  for (const change of result.changes) {
+    const t = change.object_ref.table;
+    if (!tableMap.has(t)) tableMap.set(t, { change_type: change.change_type });
+  }
+
+  return Array.from(tableMap.entries()).map(([table, info]) => ({
+    table,
+    change_type: info.change_type,
+    columns: payloadColumns.get(table) ?? [],
+  }));
+}
+
+function renderTableGroups(result: MetadataImportResult, payloadText: string): React.ReactNode {
+  const groups = buildTableGroups(result, payloadText);
+  if (groups.length === 0) return <div className="card">No tables in change list.</div>;
+
+  return groups.map((group) => (
+    <div className="table-group-card" key={group.table}>
+      <div className="table-group-head">
+        <span className={cx('pill', group.change_type === 'added' ? 'trusted' : 'partial')}>{group.change_type}</span>
+        <span className="table-group-name">{group.table}</span>
+      </div>
+      {group.columns.length > 0 ? (
+        <div className="table-group-body">
+          <div className="table-group-cols">
+            {group.columns.map((col, i) => (
+              <div className="table-group-col-row" key={`${col.name}-${i}`}>
+                <span className="col-name">{col.name}</span>
+                <span className="col-comment">{col.comment || '-'}</span>
+                <span className="col-type">{col.data_type || '-'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="table-group-body-empty">No columns in payload</div>
+      )}
+    </div>
+  ));
+}
+
 export function MetadataDialog({ open, onClose, onImported }: Props) {
   const [text, setText] = useState(samplePayload);
   const [result, setResult] = useState<MetadataImportResult | null>(null);
@@ -112,22 +189,15 @@ export function MetadataDialog({ open, onClose, onImported }: Props) {
             {error && <div className="card diag error"><div className="card-title">Request failed</div>{error}</div>}
           </div>
 
-          <div className="metadata-pane">
+            <div className="metadata-pane">
             <div className="pane-title">Preview / commit result</div>
             {loading && <div className="card">Calling backend...</div>}
             {!loading && !result && <div className="card">Run preview to inspect backend validation and change summary.</div>}
             {result && (
               <div className="metadata-result">
                 <div className={cx('pill', result.status === 'committed' ? 'trusted' : hasBlockingErrors ? 'failed' : 'partial')}>{result.status} · {result.metadata_version}</div>
-                <div className="result-table">
-                  {result.changes.map((change, index) => (
-                    <div className="result-row" key={`${change.object_type}-${index}`}>
-                      <b>{change.change_type}</b>
-                      <span>{change.object_type}</span>
-                      <span>{change.object_ref.table}{change.object_ref.column ? `.${change.object_ref.column}` : ''}</span>
-                      <span>{change.message || '-'}</span>
-                    </div>
-                  ))}
+                <div className="metadata-table-list">
+                  {renderTableGroups(result, text)}
                 </div>
                 {result.diagnostics.map((diagnostic) => (
                   <div className={cx('card diag', diagnostic.level)} key={diagnostic.diagnostic_id || diagnostic.code}>

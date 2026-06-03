@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from sqlglot.expressions import Expression
+
 from app.adapters.sqlglot_adapter import parse_and_extract
 from app.models import Diagnostic, OutputField
 
@@ -16,6 +18,7 @@ class ParseServiceResult:
     elapsed_ms: int
     dialect: str
     stage_statuses: list[dict[str, object]]
+    tree: Expression | None = None
 
 
 def parse_sql(sql: str, dialect: str = "spark") -> ParseServiceResult:
@@ -32,6 +35,7 @@ def parse_sql(sql: str, dialect: str = "spark") -> ParseServiceResult:
             output_fields=[OutputField(**f) for f in result.output_fields],
             diagnostics=[],
             elapsed_ms=elapsed,
+            tree=result.tree,
             stage_statuses=[
                 {"stage": "sql_parse", "status": "success", "elapsed_ms": elapsed,
                  "diagnostic_codes": [], "message": "SQL parsed successfully."}
