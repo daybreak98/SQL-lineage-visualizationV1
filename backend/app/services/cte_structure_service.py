@@ -65,7 +65,7 @@ def analyze_cte_structure(sql: str, dialect: str = "spark") -> CteStructureResul
             stage_status="failed",
         )
 
-    with_expr = tree.args.get("with")
+    with_expr = _get_arg(tree, "with")
     if with_expr is None:
         return _result(
             started=started,
@@ -82,19 +82,21 @@ def analyze_cte_structure(sql: str, dialect: str = "spark") -> CteStructureResul
             stage_status="partial",
         )
 
-    cte_names = {cte.alias for cte in with_expr.expressions}
+    cte_names = {cte.alias_or_name for cte in with_expr.expressions}
     nodes_by_id: dict[str, StructureNode] = {}
     edges_by_id: dict[str, StructureEdge] = {}
 
     for cte in with_expr.expressions:
-        cte_id = _cte_id(cte.alias)
-        nodes_by_id[cte_id] = StructureNode(id=cte_id, node_type="cte", label=cte.alias)
+        cte_name = cte.alias_or_name
+        cte_id = _cte_id(cte_name)
+        nodes_by_id[cte_id] = StructureNode(id=cte_id, node_type="cte", label=cte_name)
 
     for cte in with_expr.expressions:
-        target_id = _cte_id(cte.alias)
+        cte_name = cte.alias_or_name
+        target_id = _cte_id(cte_name)
         for table in cte.this.find_all(exp.Table):
             source_name = _table_name_without_alias(table, dialect)
-            if source_name == cte.alias:
+            if source_name == cte_name:
                 continue
             if source_name in cte_names:
                 source_id = _cte_id(source_name)
@@ -140,7 +142,7 @@ def analyze_cte_structure(sql: str, dialect: str = "spark") -> CteStructureResul
 
 
 def _final_query_sources(tree: exp.Expression, dialect: str) -> list[exp.Table]:
-    from_expr = tree.args.get("from")
+    from_expr = _get_arg(tree, "from")
     sources: list[exp.Table] = []
     if from_expr is not None and isinstance(from_expr.this, exp.Table):
         sources.append(from_expr.this)
@@ -148,6 +150,10 @@ def _final_query_sources(tree: exp.Expression, dialect: str) -> list[exp.Table]:
         if isinstance(join.this, exp.Table):
             sources.append(join.this)
     return sources
+
+
+def _get_arg(tree: exp.Expression, key: str):
+    return tree.args.get(key) or tree.args.get(f"{key}_")
 
 
 def _table_name_without_alias(table: exp.Table, dialect: str) -> str:
