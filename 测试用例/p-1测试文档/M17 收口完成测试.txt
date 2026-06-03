@@ -1,0 +1,58 @@
+检查一下内容并给出说明，是该部分功能规划在后续功能会调整，还是已有bug，已有bug需要进行修复
+1.解析以下sql时报错缺少元数据：
+UNKNOWN_TABLE
+Reason: 元数据中找不到表: default.default.t3
+Impact: {"catalog":"default","schema":"default","table":"t3","alias":"t3"}
+Action: 请先导入对应表元数据，或检查 SQL 中的 catalog/schema/table
+
+WITH mt AS (
+  SELECT
+    agent_id,
+    DATE_FORMAT(CAST(order_time AS TIMESTAMP), 'yyyyMM') AS dd,
+    SUM(
+      order_amount * CASE WHEN currency = '美元' THEN 5 WHEN currency = '欧元' THEN 7 ELSE 1 END
+    ) AS gmv
+  FROM intl_hotel_orders
+  GROUP BY
+    1,
+    2
+), t1 AS (
+  SELECT
+    agent_id,
+    dd,
+    gmv,
+    IF(dd = MIN(dd) OVER (PARTITION BY agent_id ORDER BY dd), gmv, 0) AS GMV_min,
+    IF(dd = MAX(dd) OVER (PARTITION BY agent_id ORDER BY dd DESC), gmv, 0) AS GMV_max
+  FROM mt
+), t2 AS (
+  SELECT
+    agent_id,
+    gmv,
+    SUM(GMV_max) / SUM(GMV_min) AS gmv_rate
+  FROM t1
+  GROUP BY
+    1,
+    2
+), t3 AS (
+  SELECT
+    agent_id,
+    gmv,
+    ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY gmv_rate DESC) AS rnk
+  FROM t2
+)
+SELECT
+  agent_id,
+  gmv
+FROM t3
+WHERE
+  rnk <= 3
+  
+  注意 缺少元数据情况下只给出黄色警告而不是红色报错，需要在缺乏元数据的情况下根据sql做血缘解析。解析结果应当是表节点和一个最终查询节点构成。
+  
+2.字段搜索框默认设为关闭，且缩小范围避免影响画布，同时支持点击其他位置可以关闭搜索框。 sql框和画布的初始宽度比例为1：2.5
+
+3.左侧的sql框没有高亮关键词，检查是否完全采用了指定的sql编辑器组件
+
+4.默认解析sql类型改为spark
+
+5.右侧画布中的不同类型节点增加区分度，放到到目前的125%
