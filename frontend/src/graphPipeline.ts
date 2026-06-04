@@ -1,4 +1,13 @@
 import type { BackendAnalysisResult, GraphEdge, GraphNode, SearchItem, WorkbenchState } from './types/lineage';
+import { getComfortNodeBox, COMFORT_CANVAS } from './nodeVisualTokens';
+import {
+  applyManualPositions as applyComfortManualPositions,
+  layoutComfortGraph,
+  buildComfortPortIndexes,
+  routeComfortEdgePath,
+  type ComfortGraph,
+  type ManualPositions,
+} from './graphComfortLayout';
 
 // ============================================================
 // 工具类型
@@ -87,12 +96,8 @@ function isStructureNode(node: GraphNode) {
 }
 
 export function nodeBox(type: GraphNode['type']) {
-  if (type === 'output' || type === 'output_field') return { width: 168, height: 46 };
-  if (type === 'expression') return { width: 190, height: 48 };
-  if (type === 'cte' || type === 'subquery') return { width: 176, height: 50 };
-  if (type === 'table') return { width: 168, height: 46 };
-  if (type === 'column') return { width: 172, height: 44 };
-  return { width: 160, height: 44 };
+  const box = getComfortNodeBox(type);
+  return { width: box.width, height: box.height };
 }
 
 // ============================================================
@@ -336,67 +341,8 @@ function resolveNodeCollisionsByRank(nodes: GraphNode[], minGap = LAYOUT.nodeGap
 }
 
 export function layoutLayeredDag(graph: GraphLike): GraphLike {
-  const nodes = graph.nodes.map((n) => ({ ...n }));
-  const { edges } = graph;
-  const nodeById = new Map(nodes.map((n) => [n.entityId, n]));
-
-  const incoming = new Map<string, string[]>();
-  const outgoing = new Map<string, string[]>();
-  nodes.forEach((n) => { incoming.set(n.entityId, []); outgoing.set(n.entityId, []); });
-  edges.forEach((e) => {
-    if (!nodeById.has(e.source) || !nodeById.has(e.target)) return;
-    incoming.get(e.target)?.push(e.source);
-    outgoing.get(e.source)?.push(e.target);
-  });
-
-  const levels = new Map<string, number>();
-  nodes.forEach((n) => {
-    if (n.type === 'table' || n.type === 'column') levels.set(n.entityId, 0);
-  });
-
-  let changed = true, guard = 0;
-  while (changed && guard < nodes.length * 3) {
-    changed = false; guard++;
-    for (const node of nodes) {
-      if (levels.has(node.entityId)) continue;
-      if (node.type === 'output' || node.type === 'output_field') continue;
-      const srcs = incoming.get(node.entityId) || [];
-      if (!srcs.length) {
-        levels.set(node.entityId, nodeTypeRankSeed(node)); changed = true; continue;
-      }
-      const srcLevels = srcs.map((s) => levels.get(s)).filter((v): v is number => v !== undefined);
-      if (srcLevels.length === srcs.length) {
-        levels.set(node.entityId, Math.max(...srcLevels) + 1); changed = true;
-      }
-    }
-  }
-
-  for (const node of nodes) {
-    if (!levels.has(node.entityId) && node.type !== 'output' && node.type !== 'output_field')
-      levels.set(node.entityId, nodeTypeRankSeed(node));
-  }
-
-  const maxNonOutputLevel = Math.max(0, ...nodes
-    .filter((n) => n.type !== 'output' && n.type !== 'output_field')
-    .map((n) => levels.get(n.entityId) ?? 0));
-
-  nodes.forEach((n) => {
-    if (n.type === 'output' || n.type === 'output_field')
-      levels.set(n.entityId, maxNonOutputLevel + 1);
-  });
-
-  const orderedLevels = orderNodesWithinLevels(nodes, edges, levels);
-  for (const [level, levelNodes] of orderedLevels.entries()) {
-    levelNodes.forEach((n, index) => {
-      n.x = LAYOUT.startX + level * LAYOUT.rankGap;
-      n.y = LAYOUT.startY + index * LAYOUT.nodeGap;
-    });
-  }
-
-  alignOutputNodes(nodes, edges);
-  resolveNodeCollisionsByRank(nodes, LAYOUT.nodeGap);
-
-  return { nodes, edges };
+  const result = layoutComfortGraph(graph);
+  return { nodes: result.nodes, edges: result.edges };
 }
 
 // ============================================================
@@ -404,14 +350,7 @@ export function layoutLayeredDag(graph: GraphLike): GraphLike {
 // ============================================================
 
 export function applyManualPositions(graph: GraphLike, positions: PositionMap): GraphLike {
-  return {
-    nodes: graph.nodes.map((node) => {
-      const saved = positions[node.id];
-      if (!saved) return node;
-      return { ...node, x: saved.x, y: saved.y, pinned: true };
-    }),
-    edges: graph.edges,
-  };
+  return applyComfortManualPositions(graph, positions);
 }
 
 // ============================================================
@@ -424,42 +363,7 @@ function portOffset(index: number, count: number, gap = LAYOUT.portGap) {
 }
 
 export function buildPortIndexes(graph: GraphLike, positions: PositionMap) {
-  const nodeById = new Map(graph.nodes.map((n) => [n.entityId, n]));
-  const outgoing = new Map<string, GraphEdge[]>();
-  const incoming = new Map<string, GraphEdge[]>();
-
-  for (const edge of graph.edges) {
-    if (!nodeById.has(edge.source) || !nodeById.has(edge.target)) continue;
-    if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
-    if (!incoming.has(edge.target)) incoming.set(edge.target, []);
-    outgoing.get(edge.source)!.push(edge);
-    incoming.get(edge.target)!.push(edge);
-  }
-
-  function nodeY(entityId: string) {
-    const node = nodeById.get(entityId);
-    if (!node) return 0;
-    return (positions[node.id] ?? { x: node.x, y: node.y }).y;
-  }
-
-  for (const list of outgoing.values()) list.sort((a, b) => nodeY(a.target) - nodeY(b.target));
-  for (const list of incoming.values()) list.sort((a, b) => nodeY(a.source) - nodeY(b.source));
-
-  const sourcePortIndex = new Map<string, number>();
-  const sourcePortCount = new Map<string, number>();
-  const targetPortIndex = new Map<string, number>();
-  const targetPortCount = new Map<string, number>();
-
-  for (const [source, list] of outgoing.entries()) {
-    sourcePortCount.set(source, list.length);
-    list.forEach((edge, i) => sourcePortIndex.set(edge.id, i));
-  }
-  for (const [target, list] of incoming.entries()) {
-    targetPortCount.set(target, list.length);
-    list.forEach((edge, i) => targetPortIndex.set(edge.id, i));
-  }
-
-  return { sourcePortIndex, sourcePortCount, targetPortIndex, targetPortCount };
+  return buildComfortPortIndexes(graph);
 }
 
 export function routeEdgePath(params: {
@@ -471,50 +375,10 @@ export function routeEdgePath(params: {
   ports: ReturnType<typeof buildPortIndexes>;
   style?: 'smooth' | 'orthogonal';
 }) {
-  const { edge, sourceNode, targetNode, sourcePos, targetPos, ports, style = 'smooth' } = params;
-  const sourceBox = nodeBox(sourceNode.type);
-  const targetBox = nodeBox(targetNode.type);
-
-  const sourceCount = ports.sourcePortCount.get(edge.source) ?? 1;
-  const sourceIndex = ports.sourcePortIndex.get(edge.id) ?? 0;
-  const targetCount = ports.targetPortCount.get(edge.target) ?? 1;
-  const targetIndex = ports.targetPortIndex.get(edge.id) ?? 0;
-
-  const sx = sourcePos.x + sourceBox.width;
-  const sy = sourcePos.y + sourceBox.height / 2 + portOffset(sourceIndex, sourceCount);
-  const tx = targetPos.x;
-  const ty = targetPos.y + targetBox.height / 2 + portOffset(targetIndex, targetCount);
-  const dx = tx - sx;
-  const dy = ty - sy;
-
-  if (style === 'orthogonal') {
-    if (dx >= 120) {
-      const midX = sx + dx * 0.5;
-      return `M ${sx} ${sy} L ${midX} ${sy} L ${midX} ${ty} L ${tx} ${ty}`;
-    }
-    const loopX = Math.max(sx, tx) + 96;
-    return `M ${sx} ${sy} C ${loopX} ${sy}, ${loopX} ${ty}, ${tx} ${ty}`;
-  }
-
-  // ★ 默认 smooth Bézier：无垂直直角段
-  const absDx = Math.abs(dx);
-  const absDy = Math.abs(dy);
-
-  if (dx >= 80) {
-    const curvature = Math.min(180, Math.max(64, absDx * 0.42));
-    const laneSpread = Math.max(-18, Math.min(18, (sourceIndex - targetIndex) * 2.5));
-    const verticalBias = Math.max(-24, Math.min(24, dy * 0.08));
-
-    return `M ${sx} ${sy} C ${sx + curvature} ${sy + laneSpread + verticalBias}, ${tx - curvature} ${ty - laneSpread - verticalBias}, ${tx} ${ty}`;
-  }
-
-  if (dx >= 0) {
-    const curvature = Math.max(36, Math.min(80, absDx * 0.6 + absDy * 0.08));
-    return `M ${sx} ${sy} C ${sx + curvature} ${sy}, ${tx - curvature} ${ty}, ${tx} ${ty}`;
-  }
-
-  const loop = Math.max(96, absDx + 72);
-  return `M ${sx} ${sy} C ${sx + loop} ${sy}, ${tx + loop} ${ty}, ${tx} ${ty}`;
+  const { edge, sourceNode, targetNode, sourcePos, targetPos, ports } = params;
+  const s = { ...sourceNode, x: sourcePos.x, y: sourcePos.y };
+  const t = { ...targetNode, x: targetPos.x, y: targetPos.y };
+  return routeComfortEdgePath({ edge, sourceNode: s, targetNode: t, ports });
 }
 
 // ============================================================

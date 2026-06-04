@@ -1,8 +1,7 @@
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets } from '../data/selectors';
-import { visibleGraph } from '../graphPipeline';
-import { buildPortIndexes, routeEdgePath } from '../graphPipeline';
+import { visibleGraph, buildPortIndexes, routeEdgePath, nodeBox } from '../graphPipeline';
 import type { GraphEdge, GraphNode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
 
@@ -11,14 +10,6 @@ interface Props {
   setState: React.Dispatch<React.SetStateAction<WorkbenchState>>;
   /** Called when a graph node is double-clicked to navigate to SQL. */
   onNodeDoubleClick?: (entityId: string) => void;
-}
-
-function nodeBox(type: GraphNode['type']) {
-  if (type === 'output') return { width: 132, height: 32 };
-  if (type === 'subquery') return { width: 138, height: 32 };
-  if (type === 'cte' || type === 'output_field' || type === 'expression') return { width: 125, height: 30 };
-  if (type === 'column') return { width: 122, height: 29 };
-  return { width: 118, height: 29 };
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -106,10 +97,10 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     let maxY = -Infinity;
     for (const node of graph.nodes) {
       const box = nodeBox(node.type);
-      minX = Math.min(minX, node.x);
-      minY = Math.min(minY, node.y);
-      maxX = Math.max(maxX, node.x + box.width);
-      maxY = Math.max(maxY, node.y + box.height);
+      minX = Math.min(minX, node.x - box.width / 2);
+      minY = Math.min(minY, node.y - box.height / 2);
+      maxX = Math.max(maxX, node.x + box.width / 2);
+      maxY = Math.max(maxY, node.y + box.height / 2);
     }
     return { minX, minY, width: maxX - minX, height: maxY - minY };
   }, [graph.nodes]);
@@ -315,7 +306,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
             const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
             return (
-              <g key={edge.id} onClick={(event) => { event.stopPropagation(); if (edge.mapping) setState((st) => ({ ...st, selectedMapping: edge.mapping!, selectedEntity: edge.target, detailMode: 'compact', detailTab: 'mapping' })); }}>
+              <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); setState((st) => { const already = st.selectedEntity === edge.target && st.selectedMapping === edge.mapping; return { ...st, selectedMapping: already ? null : (edge.mapping || null), selectedEntity: already ? 'out:group' : edge.target, detailMode: 'compact', detailTab: already ? 'summary' : (edge.mapping ? 'mapping' : 'summary') }; }); }}>
                 <path className="edge-hit" d={edgePath} />
                 <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
               </g>
@@ -325,6 +316,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
         </svg>
         {graph.nodes.map((node) => {
           const p = positions[node.id] ?? { x: node.x, y: node.y };
+          const nBox = nodeBox(node.type);
           const selected = state.selectedEntity === node.entityId;
           const isCurrent = current.has(node.entityId);
           const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
@@ -332,7 +324,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
           const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
           const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
           return (
-            <div key={node.id} className="node" style={{ left: p.x, top: p.y }} data-type={node.type} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(e) => startDrag(e, node)} onClick={(e) => { e.stopPropagation(); setState((s) => ({ ...s, selectedEntity: node.entityId, selectedMapping: null, detailMode: 'compact', detailTab: 'summary' })); }} onDoubleClick={(e) => { e.stopPropagation(); onNodeDoubleClick?.(node.entityId); }}>
+            <div key={node.id} className="node" style={{ left: p.x - nBox.width / 2, top: p.y - nBox.height / 2 }} data-type={node.type} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(e) => startDrag(e, node)} onDoubleClick={(e) => { e.stopPropagation(); setState((s) => { const already = s.selectedEntity === node.entityId; return { ...s, selectedEntity: already ? 'out:group' : node.entityId, selectedMapping: null, detailMode: already ? 'collapsed' : 'compact', detailTab: 'summary' }; }); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
               <span className="strip" /><span className="title" title={node.label}>{node.label}</span><span className="state-dot" />
             </div>
           );

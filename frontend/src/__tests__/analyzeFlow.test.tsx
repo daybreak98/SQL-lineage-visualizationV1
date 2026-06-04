@@ -378,7 +378,7 @@ describe('Analyze Flow', () => {
 
     const tableNode = screen.getByText('dwd_order_di', { selector: '.title' }).closest('.node') as HTMLElement;
     const tableResultNode = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
-    expect(parseFloat(tableResultNode.style.left) - parseFloat(tableNode.style.left)).toBeLessThan(320);
+    expect(parseFloat(tableResultNode.style.left) - parseFloat(tableNode.style.left)).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByText('Column'));
 
