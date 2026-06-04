@@ -1,4 +1,5 @@
 import { diagnostics, entities, mappings, paths } from './mockLineage';
+import { visibleGraph } from '../graphPipeline';
 import type { GraphEdge, GraphNode, GraphRenderMode, PathContext, WorkbenchState } from '../types/lineage';
 
 export function entityName(id?: string | null) {
@@ -134,88 +135,6 @@ export function viewHighlightSets(state: WorkbenchState): { highlightedEntityIds
   }
 
   return { highlightedEntityIds, highlightedEdgeIds };
-}
-
-export function visibleGraph(state: WorkbenchState): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const gvm = state.graphViewMode ?? 'table';
-
-  if (gvm === 'subquery') {
-    if (!state.backendGraph) return { nodes: [], edges: [] };
-    const base = state.backendGraph;
-    const allowedTypes = new Set<GraphNode['type']>(['table', 'cte', 'subquery', 'output']);
-    const filteredNodes = base.nodes.filter(n => allowedTypes.has(n.type));
-    const filteredIds = new Set(filteredNodes.map(n => n.entityId));
-    return {
-      nodes: filteredNodes,
-      edges: base.edges.filter(e => filteredIds.has(e.source) && filteredIds.has(e.target)),
-    };
-  }
-
-  if (gvm === 'table') {
-    if (!state.backendGraph) return { nodes: [], edges: [] };
-    const base = state.backendGraph;
-    const filteredNodes = base.nodes.filter(n => n.type === 'table' || n.type === 'output');
-    const filteredIds = new Set(filteredNodes.map(n => n.entityId));
-    const tableEdges = base.edges.filter(e => filteredIds.has(e.source) && filteredIds.has(e.target));
-    const outputNodes = filteredNodes.filter(n => n.type === 'output');
-    const tableNodes = filteredNodes.filter(n => n.type === 'table');
-    const synthesizedEdges: GraphEdge[] = [];
-
-    if (outputNodes.length === 1) {
-      const outputId = outputNodes[0].entityId;
-      for (const table of tableNodes) {
-        if (!tableEdges.some(e => e.source === table.entityId && e.target === outputId)) {
-          synthesizedEdges.push({
-            id: `table-view:${table.entityId}->${outputId}`,
-            source: table.entityId,
-            target: outputId,
-            type: 'table',
-          });
-        }
-      }
-    }
-
-    const tableLayoutNodes = filteredNodes.map((node, index) => {
-      if (node.type === 'table') {
-        const tableIndex = tableNodes.findIndex(t => t.entityId === node.entityId);
-        return { ...node, x: 72, y: 72 + tableIndex * 58 };
-      }
-      const outputY = tableNodes.length > 0
-        ? 72 + ((tableNodes.length - 1) * 58) / 2
-        : 72 + index * 58;
-      return { ...node, x: 292, y: outputY };
-    });
-
-    return {
-      nodes: tableLayoutNodes,
-      edges: [...tableEdges, ...synthesizedEdges],
-    };
-  }
-
-  if (gvm === 'semantics') {
-    return state.backendGraph ?? { nodes: [], edges: [] };
-  }
-
-  if (gvm === 'column' || gvm === 'expression' || gvm === 'diagnostics') {
-    if (state.backendGraph && state.backendGraph.nodes.length) {
-      if (gvm === 'column') {
-        const allowedTypes = new Set<GraphNode['type']>(['column', 'output_field', 'expression', 'unknown']);
-        const filteredNodes = state.backendGraph.nodes.filter(n => allowedTypes.has(n.type));
-        const filteredIds = new Set(filteredNodes.map(n => n.entityId));
-        return {
-          nodes: filteredNodes,
-          edges: state.backendGraph.edges.filter(e => filteredIds.has(e.source) && filteredIds.has(e.target)),
-        };
-      }
-      return state.backendGraph;
-    }
-    return { nodes: [], edges: [] };
-  }
-
-  if (state.backendGraph && (state.renderMode === 'subquery_dependency' || state.renderMode === 'large_graph' || state.renderMode === 'full_graph_preview')) {
-    return state.backendGraph;
-  }
-  return { nodes: [], edges: [] };
 }
 export function currentEntitySet(state: WorkbenchState) {
   const gvm = state.graphViewMode ?? 'table';

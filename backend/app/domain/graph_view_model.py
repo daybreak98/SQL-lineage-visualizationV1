@@ -8,9 +8,15 @@ class GraphNode:
     id: str
     node_type: str  # physical_column | output_column | table | cte | subquery ...
     label: str
+    entity_id: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"id": self.id, "node_type": self.node_type, "label": self.label}
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "id": self.id,
+            "node_type": self.node_type,
+            "label": self.label,
+            "entity_id": self.entity_id or self.id,
+        }
 
 
 @dataclass

@@ -217,4 +217,5 @@ export interface WorkbenchState {
   backendStatus?: string;
   metadataStatus?: string;
   colToTables?: Record<string, string[]>;
+  backendInvalidEdges?: GraphEdge[];
 }

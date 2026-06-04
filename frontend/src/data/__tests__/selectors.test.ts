@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { subqueryNodes, subqueryEdges, paths, diagnostics } from '../mockLineage';
+import { visibleGraph } from '../../graphPipeline';
 import {
-  visibleGraph,
   buildPathContext,
   currentEntitySet,
   diagnosticsOf,
@@ -122,7 +122,7 @@ describe('selectors', () => {
       const output = graph.nodes.find(node => node.type === 'output');
       const rightMostTableX = Math.max(...graph.nodes.filter(node => node.type === 'table').map(node => node.x));
 
-      expect(output?.x).toBe(292);
+      expect(output?.x).toBe(310);
       expect(output!.x - rightMostTableX).toBeLessThan(260);
       expect(graph.edges.filter(edge => edge.target === output?.entityId)).toHaveLength(2);
     });

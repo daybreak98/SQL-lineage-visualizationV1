@@ -1,6 +1,8 @@
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets, visibleGraph } from '../data/selectors';
+import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets } from '../data/selectors';
+import { visibleGraph } from '../graphPipeline';
+import { buildPortIndexes, routeEdgePath } from '../graphPipeline';
 import type { GraphEdge, GraphNode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
 
@@ -297,18 +299,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
           </defs>
           {(() => {
-            const edgeGroups = new Map<string, GraphEdge[]>();
-            for (const edge of graph.edges) {
-              const key = `${edge.source}::${edge.target}`;
-              if (!edgeGroups.has(key)) edgeGroups.set(key, []);
-              edgeGroups.get(key)!.push(edge);
-            }
-            const edgeIndexMap = new Map<string, number>();
-            for (const [, group] of edgeGroups) {
-              group.forEach((edge, i) => edgeIndexMap.set(edge.id, i));
-            }
-            const edgeGroupSizeMap = new Map<string, number>();
-            for (const [key, group] of edgeGroups) edgeGroupSizeMap.set(key, group.length);
+            const ports = buildPortIndexes(graph, positions);
 
             return graph.edges.map((edge: GraphEdge) => {
             const s = byEntity[edge.source];
@@ -316,22 +307,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             if (!s || !t) return null;
             const sp = positions[s.id] ?? { x: s.x, y: s.y };
             const tp = positions[t.id] ?? { x: t.x, y: t.y };
-            const sourceBox = nodeBox(s.type);
-            const targetBox = nodeBox(t.type);
-            const sx = sp.x + sourceBox.width;
-            const sy = sp.y + sourceBox.height / 2;
-            const tx = tp.x;
-            const ty = tp.y + targetBox.height / 2;
-            const dx = tx - sx;
-            const dy = ty - sy;
-            const groupSize = edgeGroupSizeMap.get(`${edge.source}::${edge.target}`) ?? 1;
-            const edgeIdx = edgeIndexMap.get(edge.id) ?? 0;
-            const offsetY = groupSize > 1 ? (edgeIdx - (groupSize - 1) / 2) * 16 : 0;
-            const shortEdge = Math.abs(dx) < 96 && Math.abs(dy) < 34;
-            const bend = Math.min(72, Math.max(28, Math.abs(dx) * 0.35));
-            const edgePath = shortEdge
-              ? `M ${sx} ${sy + offsetY} L ${tx} ${ty + offsetY}`
-              : `M ${sx} ${sy + offsetY} C ${sx + bend} ${sy + offsetY}, ${tx - bend} ${ty + offsetY}, ${tx} ${ty + offsetY}`;
+            const edgePath = routeEdgePath({ edge, sourceNode: s, targetNode: t, sourcePos: sp, targetPos: tp, ports });
             const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
             const isSelectedEdge = selectedEdges.has(edge.id);
             const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));

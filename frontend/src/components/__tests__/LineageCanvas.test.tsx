@@ -177,7 +177,7 @@ describe('LineageCanvas', () => {
     const node = title.closest('.node');
 
     expect(node).toHaveStyle({
-      left: '72px',
+      left: '80px',
       top: '72px',
     });
   });
