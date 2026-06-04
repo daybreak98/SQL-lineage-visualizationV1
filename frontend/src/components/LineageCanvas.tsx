@@ -141,48 +141,12 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     if (!drag && !panDrag) return;
     document.body.style.userSelect = 'none';
 
-    const flushPointer = () => {
-      frameRef.current = null;
-      const point = pendingPointerRef.current;
-      if (!point) return;
-      const clientX = point.x;
-      const clientY = point.y;
-      const activePan = panDragRef.current;
-      if (activePan) {
-        setManualPan({
-          x: activePan.panX + clientX - activePan.x,
-          y: activePan.panY + clientY - activePan.y,
-        });
-        return;
-      }
-
-      const activeDrag = dragRef.current;
-      if (!activeDrag) return;
-      const rect = viewportRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setDraftPositions((prev) => ({
-        ...prev,
-        [activeDrag.id]: {
-          x: (clientX - rect.left - viewOffset.x) / zoom - activeDrag.ox,
-          y: (clientY - rect.top - viewOffset.y) / zoom - activeDrag.oy,
-        },
-      }));
-    };
-
-    const queuePointer = (clientX: number, clientY: number) => {
-      pendingPointerRef.current = { x: clientX, y: clientY };
-      if (frameRef.current != null) return;
-      frameRef.current = window.requestAnimationFrame(flushPointer);
-    };
-
     const finishInteraction = () => {
       if (frameRef.current != null) {
         window.cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
       }
-      if (pendingPointerRef.current) {
-        flushPointer();
-      }
+      if (pendingPointerRef.current) applyPointer(pendingPointerRef.current.x, pendingPointerRef.current.y);
       pendingPointerRef.current = null;
       const activeDrag = dragRef.current;
       if (activeDrag && Object.keys(draftPositionsRef.current).length > 0) {
@@ -268,11 +232,46 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     zoomBy(zoom * factor, { clientX: event.clientX, clientY: event.clientY });
   };
 
+  const applyPointer = (clientX: number, clientY: number) => {
+    const activePan = panDragRef.current;
+    if (activePan) {
+      setManualPan({
+        x: activePan.panX + clientX - activePan.x,
+        y: activePan.panY + clientY - activePan.y,
+      });
+      return;
+    }
+
+    const activeDrag = dragRef.current;
+    if (!activeDrag) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setDraftPositions((prev) => ({
+      ...prev,
+      [activeDrag.id]: {
+        x: (clientX - rect.left - viewOffset.x) / zoom - activeDrag.ox,
+        y: (clientY - rect.top - viewOffset.y) / zoom - activeDrag.oy,
+      },
+    }));
+  };
+
+  const queuePointer = (clientX: number, clientY: number) => {
+    pendingPointerRef.current = { x: clientX, y: clientY };
+    if (frameRef.current != null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      const point = pendingPointerRef.current;
+      if (!point) return;
+      applyPointer(point.x, point.y);
+    });
+  };
+
   return (
     <div
       ref={viewportRef}
       className={cx('viewport', panDrag && 'panning')}
       onMouseDown={startPan}
+      onMouseMove={(event) => applyPointer(event.clientX, event.clientY)}
       onWheel={handleWheel}
       style={{ position: 'relative' }}
     >
@@ -297,7 +296,21 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             <marker id="arrowDefault" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#94A3B8" /></marker>
             <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
           </defs>
-          {graph.edges.map((edge: GraphEdge) => {
+          {(() => {
+            const edgeGroups = new Map<string, GraphEdge[]>();
+            for (const edge of graph.edges) {
+              const key = `${edge.source}::${edge.target}`;
+              if (!edgeGroups.has(key)) edgeGroups.set(key, []);
+              edgeGroups.get(key)!.push(edge);
+            }
+            const edgeIndexMap = new Map<string, number>();
+            for (const [, group] of edgeGroups) {
+              group.forEach((edge, i) => edgeIndexMap.set(edge.id, i));
+            }
+            const edgeGroupSizeMap = new Map<string, number>();
+            for (const [key, group] of edgeGroups) edgeGroupSizeMap.set(key, group.length);
+
+            return graph.edges.map((edge: GraphEdge) => {
             const s = byEntity[edge.source];
             const t = byEntity[edge.target];
             if (!s || !t) return null;
@@ -311,11 +324,14 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             const ty = tp.y + targetBox.height / 2;
             const dx = tx - sx;
             const dy = ty - sy;
+            const groupSize = edgeGroupSizeMap.get(`${edge.source}::${edge.target}`) ?? 1;
+            const edgeIdx = edgeIndexMap.get(edge.id) ?? 0;
+            const offsetY = groupSize > 1 ? (edgeIdx - (groupSize - 1) / 2) * 16 : 0;
             const shortEdge = Math.abs(dx) < 96 && Math.abs(dy) < 34;
             const bend = Math.min(72, Math.max(28, Math.abs(dx) * 0.35));
             const edgePath = shortEdge
-              ? `M ${sx} ${sy} L ${tx} ${ty}`
-              : `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`;
+              ? `M ${sx} ${sy + offsetY} L ${tx} ${ty + offsetY}`
+              : `M ${sx} ${sy + offsetY} C ${sx + bend} ${sy + offsetY}, ${tx - bend} ${ty + offsetY}, ${tx} ${ty + offsetY}`;
             const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
             const isSelectedEdge = selectedEdges.has(edge.id);
             const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
@@ -328,7 +344,8 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                 <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected')} d={edgePath} markerEnd={markerEnd} />
               </g>
             );
-          })}
+          });
+          })()}
         </svg>
         {graph.nodes.map((node) => {
           const p = positions[node.id] ?? { x: node.x, y: node.y };

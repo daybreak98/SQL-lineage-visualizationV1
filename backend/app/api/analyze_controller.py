@@ -150,7 +150,10 @@ def _assemble_result(
 
 
 def _looks_like_cte(sql: str) -> bool:
-    return sql.lstrip().lower().startswith("with ")
+    import re
+    stripped = re.sub(r'--[^\n]*', '', sql)
+    stripped = re.sub(r'/\*.*?\*/', '', stripped, flags=re.DOTALL)
+    return stripped.lstrip().lower().startswith("with ")
 
 
 def _extract_source_table_names(tree) -> list[str]:
