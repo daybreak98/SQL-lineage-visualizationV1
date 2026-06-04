@@ -307,7 +307,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             if (!s || !t) return null;
             const sp = positions[s.id] ?? { x: s.x, y: s.y };
             const tp = positions[t.id] ?? { x: t.x, y: t.y };
-            const edgePath = routeEdgePath({ edge, sourceNode: s, targetNode: t, sourcePos: sp, targetPos: tp, ports });
+            const edgePath = routeEdgePath({ edge, sourceNode: s, targetNode: t, sourcePos: sp, targetPos: tp, ports, style: 'smooth' });
             const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
             const isSelectedEdge = selectedEdges.has(edge.id);
             const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
@@ -317,7 +317,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             return (
               <g key={edge.id} onClick={(event) => { event.stopPropagation(); if (edge.mapping) setState((st) => ({ ...st, selectedMapping: edge.mapping!, selectedEntity: edge.target, detailMode: 'compact', detailTab: 'mapping' })); }}>
                 <path className="edge-hit" d={edgePath} />
-                <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected')} d={edgePath} markerEnd={markerEnd} />
+                <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
               </g>
             );
           });

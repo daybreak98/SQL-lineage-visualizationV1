@@ -59,6 +59,8 @@ export interface GraphNode {
   tag?: string;
   x: number;
   y: number;
+  pinned?: boolean;
+  ordinal?: number;
 }
 
 export interface GraphEdge {
@@ -67,6 +69,7 @@ export interface GraphEdge {
   target: string;
   type: 'table' | 'cte' | 'subq' | 'output' | 'expr' | 'join' | 'projection' | 'alias' | 'unknown';
   mapping?: string;
+  synthetic?: boolean;
 }
 
 export interface BackendDiagnostic {
