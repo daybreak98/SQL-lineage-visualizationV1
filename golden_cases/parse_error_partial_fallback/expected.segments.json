@@ -1,0 +1,10 @@
+{
+  "required_segment_types": [
+    "cte_block",
+    "cte_item",
+    "main_select",
+    "from_join",
+    "join_block"
+  ]
+}
+

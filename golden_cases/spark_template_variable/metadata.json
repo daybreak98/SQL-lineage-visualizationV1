@@ -1,0 +1,10 @@
+{
+  "case_id": "spark_template_variable",
+  "dialect": "spark",
+  "difficulty": "S1",
+  "covered_features": [
+    "spark template variable",
+    "template shield"
+  ]
+}
+

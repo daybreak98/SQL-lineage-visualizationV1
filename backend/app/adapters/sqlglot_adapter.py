@@ -19,6 +19,49 @@ class ParseResult:
         self.tree = tree
 
 
+def extract_output_fields_from_tree(
+    tree: Expression,
+    dialect: str = "spark",
+    placeholder_map: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
+    def restore_placeholders(text: str) -> str:
+        if not placeholder_map:
+            return text
+        restored = text
+        for placeholder, raw_text in sorted(placeholder_map.items(), key=lambda item: len(item[0]), reverse=True):
+            restored = restored.replace(placeholder, raw_text)
+        return restored
+
+    output_fields: list[dict[str, str]] = []
+
+    for col_expr in tree.selects:
+        alias = col_expr.alias or ""
+
+        if alias:
+            inner = col_expr.this.sql(dialect=dialect) if hasattr(col_expr, "this") else col_expr.sql(dialect=dialect)
+            output_fields.append(
+                {
+                    "name": alias,
+                    "display_name": alias,
+                    "expression": restore_placeholders(inner),
+                    "source_type": "expression",
+                }
+            )
+        else:
+            raw = restore_placeholders(col_expr.sql(dialect=dialect))
+            is_simple_column = isinstance(col_expr, Column)
+            output_fields.append(
+                {
+                    "name": raw,
+                    "display_name": raw,
+                    "expression": raw,
+                    "source_type": "unknown" if is_simple_column else "expression",
+                }
+            )
+
+    return output_fields
+
+
 def parse_and_extract(sql: str, dialect: str = "spark") -> ParseResult:
     try:
         tree = sqlglot.parse_one(sql, dialect=dialect)
@@ -30,31 +73,4 @@ def parse_and_extract(sql: str, dialect: str = "spark") -> ParseResult:
             tree=None,
         )
 
-    output_fields: list[dict[str, str]] = []
-
-    for col_expr in tree.selects:
-        alias = col_expr.alias or ""  # sqlglot 无别名时返回 ""，不是 None
-
-        if alias:
-            inner = col_expr.this.sql(dialect=dialect) if hasattr(col_expr, "this") else col_expr.sql(dialect=dialect)
-            output_fields.append(
-                {
-                    "name": alias,
-                    "display_name": alias,
-                    "expression": inner,
-                    "source_type": "expression",
-                }
-            )
-        else:
-            raw = col_expr.sql(dialect=dialect)
-            is_simple_column = isinstance(col_expr, Column)
-            output_fields.append(
-                {
-                    "name": raw,
-                    "display_name": raw,
-                    "expression": raw,
-                    "source_type": "unknown" if is_simple_column else "expression",
-                }
-            )
-
-    return ParseResult(success=True, output_fields=output_fields, tree=tree)
+    return ParseResult(success=True, output_fields=extract_output_fields_from_tree(tree, dialect=dialect), tree=tree)

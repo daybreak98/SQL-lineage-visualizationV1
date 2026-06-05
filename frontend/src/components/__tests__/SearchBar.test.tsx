@@ -3,6 +3,27 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { SearchBar } from '../SearchBar';
 import type { SearchItem, WorkbenchState } from '../../types/lineage';
 
+const backendSearchItems: SearchItem[] = [
+  {
+    itemId: 'search-output-order-cnt',
+    entityId: 'out:order_cnt',
+    displayName: 'order_cnt',
+    type: 'output',
+    sub: 'count(order_no)',
+    reason: 'backend graph',
+    confidence: 'high',
+  },
+  {
+    itemId: 'search-source-order',
+    entityId: 'physical_table:dwd_order_di',
+    displayName: 'dwd_order_di',
+    type: 'source',
+    sub: 'table',
+    reason: 'backend graph',
+    confidence: 'high',
+  },
+];
+
 function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
   return {
     pageMode: 'analyzed',
@@ -22,6 +43,7 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    backendSearchItems,
     ...overrides,
   };
 }
@@ -126,6 +148,17 @@ describe('SearchBar', () => {
 
     fireEvent.click(resultButtons[0]);
     expect(onSelect).toHaveBeenCalled();
+  });
+
+  it('shows empty state when backend returned no searchable items', () => {
+    const state = baseState({ backendSearchItems: [] });
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
+
+    const input = screen.getByPlaceholderText(/Search field/i);
+    fireEvent.focus(input);
+
+    expect(screen.getByText('No backend search results for the current analysis.')).toBeInTheDocument();
   });
 
   it('renders scope select with all options', () => {

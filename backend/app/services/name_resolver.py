@@ -284,6 +284,13 @@ def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False) -> tup
             "cte",
         )
 
+    if any(isinstance(node, exp.Lateral) for node in tree.find_all(exp.Lateral)):
+        return (
+            diag_codes.UNSUPPORTED_LATERAL_VIEW,
+            "lateral view / explode lineage is not supported in the current name resolver.",
+            "lateral_view",
+        )
+
     if any(isinstance(node, exp.Subquery) for node in tree.find_all(exp.Subquery)):
         return (
             diag_codes.UNSUPPORTED_COMPLEX_QUERY,

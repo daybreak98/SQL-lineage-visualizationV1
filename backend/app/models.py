@@ -24,6 +24,7 @@ class AnalyzeRequest(BaseModel):
     metadata_version: str = "latest"
     case_sensitive: bool = False
     analysis_options: AnalysisOptions = Field(default_factory=AnalysisOptions)
+    options: dict[str, Any] = Field(default_factory=dict)
 
 
 # ─── 响应体的各个零件 ──────────────────────────────────────────────
@@ -32,6 +33,15 @@ class Diagnostic(BaseModel):
     code: str
     level: str = "info"  # info | warning | error
     message: str
+    severity: str | None = None
+    stage: str | None = None
+    location: dict[str, Any] | None = None
+    confidence: float | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context) -> None:
+        if self.severity is None:
+            self.severity = self.level
 
 
 class DiagnosticsReport(BaseModel):
@@ -73,14 +83,22 @@ class AnalysisResult(BaseModel):
     elapsed_ms: int = 0
     dialect: str = "spark"
     normalized_sql: str | None = None
+    analysis_sql: str | None = None
     stage_statuses: list[StageStatus] = Field(default_factory=list)
     unsupported_features: list[str] = Field(default_factory=list)
     diagnostics_report: DiagnosticsReport = Field(default_factory=DiagnosticsReport)
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
     graph_view_model: GraphViewModel = Field(default_factory=GraphViewModel)
     output_fields: list[OutputField] = Field(default_factory=list)
     source_locations: dict[str, Any] = Field(default_factory=dict)
     metadata_context: dict[str, Any] = Field(default_factory=dict)
     semantics_report: Any = None
+    sql_text_bundle: dict[str, Any] = Field(default_factory=dict)
+    preflight_report: dict[str, Any] = Field(default_factory=dict)
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    parse_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    confidence: dict[str, Any] = Field(default_factory=dict)
     summary: dict[str, Any] = Field(default_factory=dict)
 
 

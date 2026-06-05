@@ -1,49 +1,109 @@
-import { diagnostics, entities, mappings, paths } from './mockLineage';
+import type { Entity } from '../types/lineage';
 import { visibleGraph } from '../graphPipeline';
 import type { GraphEdge, GraphNode, GraphRenderMode, PathContext, WorkbenchState } from '../types/lineage';
 
 export function entityName(id?: string | null) {
   if (!id) return '-';
-  // fallback: use mock entities when backend doesn't provide entity metadata
-  return entities[id]?.name ?? id;
+
+  if (id === 'out:group') return 'Output Group';
+  if (id === 'query_result:final' || id === 'out:query_result') return 'Query Result';
+
+  const [prefix, rawName = id] = id.split(/:(.+)/);
+  if (prefix === 'physical_table') return rawName.split('.').pop() ?? rawName;
+
+  return rawName;
 }
 
 export function entityOf(id?: string | null) {
-  // fallback: use mock entities when backend doesn't provide entity metadata
-  return id ? entities[id] : undefined;
+  if (!id) return undefined;
+
+  const prefix = id.split(':', 1)[0];
+  const type: Entity['type'] =
+    prefix === 'table' || prefix === 'physical_table'
+      ? 'table'
+      : prefix === 'cte'
+        ? 'cte'
+        : prefix === 'subq' || prefix === 'subquery'
+          ? 'subquery'
+          : prefix === 'out' && id === 'out:group'
+            ? 'output_group'
+            : prefix === 'out' || prefix === 'output_column'
+              ? 'output_field'
+              : prefix === 'column' || prefix === 'field' || prefix === 'physical_column'
+                ? 'column'
+                : prefix === 'expr' || prefix === 'expression'
+                  ? 'expression'
+                  : prefix === 'join'
+                    ? 'join'
+                    : 'unknown';
+
+  return {
+    id,
+    type,
+    name: entityName(id),
+    comment: 'No backend entity metadata available.',
+  } satisfies Entity;
 }
 
 export function diagnosticsOf(entityId?: string | null) {
-  return entityId ? diagnostics.filter((d) => d.entityId === entityId) : [];
+  return [];
 }
 
-/** Get diagnostics for an entity, preferring backend data when available. */
 export function diagnosticsForEntity(state: WorkbenchState, entityId?: string | null) {
   if (!entityId) return [];
-  const backendDiags = state.backendDiagnostics?.filter(d => d.entityId === entityId) ?? [];
-  if (backendDiags.length > 0) return backendDiags;
-  // fallback: use mock diagnostics when backend has none for this entity
-  return entityId ? diagnostics.filter((d) => d.entityId === entityId) : [];
+  return state.backendDiagnostics?.filter((diagnostic) => diagnostic.entityId === entityId) ?? [];
+}
+
+function countReachablePathNodes(state: WorkbenchState, targetId: string) {
+  const graph = state.backendGraph;
+  if (!graph) return 0;
+
+  const nodeIds = new Set(graph.nodes.map((node) => node.entityId));
+  if (!nodeIds.has(targetId)) return 0;
+
+  const reverse = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    if (!reverse.has(edge.target)) reverse.set(edge.target, []);
+    reverse.get(edge.target)!.push(edge.source);
+  }
+
+  const visited = new Set<string>([targetId]);
+  const queue = [targetId];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const source of reverse.get(current) ?? []) {
+      if (visited.has(source)) continue;
+      visited.add(source);
+      queue.push(source);
+    }
+  }
+
+  return visited.size;
 }
 
 export function buildPathContext(state: WorkbenchState): PathContext {
+  const warningCount = state.backendDiagnostics?.length ?? 0;
+
   if (!state.selectedOutput) {
-    return { status: 'idle', display: 'Choose output', nodes: 0, mappings: 0, warnings: state.backendDiagnostics?.length ?? diagnostics.length, confidence: 'unknown' };
+    return { status: 'idle', display: 'Choose output', nodes: 0, mappings: 0, warnings: warningCount, confidence: 'unknown' };
   }
+
   let status: PathContext['status'] = 'ready';
   if (state.trustStatus === 'stale') status = 'stale';
   if (state.analysisStatus === 'partial') status = 'partial';
-  if (state.selectedOutput === 'out:avg_order_amount') status = 'low_confidence';
-  // fallback: use mock paths when backend doesn't provide path-level data
-  const p = paths[state.selectedOutput] || [];
+  const outputDiagnostics = diagnosticsForEntity(state, state.selectedOutput);
+  if (status === 'ready' && outputDiagnostics.some((diagnostic) => diagnostic.severity === 'warning')) {
+    status = 'low_confidence';
+  }
+
   return {
     status,
     display: entityName(state.selectedOutput),
-    nodes: p.length,
-    // Mock mappings count until backend exposes path-level EdgeMapping data.
-    mappings: mappings.length,
-    warnings: state.backendDiagnostics?.length ?? diagnostics.length,
-    confidence: state.selectedOutput === 'out:avg_order_amount' ? 'medium' : 'high',
+    nodes: countReachablePathNodes(state, state.selectedOutput),
+    mappings: 0,
+    warnings: warningCount,
+    confidence: status === 'low_confidence' ? 'medium' : state.analysisStatus === 'success' ? 'high' : 'unknown',
   };
 }
 
@@ -115,11 +175,8 @@ export function viewHighlightSets(state: WorkbenchState): { highlightedEntityIds
   }
 
   if (gvm === 'diagnostics') {
-    // Highlight nodes that have diagnostics
-    // fallback: use mock diagnostics when no backend diagnostics
-    const allDiagnostics = state.backendDiagnostics ?? diagnostics;
-    for (const d of allDiagnostics) {
-      highlightedEntityIds.add(d.entityId);
+    for (const diagnostic of state.backendDiagnostics ?? []) {
+      highlightedEntityIds.add(diagnostic.entityId);
     }
   }
 

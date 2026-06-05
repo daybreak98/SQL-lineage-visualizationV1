@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { subqueryNodes, subqueryEdges, paths, diagnostics } from '../mockLineage';
+import { subqueryNodes, subqueryEdges } from '../mockLineage';
 import { visibleGraph } from '../../graphPipeline';
 import {
   buildPathContext,
@@ -129,6 +129,16 @@ describe('selectors', () => {
   });
 
   describe('buildPathContext', () => {
+    const pathGraph = {
+      nodes: [
+        { id: 'physical_table:dwd_order_di', entityId: 'physical_table:dwd_order_di', type: 'table' as const, label: 'dwd_order_di', x: 0, y: 0 },
+        { id: 'output_column:order_cnt', entityId: 'output_column:order_cnt', type: 'output_field' as const, label: 'order_cnt', x: 160, y: 0 },
+      ],
+      edges: [
+        { id: 'edge:physical_table:dwd_order_di->output_column:order_cnt', source: 'physical_table:dwd_order_di', target: 'output_column:order_cnt', type: 'projection' as const },
+      ],
+    };
+
     it('returns idle when no output selected', () => {
       const state = baseState({ selectedOutput: null });
       const pc = buildPathContext(state);
@@ -137,27 +147,42 @@ describe('selectors', () => {
     });
 
     it('returns ready with correct display for selected output', () => {
-      const state = baseState({ selectedOutput: 'out:order_cnt' });
+      const state = baseState({ selectedOutput: 'output_column:order_cnt', backendGraph: pathGraph });
       const pc = buildPathContext(state);
       expect(pc.status).toBe('ready');
       expect(pc.display).toBe('order_cnt');
-      expect(pc.nodes).toBe(paths['out:order_cnt']?.length ?? 0);
+      expect(pc.nodes).toBe(2);
+      expect(pc.mappings).toBe(0);
     });
 
     it('returns stale when trustStatus is stale', () => {
-      const state = baseState({ selectedOutput: 'out:order_cnt', trustStatus: 'stale' });
+      const state = baseState({ selectedOutput: 'output_column:order_cnt', trustStatus: 'stale', backendGraph: pathGraph });
       const pc = buildPathContext(state);
       expect(pc.status).toBe('stale');
     });
 
     it('returns partial when analysisStatus is partial', () => {
-      const state = baseState({ selectedOutput: 'out:order_cnt', analysisStatus: 'partial' });
+      const state = baseState({ selectedOutput: 'output_column:order_cnt', analysisStatus: 'partial', backendGraph: pathGraph });
       const pc = buildPathContext(state);
       expect(pc.status).toBe('partial');
     });
 
-    it('returns low_confidence for avg_order_amount output', () => {
-      const state = baseState({ selectedOutput: 'out:avg_order_amount' });
+    it('returns low_confidence when the selected output has backend warnings', () => {
+      const state = baseState({
+        selectedOutput: 'output_column:order_cnt',
+        backendGraph: pathGraph,
+        backendDiagnostics: [
+          {
+            id: 'diag-order-cnt',
+            code: 'LOW_CONFIDENCE_LINEAGE',
+            entityId: 'output_column:order_cnt',
+            severity: 'warning',
+            reason: 'Approximate lineage only.',
+            impact: 'Need manual validation.',
+            action: 'Inspect SQL source.',
+          },
+        ],
+      });
       const pc = buildPathContext(state);
       expect(pc.status).toBe('low_confidence');
       expect(pc.confidence).toBe('medium');
@@ -191,18 +216,9 @@ describe('selectors', () => {
   });
 
   describe('diagnosticsOf', () => {
-    it('returns diagnostics for a matching entity', () => {
-      const result = diagnosticsOf('out:avg_order_amount');
-      expect(result.length).toBeGreaterThan(0);
-      expect(result.every((d) => d.entityId === 'out:avg_order_amount')).toBe(true);
-    });
-
-    it('returns empty array for entity with no diagnostics', () => {
-      const result = diagnosticsOf('table:dwd_order_di');
-      expect(result).toEqual([]);
-    });
-
-    it('returns empty array for null entityId', () => {
+    it('returns empty array without runtime mock fallbacks', () => {
+      expect(diagnosticsOf('out:avg_order_amount')).toEqual([]);
+      expect(diagnosticsOf('table:dwd_order_di')).toEqual([]);
       expect(diagnosticsOf(null)).toEqual([]);
       expect(diagnosticsOf(undefined)).toEqual([]);
     });
@@ -227,8 +243,10 @@ describe('selectors', () => {
       expect(entity!.name).toBe('dwd_order_di');
     });
 
-    it('returns undefined for unknown id', () => {
-      expect(entityOf('nonexistent')).toBeUndefined();
+    it('returns inferred entity for unknown id format', () => {
+      const entity = entityOf('nonexistent');
+      expect(entity).toBeDefined();
+      expect(entity!.type).toBe('unknown');
     });
 
     it('returns undefined for null/empty id', () => {

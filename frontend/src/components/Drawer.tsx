@@ -1,5 +1,5 @@
 import type React from 'react';
-import { diagnostics, milestones, snapshots } from '../data/mockLineage';
+import { milestones, snapshots } from '../data/mockLineage';
 import type { Diagnostic, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
 
@@ -15,8 +15,7 @@ function DiagnosticCard({ diagnostic }: { diagnostic: Diagnostic }) {
 export function Drawer({ state, setState }: Props) {
   let body: React.ReactNode;
   if (state.drawerTab === 'diagnostics') {
-    // fallback: use mock diagnostics when no backend diagnostics available
-    const activeDiagnostics = state.backendDiagnostics ?? diagnostics;
+    const activeDiagnostics = state.backendDiagnostics ?? [];
     body = <div className="cards">{state.backendMessage && <div className="card"><div className="card-title">Backend status</div>{state.backendMessage}</div>}{activeDiagnostics.length ? activeDiagnostics.map((d) => <DiagnosticCard key={d.id} diagnostic={d} />) : <div className="card"><div className="card-title">Diagnostics</div>No backend diagnostics for the latest analysis.</div>}</div>;
   }
   else if (state.drawerTab === 'render') {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { exampleSql } from './data/mockLineage';
+import { exampleSql } from './data/exampleSql';
 import { transitionRenderMode } from './data/selectors';
 import { analyzeSql, formatSql, getHealth, listMetadataTables } from './api/client';
 import { analysisToGraph } from './graphPipeline';

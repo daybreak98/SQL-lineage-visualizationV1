@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import re
+
 from fastapi import APIRouter
 
 from app.models import AnalyzeRequest, AnalysisResult, DiagnosticsReport, GraphViewModel
@@ -18,35 +22,24 @@ router = APIRouter()
 
 @router.post("/sql/analyze", response_model=AnalysisResult)
 async def analyze(request: AnalyzeRequest) -> AnalysisResult:
-    parse_result = parse_sql(request.sql, request.dialect)
+    parse_result = parse_sql(request.sql, request.dialect, request.options)
 
-    if not parse_result.success:
-        return _assemble_result(
-            request=request,
-            status="failed",
-            confidence_level="unknown",
-            elapsed_ms=parse_result.elapsed_ms,
-            stage_statuses=parse_result.stage_statuses,
-            diagnostics=parse_result.diagnostics,
-            output_fields=parse_result.output_fields,
-        )
-
-    tree = parse_result.tree
     graph_view_model = GraphViewModel()
     diagnostics = list(parse_result.diagnostics)
     stage_statuses = list(parse_result.stage_statuses)
-    unsupported_features: list[str] = []
-    status = "success"
-    confidence_level = "high"
+    unsupported_features = list(parse_result.unsupported_features)
+    status = parse_result.status
+    confidence = dict(parse_result.confidence)
 
-    if request.analysis_options.include_graph:
-        if _looks_like_cte(request.sql):
+    if parse_result.tree is not None and request.analysis_options.include_graph:
+        tree = parse_result.tree
+
+        if _looks_like_cte(request.sql, tree):
             structure_result = analyze_cte_structure(request.sql, request.dialect, tree=tree)
             diagnostics.extend(structure_result.diagnostics)
             stage_statuses.extend(structure_result.stage_statuses)
             unsupported_features.extend(structure_result.unsupported_features)
-            status = structure_result.status
-            confidence_level = structure_result.confidence_level
+            status = _merge_status(status, structure_result.status)
 
             if structure_result.nodes:
                 graph = build_cte_structure_graph(structure_result)
@@ -65,6 +58,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
             diagnostics.extend(table_structure_result.diagnostics)
             stage_statuses.extend(table_structure_result.stage_statuses)
             unsupported_features.extend(table_structure_result.unsupported_features)
+            status = _merge_status(status, table_structure_result.status)
 
             source_table_names = _extract_source_table_names(tree)
             metadata = _load_metadata(source_table_names)
@@ -73,11 +67,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
             diagnostics.extend(lineage_result.diagnostics)
             stage_statuses.extend(lineage_result.stage_statuses)
             unsupported_features.extend(lineage_result.unsupported_features)
-
-            status = "partial" if (
-                table_structure_result.status == "partial" or lineage_result.status == "partial"
-            ) else lineage_result.status
-            confidence_level = "high" if status == "success" else "unknown"
+            status = _merge_status(status, lineage_result.status)
 
             graphs = []
             if table_structure_result.nodes:
@@ -98,20 +88,35 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
                     }
                 )
 
+    confidence = _adjust_confidence(confidence, status, unsupported_features)
+    confidence_level = _confidence_level_from_scores(confidence, status)
+    diagnostics = _dedupe_diagnostics(diagnostics)
+    unsupported_features = sorted(set(unsupported_features))
+
     return _assemble_result(
         request=request,
         status=status,
         confidence_level=confidence_level,
+        confidence=confidence,
         elapsed_ms=parse_result.elapsed_ms,
         stage_statuses=stage_statuses,
         diagnostics=diagnostics,
         output_fields=parse_result.output_fields,
         unsupported_features=unsupported_features,
         graph_view_model=graph_view_model,
+        normalized_sql=parse_result.normalized_sql,
+        analysis_sql=parse_result.analysis_sql,
+        sql_text_bundle=parse_result.sql_text_bundle,
+        preflight_report=parse_result.preflight_report,
+        segments=parse_result.segments,
+        parse_attempts=parse_result.parse_attempts,
+        capabilities=parse_result.capabilities,
         summary={
             "node_count": len(graph_view_model.nodes),
             "edge_count": len(graph_view_model.edges),
             "output_field_count": len(parse_result.output_fields),
+            "placeholder_count": int(parse_result.capabilities.get("placeholder_count", 0)),
+            "segment_count": int(parse_result.capabilities.get("segment_count", 0)),
         },
     )
 
@@ -120,12 +125,20 @@ def _assemble_result(
     request: AnalyzeRequest,
     status: str,
     confidence_level: str,
+    confidence: dict[str, float],
     elapsed_ms: int,
     stage_statuses: list[dict[str, object]],
     diagnostics: list,
     output_fields: list,
     unsupported_features: list[str] | None = None,
     graph_view_model: GraphViewModel | None = None,
+    normalized_sql: str | None = None,
+    analysis_sql: str | None = None,
+    sql_text_bundle: dict[str, object] | None = None,
+    preflight_report: dict[str, object] | None = None,
+    segments: list[dict[str, object]] | None = None,
+    parse_attempts: list[dict[str, object]] | None = None,
+    capabilities: dict[str, object] | None = None,
     summary: dict[str, int] | None = None,
 ) -> AnalysisResult:
     return AnalysisResult(
@@ -133,34 +146,77 @@ def _assemble_result(
         analysis_id="analysis:c05",
         status=status,
         confidence_level=confidence_level,
+        confidence=confidence,
         dialect=request.dialect,
         elapsed_ms=elapsed_ms,
+        normalized_sql=normalized_sql,
+        analysis_sql=analysis_sql,
         stage_statuses=stage_statuses,
         unsupported_features=unsupported_features or [],
+        diagnostics=diagnostics,
         diagnostics_report=DiagnosticsReport(
             diagnostics=diagnostics,
-            error_count=sum(1 for d in diagnostics if d.level == "error"),
-            warning_count=sum(1 for d in diagnostics if d.level == "warning"),
-            info_count=sum(1 for d in diagnostics if d.level == "info"),
+            error_count=sum(1 for diagnostic in diagnostics if diagnostic.level == "error"),
+            warning_count=sum(1 for diagnostic in diagnostics if diagnostic.level == "warning"),
+            info_count=sum(1 for diagnostic in diagnostics if diagnostic.level == "info"),
         ),
         graph_view_model=graph_view_model or GraphViewModel(),
         output_fields=output_fields,
+        sql_text_bundle=sql_text_bundle or {},
+        preflight_report=preflight_report or {},
+        segments=segments or [],
+        parse_attempts=parse_attempts or [],
+        capabilities=capabilities or {},
         summary=summary or {},
     )
 
 
-def _looks_like_cte(sql: str) -> bool:
-    import re
-    stripped = re.sub(r'--[^\n]*', '', sql)
-    stripped = re.sub(r'/\*.*?\*/', '', stripped, flags=re.DOTALL)
+def _looks_like_cte(sql: str, tree=None) -> bool:
+    if tree is not None and (tree.args.get("with_") is not None or tree.args.get("with") is not None):
+        return True
+    stripped = re.sub(r"--[^\n]*", "", sql)
+    stripped = re.sub(r"/\*.*?\*/", "", stripped, flags=re.DOTALL)
     return stripped.lstrip().lower().startswith("with ")
+
+
+def _merge_status(*statuses: str) -> str:
+    order = {"success": 0, "partial": 1, "failed": 2}
+    return max(statuses, key=lambda status: order.get(status, 0))
+
+
+def _adjust_confidence(
+    confidence: dict[str, float],
+    status: str,
+    unsupported_features: list[str],
+) -> dict[str, float]:
+    adjusted = dict(confidence)
+    if status == "failed":
+        adjusted["parse"] = 0.0
+        adjusted["lineage"] = 0.0
+    elif status == "partial":
+        adjusted["lineage"] = min(adjusted.get("lineage", 0.55), 0.55)
+    if unsupported_features:
+        adjusted["lineage"] = min(adjusted.get("lineage", 0.55), 0.55)
+    return adjusted
+
+
+def _confidence_level_from_scores(confidence: dict[str, float], status: str) -> str:
+    if status == "failed":
+        return "unknown"
+    score = confidence.get("lineage", confidence.get("parse", 0.0))
+    if score >= 0.85:
+        return "high"
+    if score >= 0.6:
+        return "medium"
+    return "unknown"
 
 
 def _extract_source_table_names(tree) -> list[str]:
     from sqlglot import exp
+
     names: list[str] = []
     for table in tree.find_all(exp.Table):
-        parts = [p for p in [table.catalog, table.db, table.name] if p]
+        parts = [part for part in [table.catalog, table.db, table.name] if part]
         name = ".".join(parts) if parts else table.name
         if name not in names:
             names.append(name)
@@ -170,9 +226,22 @@ def _extract_source_table_names(tree) -> list[str]:
 def _load_metadata(table_names: list[str]) -> dict[str, list[str]]:
     columns_by_table = meta_repo.get_columns_for_tables(table_names)
     result: dict[str, list[str]] = {}
-    for tname in table_names:
-        if tname in columns_by_table:
-            result[tname] = [str(c.get("name", "")) for c in columns_by_table[tname]]
+    for table_name in table_names:
+        if table_name in columns_by_table:
+            result[table_name] = [str(column.get("name", "")) for column in columns_by_table[table_name]]
         else:
-            result[tname] = []  # table requested but no metadata found
+            result[table_name] = []
     return result
+
+
+def _dedupe_diagnostics(diagnostics: list) -> list:
+    seen: set[tuple[str, str | None, str]] = set()
+    result = []
+    for diagnostic in diagnostics:
+        key = (diagnostic.code, getattr(diagnostic, "stage", None), diagnostic.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(diagnostic)
+    return result
+

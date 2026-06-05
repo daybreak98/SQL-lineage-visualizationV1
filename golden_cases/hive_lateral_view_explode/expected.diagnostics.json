@@ -1,0 +1,8 @@
+{
+  "allowed_status": ["success", "partial"],
+  "required_diagnostics": [
+    "ROW_EXPANDING_FUNCTION",
+    "UNSUPPORTED_LATERAL_VIEW"
+  ]
+}
+
