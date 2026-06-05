@@ -1,0 +1,12 @@
+[project]
+name = "complex-sql-guard"
+version = "0.1.0"
+description = "Complex Hive/Spark SQL preprocessing, segmentation, parser fallback and diagnostics for SQL lineage workbench."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+parser = ["sqlglot>=25"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

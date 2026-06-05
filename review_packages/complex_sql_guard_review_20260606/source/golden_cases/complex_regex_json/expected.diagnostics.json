@@ -1,0 +1,9 @@
+{
+  "allowed_status": ["success", "partial"],
+  "required_diagnostics": [
+    "REGEX_LITERAL_SHIELD_APPLIED",
+    "JSON_PATH_LITERAL_SHIELD_APPLIED",
+    "TEMPLATE_SQL_DETECTED"
+  ]
+}
+

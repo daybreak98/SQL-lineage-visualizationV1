@@ -1,0 +1,13 @@
+{
+  "tables": [
+    {
+      "schema": "default",
+      "table": "order_table",
+      "columns": [
+        {"name": "order_id", "type": "string"},
+        {"name": "refund_items", "type": "array<struct<amount:decimal(18,2)>>"},
+        {"name": "dt", "type": "string", "is_partition": true}
+      ]
+    }
+  ]
+}

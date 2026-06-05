@@ -1,0 +1,6 @@
+{
+  "allowed_status": ["success", "partial"],
+  "required_diagnostics": ["TEMPLATE_SQL_DETECTED"],
+  "required_placeholder_kinds": ["string_literal", "template"],
+  "required_segment_types": ["cte_block", "main_select", "from_join"]
+}
