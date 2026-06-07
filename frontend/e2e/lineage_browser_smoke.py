@@ -25,9 +25,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SQL_FILE = Path(__file__).resolve().parent / "cases" / "single_table_column.sql"
 
 DEFAULT_EXPECTED_NODES = [
-    "dwd_order_di.order_no",
+    "dwd_order_di",
     "order_no",
-    "dwd_order_di.user_id",
     "uid",
     "Query Result",
 ]

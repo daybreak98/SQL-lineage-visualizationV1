@@ -1,4 +1,4 @@
-import type { BackendAnalysisResult, GraphEdge, GraphNode, SearchItem, WorkbenchState } from './types/lineage';
+﻿import type { BackendAnalysisResult, GraphEdge, GraphNode, SearchItem, WorkbenchState } from './types/lineage';
 import { getComfortNodeBox, COMFORT_CANVAS } from './nodeVisualTokens';
 import {
   applyManualPositions as applyComfortManualPositions,
@@ -9,9 +9,6 @@ import {
   type ManualPositions,
 } from './graphComfortLayout';
 
-// ============================================================
-// 工具类型
-// ============================================================
 
 type RawApiNode = NonNullable<NonNullable<BackendAnalysisResult['graph_view_model']>['nodes']>[number];
 type RawApiEdge = NonNullable<NonNullable<BackendAnalysisResult['graph_view_model']>['edges']>[number];
@@ -19,9 +16,6 @@ type RawApiEdge = NonNullable<NonNullable<BackendAnalysisResult['graph_view_mode
 export type GraphLike = { nodes: GraphNode[]; edges: GraphEdge[] };
 export type PositionMap = Record<string, { x: number; y: number }>;
 
-// ============================================================
-// 布局常量
-// ============================================================
 
 const LAYOUT = {
   startX: 80,
@@ -33,9 +27,6 @@ const LAYOUT = {
   tableGroupThreshold: 8,
 };
 
-// ============================================================
-// 辅助函数
-// ============================================================
 
 function rawNodeType(node: RawApiNode): string {
   return node.node_type || node.type || '';
@@ -101,9 +92,6 @@ export function nodeBox(type: GraphNode['type']) {
   return { width: box.width, height: box.height };
 }
 
-// ============================================================
-// P0-1: ID归一化 —— 保留不变
-// ============================================================
 
 function buildNodeRefMap(apiNodes: RawApiNode[]) {
   const refToEntity = new Map<string, string>();
@@ -146,6 +134,10 @@ export function normalizeBackendGraph(result: BackendAnalysisResult): {
       tag: tagForNodeType(rawType),
       x: node.position?.x ?? node.x ?? 0,
       y: node.position?.y ?? node.y ?? 0,
+      rank: typeof node.rank === 'number' ? node.rank : undefined,
+      lane: typeof node.lane === 'string' ? node.lane : undefined,
+      semanticRole: typeof node.semantic_role === 'string' ? node.semantic_role : undefined,
+      orderInRank: typeof node.order_in_rank === 'number' ? node.order_in_rank : undefined,
     };
   });
 
@@ -163,6 +155,8 @@ export function normalizeBackendGraph(result: BackendAnalysisResult): {
       target,
       type: normalizeEdgeType(edge.edge_type || edge.type),
       mapping: edge.mapping || edge.id || `${source}->${target}`,
+      sourcePortOrder: typeof edge.source_port_order === 'number' ? edge.source_port_order : undefined,
+      targetPortOrder: typeof edge.target_port_order === 'number' ? edge.target_port_order : undefined,
     };
 
     if (nodeEntityIds.has(source) && nodeEntityIds.has(target)) {
@@ -175,9 +169,6 @@ export function normalizeBackendGraph(result: BackendAnalysisResult): {
   return { nodes, edges: validEdges, invalidEdges };
 }
 
-// ============================================================
-// P0-1: 补齐 terminal → output 边 —— 保留不变
-// ============================================================
 
 export function ensureTerminalOutputEdges(graph: GraphLike): GraphLike {
   const nodes = [...graph.nodes];
@@ -232,9 +223,6 @@ export function ensureTerminalOutputEdges(graph: GraphLike): GraphLike {
   return { nodes, edges };
 }
 
-// ============================================================
-// P0-4/P0-3: 分层 DAG 布局 + 碰撞修正 + output 专用对齐
-// ============================================================
 
 function nodeTypeRankSeed(node: GraphNode): number {
   if (node.type === 'table' || node.type === 'column') return 0;
@@ -295,7 +283,6 @@ function orderNodesWithinLevels(
   return levelMap;
 }
 
-/** ★ 仅对 Query Result 总节点做 medianY，不处理 output_field */
 function alignOutputNodes(nodes: GraphNode[], edges: GraphEdge[]) {
   const nodeById = new Map(nodes.map((n) => [n.entityId, n]));
 
@@ -311,7 +298,6 @@ function alignOutputNodes(nodes: GraphNode[], edges: GraphEdge[]) {
   }
 }
 
-/** ★ P0-4: rank内碰撞修正 */
 function resolveNodeCollisionsByRank(nodes: GraphNode[], minGap = LAYOUT.nodeGap) {
   const rankGroups = new Map<number, GraphNode[]>();
 
@@ -346,17 +332,11 @@ export function layoutLayeredDag(graph: GraphLike): GraphLike {
   return { nodes: result.nodes, edges: result.edges };
 }
 
-// ============================================================
-// P0-2: 手动拖拽位置应用 —— 必须在布局之后执行
-// ============================================================
 
 export function applyManualPositions(graph: GraphLike, positions: PositionMap): GraphLike {
   return applyComfortManualPositions(graph, positions);
 }
 
-// ============================================================
-// P1-2: 多端口边路由 —— smooth Bézier 默认，orthogonal 可选
-// ============================================================
 
 function portOffset(index: number, count: number, gap = LAYOUT.portGap) {
   if (count <= 1) return 0;
@@ -382,9 +362,6 @@ export function routeEdgePath(params: {
   return routeComfortEdgePath({ edge, sourceNode: s, targetNode: t, ports });
 }
 
-// ============================================================
-// 辅助：colToTables + searchItems
-// ============================================================
 
 function buildColToTablesByEdges(graph: GraphLike): Record<string, string[]> {
   const result: Record<string, string[]> = {};
@@ -411,7 +388,7 @@ function buildSearchItems(
         itemId: `search-output-${index}`, entityId: node.entityId, displayName: node.label,
         type: 'output' as const,
         sub: sources.length ? `from: ${sources.join(', ')}` : 'unknown source',
-        reason: sources.length ? 'lineage edge' : '无法确认字段来源',
+        reason: sources.length ? 'lineage edge' : '鏃犳硶纭瀛楁鏉ユ簮',
         confidence: (sources.length ? 'high' : result.status === 'partial' ? 'medium' : 'low') as 'high' | 'medium' | 'low',
         warning: !sources.length,
       };
@@ -424,9 +401,6 @@ function buildSearchItems(
   ];
 }
 
-// ============================================================
-// 编排入口
-// ============================================================
 
 export function analysisToGraph(result: BackendAnalysisResult): {
   graph: GraphLike;
@@ -442,9 +416,6 @@ export function analysisToGraph(result: BackendAnalysisResult): {
   return { graph: layouted, searchItems, colToTables, invalidEdges: normalized.invalidEdges };
 }
 
-// ============================================================
-// P1-1: table 视图 —— ancestor 过滤 + >8 表聚合节点
-// ============================================================
 
 function findAncestorsOfTarget(edges: GraphEdge[], targetId: string): Set<string> {
   const reverse = new Map<string, string[]>();
@@ -541,9 +512,6 @@ function visibleGroupedTableGraph(
   return applyManualPositions(layouted, positions);
 }
 
-// ============================================================
-// P1-2: subquery 视图 —— 过滤后布局 + 手动位置
-// ============================================================
 
 function visibleSubqueryGraph(base: GraphLike, positions: PositionMap): GraphLike {
   const allowedTypes = new Set<GraphNode['type']>(['table', 'cte', 'subquery', 'output']);
@@ -554,9 +522,6 @@ function visibleSubqueryGraph(base: GraphLike, positions: PositionMap): GraphLik
   return applyManualPositions(layouted, positions);
 }
 
-// ============================================================
-// P1-3: column 视图 —— output_field 右侧主轴 + source对齐
-// ============================================================
 
 function layoutColumnLineage(graph: GraphLike): GraphLike {
   const nodes = graph.nodes.map((n) => ({ ...n }));
@@ -617,18 +582,88 @@ function layoutColumnLineage(graph: GraphLike): GraphLike {
 }
 
 function visibleColumnGraph(base: GraphLike, positions: PositionMap): GraphLike {
-  const allowedTypes = new Set<GraphNode['type']>(['column', 'output_field', 'output', 'expression', 'unknown']);
   const hasOutputFields = base.nodes.some((n) => n.type === 'output_field');
-  const nodes = base.nodes.filter((n) => allowedTypes.has(n.type) && (n.type !== 'output' || hasOutputFields));
+  if (!hasOutputFields) return { nodes: [], edges: [] };
+
+  const baseNodeById = new Map(base.nodes.map((node) => [node.entityId, node]));
+  const visibleNodeById = new Map<string, GraphNode>();
+  const visibleEdges: GraphEdge[] = [];
+  const seenEdges = new Set<string>();
+
+  const addVisibleNode = (node: GraphNode) => {
+    if (!visibleNodeById.has(node.entityId)) visibleNodeById.set(node.entityId, { ...node });
+  };
+
+  const addVisibleEdge = (edge: GraphEdge) => {
+    const key = `${edge.source}->${edge.target}:${edge.type}`;
+    if (seenEdges.has(key)) return;
+    visibleEdges.push({ ...edge, id: edge.id || key });
+    seenEdges.add(key);
+  };
+
+  const tableNodeFromColumn = (columnId: string): GraphNode | null => {
+    if (!columnId.startsWith('physical_column:')) return null;
+    const sourceLabel = columnId.slice('physical_column:'.length);
+    const lastDot = sourceLabel.lastIndexOf('.');
+    if (lastDot <= 0) return null;
+    const tableName = sourceLabel.slice(0, lastDot);
+    const tableId = `physical_table:${tableName}`;
+    const existing = baseNodeById.get(tableId);
+    if (existing) return existing;
+    return {
+      id: tableId,
+      entityId: tableId,
+      type: 'table',
+      label: tableName.split('.').pop() || tableName,
+      tag: 'TBL',
+      x: 0,
+      y: 0,
+    };
+  };
+
+  base.nodes.forEach((node) => {
+    if (node.type === 'output_field' || node.type === 'output' || node.type === 'expression' || node.type === 'unknown') {
+      addVisibleNode(node);
+    }
+  });
+
+  base.edges.forEach((edge) => {
+    const target = baseNodeById.get(edge.target);
+    if (edge.type === 'projection' && target?.type === 'output_field') {
+      const source = baseNodeById.get(edge.source);
+      if (source?.type === 'column') {
+        const tableNode = tableNodeFromColumn(source.entityId);
+        if (!tableNode) return;
+        addVisibleNode(tableNode);
+        addVisibleNode(target);
+        addVisibleEdge({
+          ...edge,
+          id: `collapsed:${tableNode.entityId}->${target.entityId}:${edge.id}`,
+          source: tableNode.entityId,
+          target: target.entityId,
+        });
+        return;
+      }
+    }
+
+    if (edge.type === 'output') {
+      const source = baseNodeById.get(edge.source);
+      const output = baseNodeById.get(edge.target);
+      if (source?.type === 'output_field' && output?.type === 'output') {
+        addVisibleNode(source);
+        addVisibleNode(output);
+        addVisibleEdge(edge);
+      }
+    }
+  });
+
+  const nodes = Array.from(visibleNodeById.values());
   const ids = new Set(nodes.map((n) => n.entityId));
-  const edges = base.edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+  const edges = visibleEdges.filter((e) => ids.has(e.source) && ids.has(e.target));
   const layouted = layoutColumnLineage({ nodes, edges });
   return applyManualPositions(layouted, positions);
 }
 
-// ============================================================
-// P0-2: visibleGraph —— 先 layout 再 applyManualPositions
-// ============================================================
 
 export function visibleGraph(state: WorkbenchState): GraphLike {
   const base = state.backendGraph;
@@ -641,6 +676,5 @@ export function visibleGraph(state: WorkbenchState): GraphLike {
   if (mode === 'subquery') return visibleSubqueryGraph(base, positions);
   if (mode === 'column') return visibleColumnGraph(base, positions);
 
-  // semantics / expression / diagnostics / fallback — pass-through, no layout override
   return base;
 }

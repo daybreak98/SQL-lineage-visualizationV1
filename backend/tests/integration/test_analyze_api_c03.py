@@ -49,6 +49,34 @@ from dwd_order_di"""
     assert all(source in node_ids and target in node_ids for source, target in edges)
 
 
+def test_analyze_c03_graph_contains_layout_hints():
+    response = client.post(
+        "/api/sql/analyze",
+        json={
+            "sql": """
+select
+  order_no,
+  user_id as uid
+from dwd_order_di
+""",
+            "dialect": "spark",
+        },
+    )
+    data = response.json()
+
+    graph = data["graph_view_model"]
+    assert graph["layout_hint"]["algorithm"] == "semantic-layered-barycenter"
+
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert nodes["physical_table:dwd_order_di"]["rank"] == 0
+    assert nodes["output_column:order_no"]["rank"] == 4
+    assert nodes["query_result:final"]["rank"] == 5
+    assert nodes["output_column:order_no"]["position"]["x"] < nodes["query_result:final"]["position"]["x"]
+
+    edges = {edge["id"]: edge for edge in graph["edges"]}
+    assert edges["edge:output_column:order_no->query_result:final"]["source_port_order"] == 0
+
+
 def test_analyze_c03_alias_output_field_keeps_output_fields_and_graph():
     response = client.post("/api/sql/analyze", json={"sql": "select a as aa from t"})
     data = response.json()

@@ -1,0 +1,45 @@
+{
+  "case_id": "intl_ab_metric_layout",
+  "expected_ranks": {
+    "search_result": 3,
+    "order_result": 3,
+    "S2D": 4,
+    "S2O": 4,
+    "单UV收益": 4,
+    "订单ADR": 4,
+    "曝光与订单adr_gap": 4
+  },
+  "expected_output_groups": {
+    "search_result_dominant": [
+      "S2D",
+      "S2O",
+      "搜索点击率_pv",
+      "搜索预定率_pv",
+      "搜索无结果率",
+      "无库存流量占比",
+      "TOP1点击命中率_PV",
+      "TOP1预定命中率_PV",
+      "TOP3点击命中率_PV",
+      "TOP3预定命中率_PV",
+      "TOP5点击命中率_PV",
+      "TOP5预定命中率_PV",
+      "TOP10点击命中率_PV",
+      "TOP10预定命中率_PV",
+      "曝光ADR"
+    ],
+    "mixed": [
+      "单UV收益",
+      "曝光与订单adr_gap"
+    ],
+    "order_result_dominant": [
+      "订单ADR"
+    ]
+  },
+  "layout_policy": {
+    "direction": "LR",
+    "ranking": "semantic_fixed_rank",
+    "crossing_minimization": "weighted_barycenter_sweep",
+    "fallback": "median_for_large_or_shared_dependency_graphs",
+    "preserve_sql_order_within_group": true
+  }
+}

@@ -53,22 +53,50 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     const eid = state.selectedEntity;
     if (!eid || eid === 'out:group') return new Set<string>();
     const ids = new Set<string>();
+    // BFS up: find all upstream edges from selected entity
+    const reverse = new Map<string, string[]>();
+    const edgeByKey = new Map<string, string>();
     graph.edges.forEach(e => {
-      if (e.source === eid || e.target === eid) ids.add(e.id);
+      if (!reverse.has(e.target)) reverse.set(e.target, []);
+      reverse.get(e.target)!.push(e.source);
+      edgeByKey.set(`${e.source}->${e.target}`, e.id);
     });
+    const visited = new Set<string>([eid]);
+    const queue = [eid];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const src of reverse.get(cur) ?? []) {
+        const key = `${src}->${cur}`;
+        const edgeId = edgeByKey.get(key);
+        if (edgeId) ids.add(edgeId);
+        if (!visited.has(src)) {
+          visited.add(src);
+          queue.push(src);
+        }
+      }
+    }
     return ids;
   }, [state.selectedEntity, graph.edges]);
-  // Nodes connected to selected entity (or selected entity itself)
+  // All nodes reachable upstream from selected entity (BFS)
   const selectedNodeIds = useMemo(() => {
     const eid = state.selectedEntity;
     if (!eid || eid === 'out:group') return new Set<string>();
-    const ids = new Set<string>();
+    const ids = new Set<string>([eid]);
+    const reverse = new Map<string, string[]>();
     graph.edges.forEach(e => {
-      if (e.source === eid || e.target === eid) {
-        ids.add(e.source);
-        ids.add(e.target);
-      }
+      if (!reverse.has(e.target)) reverse.set(e.target, []);
+      reverse.get(e.target)!.push(e.source);
     });
+    const queue = [eid];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const src of reverse.get(cur) ?? []) {
+        if (!ids.has(src)) {
+          ids.add(src);
+          queue.push(src);
+        }
+      }
+    }
     return ids;
   }, [state.selectedEntity, graph.edges]);
   const hasActiveSelection = state.selectedEntity && state.selectedEntity !== 'out:group';

@@ -156,20 +156,23 @@ def _normalize_targets(
 # ── Masking ──
 
 def _mask_comments_and_strings(sql: str) -> Tuple[str, List[Optional[int]]]:
-    length = sum(1 for _ in sql)
-    mask = bytearray(sql, "utf-8")
+    length = len(sql)
+    chars = list(sql)  # character-level, safe for multi-byte
     offset_map: List[Optional[int]] = list(range(length))
 
     def replace_with_spaces(start: int, end: int) -> None:
         for _i in range(start, min(end, length)):
-            mask[_i] = 0x20
+            chars[_i] = " "
             offset_map[_i] = None
 
+    # Multi-line comments /* ... */
     for m in re.finditer(r"/\*[\s\S]*?\*/", sql):
         replace_with_spaces(m.start(), m.end())
+    # Single-line comments -- ...
     for m in re.finditer(r"--[^\n]*", sql):
         replace_with_spaces(m.start(), m.end())
 
+    # Single-quoted strings
     in_string = False
     string_start = 0
     i = 0
@@ -185,7 +188,7 @@ def _mask_comments_and_strings(sql: str) -> Tuple[str, List[Optional[int]]]:
         else:
             if ch == "'":
                 if i + 1 < length and sql[i + 1] == "'":
-                    i += 1
+                    i += 1  # escaped quote
                 else:
                     replace_with_spaces(string_start, i + 1)
                     in_string = False
@@ -193,7 +196,7 @@ def _mask_comments_and_strings(sql: str) -> Tuple[str, List[Optional[int]]]:
     if in_string:
         replace_with_spaces(string_start, length)
 
-    return mask.decode("utf-8"), offset_map
+    return "".join(chars), offset_map
 
 
 # ── CTE extraction ──

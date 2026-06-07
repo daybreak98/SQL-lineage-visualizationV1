@@ -14,16 +14,23 @@ group by country_name"""
     response = client.post("/api/sql/analyze", json={"sql": sql, "dialect": "spark"})
     data = response.json()
 
-    assert data["status"] == "partial"
+    assert data["status"] == "success"
     assert len(data["output_fields"]) == 2
-    assert any(
-        diagnostic["code"] == "UNSUPPORTED_COMPLEX_QUERY"
-        for diagnostic in data["diagnostics_report"]["diagnostics"]
-    )
+    assert data["diagnostics_report"]["diagnostics"] == []
 
     names = [f["name"] for f in data["output_fields"]]
     assert "country_name" in names
     assert "order_cnt" in names
+
+    edges = {
+        (edge["source"], edge["target"])
+        for edge in data["graph_view_model"]["edges"]
+        if edge["edge_type"] == "column_lineage"
+    }
+    assert edges == {
+        ("physical_column:dwd_order_di.country_name", "output_column:country_name"),
+        ("physical_column:dwd_order_di.order_no", "output_column:order_cnt"),
+    }
 
 
 def test_simple_select_output_field():

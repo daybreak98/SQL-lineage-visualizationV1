@@ -346,7 +346,9 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('t.a', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('t', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.queryByText('t.a', { selector: '.title' })).not.toBeInTheDocument();
+      expect(screen.getByText('a', { selector: '.title' })).toBeInTheDocument();
       expect(screen.getByText('Query Result', { selector: '.title' })).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
@@ -394,8 +396,12 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('dim_user_df.country_name', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('dwd_order_di.order_no', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('dim_user_df', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('dwd_order_di', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.queryByText('dim_user_df.country_name', { selector: '.title' })).not.toBeInTheDocument();
+      expect(screen.queryByText('dwd_order_di.order_no', { selector: '.title' })).not.toBeInTheDocument();
+      expect(screen.getByText('country_name', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('order_no', { selector: '.title' })).toBeInTheDocument();
       expect(screen.getByText('Query Result', { selector: '.title' })).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });

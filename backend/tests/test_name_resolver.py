@@ -136,12 +136,26 @@ def test_unqualified_column_in_join_ambiguous():
     assert result.diagnostics[0].code == diag_codes.AMBIGUOUS_COLUMN
 
 
-def test_complex_expression_skipped_with_diagnostic():
-    result = resolve_column_lineage_names("select count(a) as cnt from t")
+def test_complex_expression_degrades_to_source_column_dependencies():
+    result = resolve_column_lineage_names(
+        "select "
+        "sum(order_amount) as gmv, "
+        "count(distinct order_no) as order_cnt, "
+        "sum(order_amount) / count(distinct order_no) as adr "
+        "from dwd_order_di"
+    )
 
-    assert result.status == "partial"
-    assert result.lineages == []
-    assert any(d.code == diag_codes.UNSUPPORTED_COMPLEX_QUERY for d in result.diagnostics)
+    assert result.status == "success"
+    assert result.diagnostics == []
+    assert [
+        (lineage.source_label, lineage.output_column)
+        for lineage in result.lineages
+    ] == [
+        ("dwd_order_di.order_amount", "gmv"),
+        ("dwd_order_di.order_no", "order_cnt"),
+        ("dwd_order_di.order_amount", "adr"),
+        ("dwd_order_di.order_no", "adr"),
+    ]
 
 
 def test_graph_builder_from_name_resolver():

@@ -61,6 +61,10 @@ export interface GraphNode {
   y: number;
   pinned?: boolean;
   ordinal?: number;
+  rank?: number;
+  lane?: string;
+  semanticRole?: string;
+  orderInRank?: number;
 }
 
 export interface GraphEdge {
@@ -70,6 +74,8 @@ export interface GraphEdge {
   type: 'table' | 'cte' | 'subq' | 'output' | 'expr' | 'join' | 'projection' | 'alias' | 'unknown';
   mapping?: string;
   synthetic?: boolean;
+  sourcePortOrder?: number;
+  targetPortOrder?: number;
 }
 
 export interface BackendDiagnostic {
@@ -127,6 +133,10 @@ export interface BackendAnalysisResult {
       x?: number;
       y?: number;
       data?: Record<string, unknown>;
+      rank?: number;
+      lane?: string;
+      semantic_role?: string;
+      order_in_rank?: number;
     }>;
     edges?: Array<{
       id?: string;
@@ -135,7 +145,10 @@ export interface BackendAnalysisResult {
       edge_type?: string;
       type?: string;
       mapping?: string;
+      source_port_order?: number;
+      target_port_order?: number;
     }>;
+    layout_hint?: Record<string, unknown>;
   };
   source_locations?: Record<string, SourceLocation>;
   semantics_report?: SemanticsReport;

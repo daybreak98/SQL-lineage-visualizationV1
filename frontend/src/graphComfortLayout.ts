@@ -1,12 +1,9 @@
-import type { GraphEdge, GraphNode } from './types/lineage';
+﻿import type { GraphEdge, GraphNode } from './types/lineage';
 import { COMFORT_CANVAS, getComfortNodeBox } from './nodeVisualTokens';
 
 export type ComfortGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 export type ManualPositions = Record<string, { x: number; y: number }>;
 
-// ============================================================
-// 手动位置应用：layout 之后执行
-// ============================================================
 
 export function applyManualPositions(graph: ComfortGraph, positions: ManualPositions): ComfortGraph {
   return {
@@ -19,9 +16,6 @@ export function applyManualPositions(graph: ComfortGraph, positions: ManualPosit
   };
 }
 
-// ============================================================
-// 邻接表构建
-// ============================================================
 
 function buildAdjacency(nodes: GraphNode[], edges: GraphEdge[]) {
   const ids = new Set(nodes.map((n) => n.entityId));
@@ -50,11 +44,13 @@ function nodeTypeRankSeed(node: GraphNode) {
   return 1;
 }
 
-// ============================================================
-// 最长路径层级计算（DFS + memo）
-// ============================================================
 
 function computeLongestPathLevels(nodes: GraphNode[], edges: GraphEdge[]) {
+  const hinted = nodes.filter((n) => typeof n.rank === 'number');
+  if (hinted.length === nodes.length && nodes.length > 0) {
+    return new Map(nodes.map((n) => [n.entityId, n.rank ?? 0]));
+  }
+
   const { incoming } = buildAdjacency(nodes, edges);
   const nodeById = new Map(nodes.map((n) => [n.entityId, n]));
   const levels = new Map<string, number>();
@@ -106,9 +102,6 @@ function groupByLevel(nodes: GraphNode[], levels: Map<string, number>) {
   return groups;
 }
 
-// ============================================================
-// barycenter 同层排序
-// ============================================================
 
 function orderWithinLevelsByBarycenter(
   nodes: GraphNode[],
@@ -116,6 +109,14 @@ function orderWithinLevelsByBarycenter(
   levels: Map<string, number>,
 ) {
   const groups = groupByLevel(nodes, levels);
+  const hasCompleteBackendOrder = nodes.every((n) => typeof n.orderInRank === 'number');
+  if (hasCompleteBackendOrder) {
+    for (const list of groups.values()) {
+      list.sort((a, b) => (a.orderInRank ?? 0) - (b.orderInRank ?? 0) || a.label.localeCompare(b.label));
+    }
+    return groups;
+  }
+
   const { incoming, outgoing } = buildAdjacency(nodes, edges);
   const maxLevel = Math.max(0, ...Array.from(groups.keys()));
 
@@ -158,9 +159,6 @@ function resolveCollisionsByLevel(groups: Map<number, GraphNode[]>, minGap: numb
   }
 }
 
-// ============================================================
-// ★ 舒适布局主入口
-// ============================================================
 
 export function layoutComfortGraph(graph: ComfortGraph, options?: {
   minWidth?: number;
@@ -207,9 +205,6 @@ export function layoutComfortGraph(graph: ComfortGraph, options?: {
   return { nodes, edges, width, height };
 }
 
-// ============================================================
-// ★ 舒适边路由：沿中心连线方向 + 柔和曲线
-// ============================================================
 
 function portOffset(index: number, count: number, gap = 8) {
   if (count <= 1) return 0;
@@ -230,11 +225,24 @@ export function buildComfortPortIndexes(graph: ComfortGraph) {
   }
 
   for (const list of outgoing.values()) {
-    list.sort((a, b) => (nodeById.get(a.target)?.y ?? 0) - (nodeById.get(b.target)?.y ?? 0));
-    list.forEach((_, i) => {});  // no-op, just keeping the template
+    list.sort((a, b) => {
+      const ao = a.sourcePortOrder;
+      const bo = b.sourcePortOrder;
+      if (typeof ao === 'number' && typeof bo === 'number') return ao - bo;
+      if (typeof ao === 'number') return -1;
+      if (typeof bo === 'number') return 1;
+      return (nodeById.get(a.target)?.y ?? 0) - (nodeById.get(b.target)?.y ?? 0);
+    });
   }
   for (const list of incoming.values()) {
-    list.sort((a, b) => (nodeById.get(a.source)?.y ?? 0) - (nodeById.get(b.source)?.y ?? 0));
+    list.sort((a, b) => {
+      const ao = a.targetPortOrder;
+      const bo = b.targetPortOrder;
+      if (typeof ao === 'number' && typeof bo === 'number') return ao - bo;
+      if (typeof ao === 'number') return -1;
+      if (typeof bo === 'number') return 1;
+      return (nodeById.get(a.source)?.y ?? 0) - (nodeById.get(b.source)?.y ?? 0);
+    });
   }
 
   const sourcePortIndex = new Map<string, number>();

@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.domain.graph_view_model import GraphEdge, GraphModel, GraphNode
 from app.services.cte_structure_service import CteStructureResult
 from app.domain.lineage_model import SimpleColumnLineage
+from app.services.graph_layout_planner import GraphLayoutPlanner
 from app.services.table_structure_service import TableStructureResult
 
 
@@ -97,7 +98,7 @@ def merge_graphs(view_mode: str, *graphs: GraphModel) -> GraphModel:
                 seen_edge_ids.add(edge.id)
 
     validate_graph(merged)
-    return merged
+    return GraphLayoutPlanner().plan_graph_model(merged)
 
 
 def _append_structure_graph(graph: GraphModel, nodes, edges) -> None:

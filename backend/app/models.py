@@ -67,6 +67,7 @@ class GraphViewModel(BaseModel):
     view_mode: str = "column"
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     edges: list[dict[str, Any]] = Field(default_factory=list)
+    layout_hint: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutputField(BaseModel):
