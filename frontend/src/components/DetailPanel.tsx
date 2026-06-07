@@ -91,7 +91,24 @@ export function DetailPanel({ state, setState, onLocateSql }: Props) {
     const diagnostics = diagnosticsForEntity(state, state.selectedEntity);
     body = <div className="cards">{diagnostics.length ? diagnostics.map((diagnostic) => <DiagnosticCard key={diagnostic.id} diagnostic={diagnostic} />) : <div className="card"><div className="card-title">Diagnostics</div>No backend diagnostics for the current entity.</div>}</div>;
   } else {
-    body = <div className="grid"><K label="result_grain" value="unavailable" /><K label="filters" value="unavailable" /><K label="semantic_layer" value="Semantics panel is not backed by current analysis data." /></div>;
+    const report = state.semanticsReport;
+    const metrics = report?.metrics ?? [];
+    const matched = metrics.find((m) => m.entity_id === state.selectedEntity || m.name === entity.name);
+    if (matched) {
+      body = (
+        <div className="grid">
+          <K label="name" value={matched.name} />
+          <K label="expression" value={<code className="bg-slate-100 px-1 rounded text-xs">{matched.expression}</code>} />
+          <K label="depends_on" value={matched.depends_on.length ? matched.depends_on.join(', ') : 'none'} />
+          <K label="aggregate_functions" value={matched.aggregate_functions.length ? matched.aggregate_functions.join(', ') : 'none'} />
+          <K label="operators" value={matched.operators.length ? matched.operators.join(', ') : 'none'} />
+          <K label="confidence" value={matched.confidence_level} />
+          <K label="description" value={matched.description} />
+        </div>
+      );
+    } else {
+      body = <div className="grid"><K label="metrics" value={metrics.length ? `${metrics.length} metrics available but none match this entity` : 'No expression metrics in analysis result.'} /><K label="hint" value="Enable include_expression_lineage in AnalysisOptions and use aggregate/function/CASE expressions in SELECT." /></div>;
+    }
   }
 
   const setTab = (tab: DetailTab) => setState((s) => ({ ...s, detailTab: tab }));

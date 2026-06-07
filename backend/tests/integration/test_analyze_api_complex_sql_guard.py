@@ -60,3 +60,20 @@ def test_partial_fallback_response_exposes_segments_and_parse_attempts():
     assert any(segment["segment_type"] == "cte_item" for segment in data["segments"])
     assert any(diagnostic["code"] == "PARTIAL_PARSE_RESULT" for diagnostic in data["diagnostics_report"]["diagnostics"])
 
+
+def test_preflight_error_response_is_not_high_success():
+    response = client.post(
+        "/api/sql/analyze",
+        json={
+            "sql": "select a from t",
+            "dialect": "spark",
+            "options": {"max_sql_chars": 5},
+        },
+    )
+    data = response.json()
+
+    assert data["status"] == "partial"
+    assert data["confidence_level"] != "high"
+    assert data["diagnostics_report"]["error_count"] == 1
+    assert any(diagnostic["code"] == "ANALYSIS_TIMEOUT" for diagnostic in data["diagnostics_report"]["diagnostics"])
+

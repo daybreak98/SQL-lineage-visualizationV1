@@ -151,6 +151,7 @@ def test_graph_builder_from_name_resolver():
 
     node_ids = {node["id"] for node in data["nodes"]}
     assert node_ids == {
+        "query_result:final",
         "physical_column:t.a",
         "output_column:a",
         "physical_column:t.b",
@@ -161,6 +162,8 @@ def test_graph_builder_from_name_resolver():
         for edge in data["edges"]
     } == {
         ("physical_column:t.a", "output_column:a"),
+        ("output_column:a", "query_result:final"),
         ("physical_column:t.b", "output_column:bb"),
+        ("output_column:bb", "query_result:final"),
     }
     assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in data["edges"])

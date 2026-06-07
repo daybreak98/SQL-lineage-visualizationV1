@@ -1,6 +1,5 @@
 import sys
 from pathlib import Path
-import sqlite3
 
 import pytest
 
@@ -9,20 +8,17 @@ backend_root = Path(__file__).parent.parent
 if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
 
-from app.db.sqlite import DB_PATH, run_migrations
+from app.db import sqlite as sqlite_db
+
+TEST_DB_PATH = backend_root / ".pytest_cache" / "metadata_test.db"
+sqlite_db.DB_PATH = TEST_DB_PATH
 
 
 @pytest.fixture(autouse=True)
-def reset_metadata_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    run_migrations()
-    conn = sqlite3.connect(str(DB_PATH))
-    try:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("DELETE FROM column_metadata")
-        conn.execute("DELETE FROM table_metadata")
-        conn.execute("DELETE FROM metadata_imports")
-        conn.commit()
-    finally:
-        conn.close()
+def isolated_metadata_db():
+    sqlite_db.DB_PATH = TEST_DB_PATH
+    TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if TEST_DB_PATH.exists():
+        TEST_DB_PATH.unlink()
+    sqlite_db.run_migrations()
     yield

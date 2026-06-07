@@ -51,6 +51,7 @@ function canonicalEntityId(node: RawApiNode, index: number): string {
 
 function normalizeEdgeType(type?: string): GraphEdge['type'] {
   if (type === 'column_lineage') return 'projection';
+  if (type === 'output_column_to_result') return 'output';
   if (type === 'table_to_result') return 'table';
   if (type === 'table_to_cte') return 'table';
   if (type === 'cte_dependency') return 'cte';
@@ -560,6 +561,10 @@ function visibleSubqueryGraph(base: GraphLike, positions: PositionMap): GraphLik
 function layoutColumnLineage(graph: GraphLike): GraphLike {
   const nodes = graph.nodes.map((n) => ({ ...n }));
   const { edges } = graph;
+  const sourceX = LAYOUT.startX;
+  const expressionX = LAYOUT.startX + 170;
+  const outputFieldX = LAYOUT.startX + 290;
+  const resultX = outputFieldX + 320;
 
   const outputFields = nodes
     .filter((n) => n.type === 'output_field')
@@ -572,12 +577,22 @@ function layoutColumnLineage(graph: GraphLike): GraphLike {
 
   const outputIndex = new Map<string, number>();
   outputFields.forEach((node, index) => {
-    node.x = LAYOUT.startX + LAYOUT.rankGap * 2;
+    node.x = outputFieldX;
     node.y = LAYOUT.startY + index * LAYOUT.columnNodeGap;
     outputIndex.set(node.entityId, index);
   });
 
-  const sourceNodes = nodes.filter((n) => n.type !== 'output_field');
+  const resultNodes = nodes.filter((n) => n.type === 'output');
+  const outputYValues = outputFields.map((node) => node.y);
+  const resultY = outputYValues.length
+    ? outputYValues.reduce((sum, y) => sum + y, 0) / outputYValues.length
+    : LAYOUT.startY;
+  resultNodes.forEach((node) => {
+    node.x = resultX;
+    node.y = resultY;
+  });
+
+  const sourceNodes = nodes.filter((n) => n.type !== 'output_field' && n.type !== 'output');
   sourceNodes.forEach((source, sourceOrder) => {
     const targetIndexes = edges
       .filter((e) => e.source === source.entityId)
@@ -589,9 +604,9 @@ function layoutColumnLineage(graph: GraphLike): GraphLike {
       : sourceOrder;
 
     if (source.type === 'expression') {
-      source.x = LAYOUT.startX + LAYOUT.rankGap;
+      source.x = expressionX;
     } else {
-      source.x = LAYOUT.startX;
+      source.x = sourceX;
     }
 
     source.y = LAYOUT.startY + avgTargetIndex * LAYOUT.columnNodeGap;
@@ -602,8 +617,9 @@ function layoutColumnLineage(graph: GraphLike): GraphLike {
 }
 
 function visibleColumnGraph(base: GraphLike, positions: PositionMap): GraphLike {
-  const allowedTypes = new Set<GraphNode['type']>(['column', 'output_field', 'expression', 'unknown']);
-  const nodes = base.nodes.filter((n) => allowedTypes.has(n.type));
+  const allowedTypes = new Set<GraphNode['type']>(['column', 'output_field', 'output', 'expression', 'unknown']);
+  const hasOutputFields = base.nodes.some((n) => n.type === 'output_field');
+  const nodes = base.nodes.filter((n) => allowedTypes.has(n.type) && (n.type !== 'output' || hasOutputFields));
   const ids = new Set(nodes.map((n) => n.entityId));
   const edges = base.edges.filter((e) => ids.has(e.source) && ids.has(e.target));
   const layouted = layoutColumnLineage({ nodes, edges });

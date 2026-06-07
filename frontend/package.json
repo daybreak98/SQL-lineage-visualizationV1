@@ -4,6 +4,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "smoke:browser": "python e2e/lineage_browser_smoke.py",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

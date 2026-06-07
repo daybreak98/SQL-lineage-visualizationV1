@@ -93,7 +93,7 @@ def test_analyze_returns_schema_version():
         json={"sql": "select 1"},
     )
     data = response.json()
-    assert data["schema_version"] == "0.3.0-c05"
+    assert data["schema_version"] == "0.3.0-c09"
 
 
 def test_analyze_returns_analysis_id():

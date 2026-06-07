@@ -1,0 +1,38 @@
+INFO:     127.0.0.1:7330 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:7409 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:7478 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8110 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8111 - "GET /api/metadata/tables HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8113 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8115 - "GET /api/metadata/tables HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8272 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8274 - "GET /api/metadata/tables HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8276 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8278 - "GET /api/metadata/tables HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8283 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8292 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8403 - "GET /api/metadata/tables HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8404 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8407 - "GET /api/metadata/tables HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8408 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8416 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8421 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10786 - "POST /api/editor/hover HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10806 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10807 - "GET /api/metadata/tables HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:10810 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10811 - "GET /api/metadata/tables HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:10814 - "POST /api/editor/hover HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10816 - "POST /api/editor/hover HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10820 - "POST /api/sql/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10835 - "POST /api/editor/hover HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10881 - "POST /api/editor/hover HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10912 - "POST /api/sql/analyze HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:10926 - "POST /api/sql/analyze HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:10946 - "GET /api/metadata/tables HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:10948 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10950 - "GET /api/metadata/tables HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:10952 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10957 - "POST /api/sql/analyze HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:11005 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11005 - "POST /api/sql/analyze HTTP/1.1" 500 Internal Server Error

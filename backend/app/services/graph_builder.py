@@ -10,6 +10,17 @@ def build_column_lineage_graph(lineages: list[SimpleColumnLineage]) -> GraphMode
     graph = GraphModel(view_mode="column")
     seen_node_ids: set[str] = set()
     seen_edge_ids: set[str] = set()
+    result_id = "query_result:final"
+
+    _add_node_once(
+        graph,
+        seen_node_ids,
+        GraphNode(
+            id=result_id,
+            node_type="output",
+            label="Query Result",
+        ),
+    )
 
     for lineage in lineages:
         source_id = f"physical_column:{lineage.source_label}"
@@ -43,6 +54,16 @@ def build_column_lineage_graph(lineages: list[SimpleColumnLineage]) -> GraphMode
         if edge.id not in seen_edge_ids:
             graph.edges.append(edge)
             seen_edge_ids.add(edge.id)
+
+        result_edge = GraphEdge(
+            id=f"edge:{target_id}->{result_id}",
+            source=target_id,
+            target=result_id,
+            edge_type="output_column_to_result",
+        )
+        if result_edge.id not in seen_edge_ids:
+            graph.edges.append(result_edge)
+            seen_edge_ids.add(result_edge.id)
 
     validate_graph(graph)
     return graph
@@ -122,3 +143,75 @@ def _add_node_once(graph: GraphModel, seen_node_ids: set[str], node: GraphNode) 
         return
     graph.nodes.append(node)
     seen_node_ids.add(node.id)
+
+
+# ── C09 expression graph building ─────────────────────────
+
+def build_expression_graph(
+    metrics: list[dict],
+    existing_nodes: list[dict],
+    existing_edges: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    node_ids: set[str] = {n.get("id", "") for n in existing_nodes}
+    edge_ids: set[str] = {e.get("id", "") for e in existing_edges}
+    extra_nodes: list[dict] = []
+    extra_edges: list[dict] = []
+
+    for metric in metrics:
+        name = metric["name"]
+        expr_id = f"expression:{name}"
+        output_id = f"output_column:{name}"
+
+        if expr_id not in node_ids:
+            extra_nodes.append({
+                "id": expr_id,
+                "entity_id": expr_id,
+                "node_type": "expression",
+                "label": f"{name} expression",
+                "data": {
+                    "name": name,
+                    "expression": metric.get("expression"),
+                    "depends_on": metric.get("depends_on", []),
+                    "aggregate_functions": metric.get("aggregate_functions", []),
+                    "operators": metric.get("operators", []),
+                    "function_names": metric.get("function_names", []),
+                    "description": metric.get("description"),
+                    "confidence_level": metric.get("confidence_level", "high"),
+                },
+            })
+            node_ids.add(expr_id)
+
+        for dep in metric.get("depends_on", []):
+            source_id = f"physical_column:{dep}"
+            if source_id not in node_ids:
+                extra_nodes.append({
+                    "id": source_id,
+                    "entity_id": f"column:{dep}",
+                    "node_type": "physical_column",
+                    "label": dep,
+                })
+                node_ids.add(source_id)
+
+            edge_id = f"edge:{source_id}->{expr_id}:expression_dependency"
+            if edge_id not in edge_ids:
+                extra_edges.append({
+                    "id": edge_id,
+                    "source": source_id,
+                    "target": expr_id,
+                    "edge_type": "expression_dependency",
+                    "label": "depends",
+                })
+                edge_ids.add(edge_id)
+
+        edge_id = f"edge:{expr_id}->{output_id}:expression_to_output"
+        if edge_id not in edge_ids:
+            extra_edges.append({
+                "id": edge_id,
+                "source": expr_id,
+                "target": output_id,
+                "edge_type": "expression_to_output",
+                "label": "produces",
+            })
+            edge_ids.add(edge_id)
+
+    return extra_nodes, extra_edges

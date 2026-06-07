@@ -13,7 +13,6 @@ const VIEW_MODES: { mode: GraphViewMode; label: string; title: string }[] = [
   { mode: 'subquery', label: 'Subquery', title: 'Subquery/CTE structure view: tables -> subqueries -> Query Result' },
   { mode: 'table', label: 'Table', title: 'Table-level view: physical tables + Query Result' },
   { mode: 'column', label: 'Column', title: 'Column-level view: expanded field nodes' },
-  { mode: 'expression', label: 'Expr', title: 'Expression view: highlight expression nodes and edges' },
   { mode: 'semantics', label: 'Semantics', title: 'Semantics view: Filter/Join/Aggregate annotations' },
   { mode: 'diagnostics', label: 'Diag', title: 'Diagnostics view: highlight diagnostic nodes' },
 ];

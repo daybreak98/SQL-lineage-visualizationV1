@@ -180,6 +180,32 @@ describe('LineageCanvas', () => {
     expect(Number.isFinite(parseFloat(node.style.top))).toBe(true);
   });
 
+  it('shows output field edges into Query Result with readable spacing in column view', () => {
+    const state = baseState({
+      graphViewMode: 'column',
+      backendGraph: {
+        nodes: [
+          { id: 'physical_column:dwd_order_di.order_no', entityId: 'physical_column:dwd_order_di.order_no', type: 'column', label: 'dwd_order_di.order_no', x: 0, y: 0 },
+          { id: 'output_column:order_no', entityId: 'output_column:order_no', type: 'output_field', label: 'order_no', x: 0, y: 0 },
+          { id: 'query_result:final', entityId: 'query_result:final', type: 'output', label: 'Query Result', x: 0, y: 0 },
+        ],
+        edges: [
+          { id: 'edge:physical_column:dwd_order_di.order_no->output_column:order_no', source: 'physical_column:dwd_order_di.order_no', target: 'output_column:order_no', type: 'projection' },
+          { id: 'edge:output_column:order_no->query_result:final', source: 'output_column:order_no', target: 'query_result:final', type: 'output' },
+        ],
+      },
+    });
+    const setState = vi.fn();
+    const { container } = render(<LineageCanvas state={state} setState={setState} />);
+
+    const outputField = screen.getByText('order_no', { selector: '.title' }).closest('.node') as HTMLElement;
+    const queryResult = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
+    const outputEdge = container.querySelector('path.edge.output');
+
+    expect(outputEdge).toBeInTheDocument();
+    expect(parseFloat(queryResult.style.left) - parseFloat(outputField.style.left)).toBeGreaterThan(240);
+  });
+
   it('displays GraphRenderMode stats section', () => {
     const state = baseState();
     const setState = vi.fn();

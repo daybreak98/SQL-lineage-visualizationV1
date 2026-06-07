@@ -11,8 +11,8 @@ def test_analyze_c03_returns_column_graph_for_simple_select():
     data = response.json()
 
     assert response.status_code == 200
-    assert data["schema_version"] == "0.3.0-c05"
-    assert data["analysis_id"] == "analysis:c05"
+    assert data["schema_version"] == "0.3.0-c09"
+    assert data["analysis_id"] == "analysis:c09"
     assert data["status"] == "success"
 
     graph = data["graph_view_model"]
@@ -25,6 +25,7 @@ def test_analyze_c03_returns_column_graph_for_simple_select():
     edges = {(edge["source"], edge["target"], edge["edge_type"]) for edge in graph["edges"]}
     assert ("physical_table:t", "query_result:final", "table_to_result") in edges
     assert ("physical_column:t.a", "output_column:a", "column_lineage") in edges
+    assert ("output_column:a", "query_result:final", "output_column_to_result") in edges
 
 
 def test_analyze_c03_golden_case_single_table_lineage():
@@ -40,7 +41,9 @@ from dwd_order_di"""
     edges = {(edge["source"], edge["target"]) for edge in graph["edges"]}
     assert ("physical_table:dwd_order_di", "query_result:final") in edges
     assert ("physical_column:dwd_order_di.order_no", "output_column:order_no") in edges
+    assert ("output_column:order_no", "query_result:final") in edges
     assert ("physical_column:dwd_order_di.user_id", "output_column:uid") in edges
+    assert ("output_column:uid", "query_result:final") in edges
 
     node_ids = {node["id"] for node in graph["nodes"]}
     assert all(source in node_ids and target in node_ids for source, target in edges)
@@ -59,6 +62,7 @@ def test_analyze_c03_alias_output_field_keeps_output_fields_and_graph():
     }
     assert ("physical_table:t", "query_result:final") in edges
     assert ("physical_column:t.a", "output_column:aa") in edges
+    assert ("output_column:aa", "query_result:final") in edges
 
 
 def test_analyze_c03_unqualified_join_still_returns_partial_not_fake_success():

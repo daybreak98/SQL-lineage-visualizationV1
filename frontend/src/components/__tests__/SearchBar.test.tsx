@@ -22,6 +22,24 @@ const backendSearchItems: SearchItem[] = [
     reason: 'backend graph',
     confidence: 'high',
   },
+  {
+    itemId: 'search-cte-order-base',
+    entityId: 'cte:order_base',
+    displayName: 'order_base',
+    type: 'subquery',
+    sub: 'cte',
+    reason: 'backend graph',
+    confidence: 'high',
+  },
+  {
+    itemId: 'search-expression-case',
+    entityId: 'expression:valid_order_no',
+    displayName: 'valid_order_no',
+    type: 'expression',
+    sub: 'expression',
+    reason: 'backend graph',
+    confidence: 'medium',
+  },
 ];
 
 function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
@@ -176,6 +194,31 @@ describe('SearchBar', () => {
     expect(optionValues).toContain('source');
     expect(optionValues).toContain('cte');
     expect(optionValues).toContain('subquery');
-    expect(optionValues).toContain('expression');
   });
+
+  it('filters search results by selected source scope', () => {
+    const state = baseState({ scope: 'source' });
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
+
+    fireEvent.focus(screen.getByPlaceholderText(/Search field/i));
+
+    expect(screen.getByText('dwd_order_di')).toBeInTheDocument();
+    expect(screen.queryByText('order_cnt')).toBeNull();
+    expect(screen.queryByText('order_base')).toBeNull();
+  });
+
+  it('filters CTE scope by cte entity ids', () => {
+    const state = baseState({ scope: 'cte' });
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
+
+    fireEvent.focus(screen.getByPlaceholderText(/Search field/i));
+
+    expect(screen.getByText('order_base')).toBeInTheDocument();
+    expect(screen.queryByText('dwd_order_di')).toBeNull();
+    expect(screen.queryByText('valid_order_no')).toBeNull();
+  });
+
+  it.skip('filters search results by expression scope (expression scope removed)', () => {});
 });

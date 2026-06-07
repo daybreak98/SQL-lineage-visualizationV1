@@ -42,6 +42,7 @@ class ComplexSqlAnalyzer:
 
         stage_started = time.perf_counter()
         preflight_report = preflight.check(sql)
+        hard_preflight_error = any(diagnostic.severity == Severity.ERROR for diagnostic in preflight_report.diagnostics)
         diagnostics.extend(preflight_report.diagnostics)
         stage_statuses.append(self._stage_status(
             "preflight",
@@ -176,6 +177,14 @@ class ComplexSqlAnalyzer:
                 stage="analyze",
                 confidence=0.45,
             ))
+        elif hard_preflight_error:
+            diagnostics.append(Diagnostic(
+                code=diag_codes.LOW_CONFIDENCE_LINEAGE,
+                severity=Severity.WARNING,
+                message="Lineage confidence is reduced because preflight checks reported blocking risk.",
+                stage="analyze",
+                confidence=0.35,
+            ))
         elif unsupported_features:
             diagnostics.append(Diagnostic(
                 code=diag_codes.LOW_CONFIDENCE_LINEAGE,
@@ -185,7 +194,9 @@ class ComplexSqlAnalyzer:
                 confidence=0.55,
             ))
 
-        if selected_attempt is not None:
+        if selected_attempt is not None and hard_preflight_error:
+            status = AnalysisStatus.PARTIAL
+        elif selected_attempt is not None:
             status = AnalysisStatus.SUCCESS
         elif segment_parse_success:
             status = AnalysisStatus.PARTIAL
@@ -193,7 +204,13 @@ class ComplexSqlAnalyzer:
             status = AnalysisStatus.FAILED
 
         capabilities = self._capabilities(selected_attempt is not None, segment_parse_success, text_bundle, segments)
-        confidence = self._confidence(selected_attempt is not None, segment_parse_success, unsupported_features, segments)
+        confidence = self._confidence(
+            selected_attempt is not None,
+            segment_parse_success,
+            unsupported_features,
+            segments,
+            hard_preflight_error=hard_preflight_error,
+        )
 
         return ComplexSqlAnalysisResult(
             status=status,
@@ -361,9 +378,14 @@ class ComplexSqlAnalyzer:
         segment_parse_success: bool,
         unsupported_features: list[str],
         segments,
+        *,
+        hard_preflight_error: bool = False,
     ) -> dict[str, float]:
         parse_confidence = 0.95 if full_parse_success else (0.5 if segment_parse_success else 0.0)
-        if unsupported_features:
+        if hard_preflight_error:
+            parse_confidence = min(parse_confidence, 0.6)
+            lineage_confidence = 0.35
+        elif unsupported_features:
             lineage_confidence = 0.55 if full_parse_success else 0.35
         else:
             lineage_confidence = 0.85 if full_parse_success else (0.45 if segment_parse_success else 0.0)

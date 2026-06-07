@@ -27,4 +27,4 @@ def test_health_version_field_exists():
     response = client.get("/api/health")
     data = response.json()
     assert "version" in data
-    assert data["version"] == "0.3.0-c06"
+    assert data["version"] == "0.3.0-c09"

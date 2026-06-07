@@ -162,6 +162,8 @@ export default function App() {
           backendGraph: graph,
           backendSearchItems: searchItems,
           backendDiagnostics: diagnostics,
+          sourceLocations: result.source_locations ?? {},
+          semanticsReport: (result.semantics_report as any) ?? undefined,
           colToTables: colToTables,
           backendInvalidEdges: invalidEdges,
           backendMessage: `${result.analysis_id} · ${result.summary?.table_count ?? graph.nodes.length} nodes from backend`,

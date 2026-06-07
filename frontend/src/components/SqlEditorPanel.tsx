@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
 import type { editor as monacoEditor } from 'monaco-editor';
 import type { SourceLocation, WorkbenchState } from '../types/lineage';
@@ -32,14 +32,6 @@ export function SqlEditorPanel({ sql, setSql, state, dialect, sourceLocations, o
   const onMountedRef = useRef(onEditorMounted);
   onMountedRef.current = onEditorMounted;
 
-  // Register cursor → source_location listener when editor mounts
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const disposable = createCursorHandler(sourceLocsRef, onCursorRef)(editor);
-    return () => disposable.dispose();
-  }, []); // Runs once on mount; refs keep values fresh
-
   const dialectRef = useRef(dialect);
   dialectRef.current = dialect;
   const providersRegistered = useRef(false);
@@ -47,6 +39,9 @@ export function SqlEditorPanel({ sql, setSql, state, dialect, sourceLocations, o
   const handleMount = (editor: monacoEditor.IStandaloneCodeEditor, monaco: any) => {
     editorRef.current = editor;
     onMountedRef.current?.(editor);
+
+    // Register cursor → source_location listener (editor is now mounted)
+    createCursorHandler(sourceLocsRef, onCursorRef)(editor);
 
     if (!providersRegistered.current) {
       providersRegistered.current = true;

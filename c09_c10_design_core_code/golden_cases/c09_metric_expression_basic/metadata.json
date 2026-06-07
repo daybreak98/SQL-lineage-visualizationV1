@@ -1,0 +1,12 @@
+{
+  "tables": [
+    {
+      "schema_name": "default",
+      "table_name": "dwd_order_di",
+      "columns": [
+        {"name": "order_amount", "type": "decimal(18,2)", "comment": "订单金额"},
+        {"name": "order_no", "type": "string", "comment": "订单号"}
+      ]
+    }
+  ]
+}

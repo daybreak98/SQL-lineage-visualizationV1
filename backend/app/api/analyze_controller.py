@@ -10,10 +10,13 @@ from app.services.cte_structure_service import analyze_cte_structure
 from app.services.graph_builder import (
     build_column_lineage_graph,
     build_cte_structure_graph,
+    build_expression_graph,
     build_table_structure_graph,
     merge_graphs,
 )
 from app.services.name_resolver import resolve_column_lineage_names
+from app.services.expression_analyzer import ExpressionAnalyzer, metrics_to_semantics_report
+from app.services.source_location_service import build_source_locations
 from app.services.sql_parse_service import parse_sql
 from app.services.table_structure_service import analyze_table_structure
 
@@ -30,6 +33,8 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
     unsupported_features = list(parse_result.unsupported_features)
     status = parse_result.status
     confidence = dict(parse_result.confidence)
+    source_locations: dict[str, object] = {}
+    semantics_report_val: dict | None = None
 
     if parse_result.tree is not None and request.analysis_options.include_graph:
         tree = parse_result.tree
@@ -88,6 +93,29 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
                     }
                 )
 
+            # C09: expression analysis
+            if request.analysis_options.include_expression_lineage and parse_result.tree is not None:
+                analyzer = ExpressionAnalyzer(dialect=request.dialect)
+                metrics = analyzer.analyze_select(parse_result.tree)
+                if metrics:
+                    semantics_report_val = metrics_to_semantics_report(metrics)
+                    expr_nodes, expr_edges = build_expression_graph(
+                        metrics=[m.to_dict() for m in metrics],
+                        existing_nodes=graph_view_model.nodes,
+                        existing_edges=graph_view_model.edges,
+                    )
+                    for n in expr_nodes:
+                        graph_view_model.nodes.append(n)
+                    for e in expr_edges:
+                        graph_view_model.edges.append(e)
+
+        if request.analysis_options.include_source_location:
+            target_entities = _target_entities(graph_view_model)
+            source_location_result = build_source_locations(request.sql, target_entities=target_entities)
+            source_locations = source_location_result.locations
+            diagnostics.extend(source_location_result.diagnostics)
+            stage_statuses.extend(source_location_result.stage_statuses)
+
     confidence = _adjust_confidence(confidence, status, unsupported_features)
     confidence_level = _confidence_level_from_scores(confidence, status)
     diagnostics = _dedupe_diagnostics(diagnostics)
@@ -104,6 +132,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
         output_fields=parse_result.output_fields,
         unsupported_features=unsupported_features,
         graph_view_model=graph_view_model,
+        source_locations=source_locations,
         normalized_sql=parse_result.normalized_sql,
         analysis_sql=parse_result.analysis_sql,
         sql_text_bundle=parse_result.sql_text_bundle,
@@ -111,6 +140,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
         segments=parse_result.segments,
         parse_attempts=parse_result.parse_attempts,
         capabilities=parse_result.capabilities,
+        semantics_report=semantics_report_val,
         summary={
             "node_count": len(graph_view_model.nodes),
             "edge_count": len(graph_view_model.edges),
@@ -132,6 +162,7 @@ def _assemble_result(
     output_fields: list,
     unsupported_features: list[str] | None = None,
     graph_view_model: GraphViewModel | None = None,
+    source_locations: dict[str, object] | None = None,
     normalized_sql: str | None = None,
     analysis_sql: str | None = None,
     sql_text_bundle: dict[str, object] | None = None,
@@ -140,10 +171,11 @@ def _assemble_result(
     parse_attempts: list[dict[str, object]] | None = None,
     capabilities: dict[str, object] | None = None,
     summary: dict[str, int] | None = None,
+    semantics_report: dict | None = None,
 ) -> AnalysisResult:
-    return AnalysisResult(
-        schema_version="0.3.0-c05",
-        analysis_id="analysis:c05",
+    result = AnalysisResult(
+        schema_version="0.3.0-c09",
+        analysis_id="analysis:c09",
         status=status,
         confidence_level=confidence_level,
         confidence=confidence,
@@ -162,13 +194,16 @@ def _assemble_result(
         ),
         graph_view_model=graph_view_model or GraphViewModel(),
         output_fields=output_fields,
+        source_locations=source_locations or {},
         sql_text_bundle=sql_text_bundle or {},
         preflight_report=preflight_report or {},
         segments=segments or [],
         parse_attempts=parse_attempts or [],
         capabilities=capabilities or {},
         summary=summary or {},
+        semantics_report=semantics_report,
     )
+    return result
 
 
 def _looks_like_cte(sql: str, tree=None) -> bool:
@@ -244,4 +279,43 @@ def _dedupe_diagnostics(diagnostics: list) -> list:
         seen.add(key)
         result.append(diagnostic)
     return result
+
+
+def _output_column_names(graph_view_model: GraphViewModel, output_fields: list) -> list[str]:
+    names = [
+        str(node.get("label", ""))
+        for node in graph_view_model.nodes
+        if node.get("node_type") in {"output_column", "output_field"}
+    ]
+    if names:
+        return names
+    return [str(field.name) for field in output_fields if getattr(field, "name", "")]
+
+
+def _target_entities(graph_view_model: GraphViewModel) -> list[dict[str, str]]:
+    type_map = {
+        "output_column": "output_column",
+        "output_field": "output_column",
+        "physical_column": "output_column",
+        "table": "physical_table",
+        "physical_table": "physical_table",
+        "cte": "cte",
+        "subquery": "cte",
+    }
+    entities: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for node in graph_view_model.nodes:
+        ntype = str(node.get("node_type", ""))
+        entity_type = type_map.get(ntype)
+        if entity_type is None:
+            continue
+        label = str(node.get("label", "")).split(".")[-1]
+        if not label:
+            continue
+        entity_id = f"{entity_type}:{label}"
+        key = f"{entity_id}::{entity_type}"
+        if key not in seen:
+            seen.add(key)
+            entities.append({"entityId": entity_id, "entityType": entity_type})
+    return entities
 

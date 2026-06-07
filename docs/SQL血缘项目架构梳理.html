@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>SQL 血缘解析可视化 — 后端架构全览</title>
+<style>
+  @page { size: A4; margin: 20mm; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; font-size: 13px; line-height: 1.7; color: #1e293b; max-width: 900px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 24px; text-align: center; border-bottom: 3px solid #2563eb; padding-bottom: 12px; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: #64748b; font-size: 13px; margin-bottom: 30px; }
+  h2 { font-size: 18px; color: #2563eb; border-left: 4px solid #2563eb; padding-left: 10px; margin-top: 32px; }
+  h3 { font-size: 15px; color: #334155; margin-top: 24px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+  th { background: #1e40af; color: white; padding: 8px 10px; text-align: left; }
+  td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .dir { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; background: #f1f5f9; padding: 2px 6px; border-radius: 3px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; font-size: 11px; line-height: 1.5; overflow-x: auto; }
+  .flow { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 16px; margin: 12px 0; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.8; white-space: pre; }
+  .flow-indent1 { padding-left: 30px; }
+  .flow-indent2 { padding-left: 60px; }
+  .flow-indent3 { padding-left: 90px; }
+  .status-ok { color: #16a34a; font-weight: bold; }
+  .status-pend { color: #d97706; }
+</style>
+</head>
+<body>
+
+<h1>SQL 血缘解析可视化项目</h1>
+<p class="subtitle">后端架构全览 ｜ 版本 0.3.0-c07 ｜ 99 tests passed</p>
+
+<h2>一、目录结构与分层</h2>
+
+<table>
+<tr><th>层</th><th>目录</th><th>职责</th><th>禁止做的事</th></tr>
+<tr><td><b>Controller</b></td><td class="dir">api/</td><td>收 HTTP 请求、调 Service、返回响应</td><td>不写业务逻辑</td></tr>
+<tr><td><b>Service</b></td><td class="dir">services/</td><td>编排领域逻辑、调用 Adapter/Repository</td><td>不直接操作 SQL/HTTP</td></tr>
+<tr><td><b>Domain</b></td><td class="dir">domain/</td><td>纯数据结构定义，零外部依赖</td><td>不引任何第三方库</td></tr>
+<tr><td><b>Adapter</b></td><td class="dir">adapters/</td><td>封装第三方库，翻译为内部类型</td><td>不写业务规则</td></tr>
+<tr><td><b>Repository</b></td><td class="dir">repositories/</td><td>SQL 读写，数据库操作</td><td>不写业务判断</td></tr>
+<tr><td><b>Guard</b></td><td class="dir">complex_sql_guard/</td><td>防御性 SQL 解析引擎（独立模块）</td><td>不依赖 app 其他模块</td></tr>
+<tr><td><b>DB</b></td><td class="dir">db/</td><td>数据库连接 + 迁移脚本</td><td>—</td></tr>
+</table>
+
+<p><b>controller 层文件：</b></p>
+<table>
+<tr><th>文件</th><th>端点</th><th>功能</th></tr>
+<tr><td class="dir">health_controller.py</td><td>GET /api/health</td><td>健康检查</td></tr>
+<tr><td class="dir">analyze_controller.py</td><td>POST /api/sql/analyze</td><td>SQL 血缘分析（核心入口）</td></tr>
+<tr><td class="dir">metadata_controller.py</td><td>4 个端点</td><td>元数据导入/查询</td></tr>
+</table>
+
+<p><b>service 层文件：</b></p>
+<table>
+<tr><th>文件</th><th>功能</th></tr>
+<tr><td class="dir">sql_parse_service.py</td><td>解析入口，桥接 complex_sql_guard，生成 output_fields + diagnostics</td></tr>
+<tr><td class="dir">name_resolver.py</td><td>字段→表归属 + alias 解析 + metadata 字段验证/消歧 + star 委托</td></tr>
+<tr><td class="dir">star_expansion_service.py</td><td>AST 级 select * 展开（exp.Star / Column(this=Star)）</td></tr>
+<tr><td class="dir">table_structure_service.py</td><td>物理表→Query Result 结构边（table_to_result）</td></tr>
+<tr><td class="dir">cte_structure_service.py</td><td>CTE 层级依赖图（table_to_cte → cte_dependency → cte_to_result）</td></tr>
+<tr><td class="dir">graph_builder.py</td><td>图组装（build_*_graph）+ 合并（merge_graphs）+ 边校验（validate_graph）</td></tr>
+<tr><td class="dir">metadata_import_service.py</td><td>元数据 preview/commit 业务规则（重复版本跳过）</td></tr>
+</table>
+
+<p><b>complex_sql_guard 内部文件：</b></p>
+<table>
+<tr><th>文件</th><th>阶段</th><th>功能</th></tr>
+<tr><td class="dir">analyzer.py</td><td>主编排</td><td>6 阶段 pipeline 总调度，决定解析结果和置信度</td></tr>
+<tr><td class="dir">preflight.py</td><td>1. 预检</td><td>SQL 大小/复杂度/引号平衡/括号平衡/隐式字符检查</td></tr>
+<tr><td class="dir">shields.py</td><td>2. 净化</td><td>替换模板变量/字符串字面量/注释/hint/Freemarker 为占位符</td></tr>
+<tr><td class="dir">segmenter.py</td><td>3. 分句</td><td>按 WITH/SELECT/FROM/WHERE/JOIN 等子句切分</td></tr>
+<tr><td class="dir">parser_adapter.py</td><td>4/5. 解析</td><td>3 个候选项（原始/规范化/净化后）依次尝试；失败后按子句解析</td></tr>
+<tr><td class="dir">normalizer.py</td><td>辅助</td><td>换行符规范化 + 偏移映射（分析文本↔原始文本定位）</td></tr>
+<tr><td class="dir">dialect.py</td><td>辅助</td><td>各 SQL 方言的引号规则/函数注册表/UDTF 列表</td></tr>
+<tr><td class="dir">diagnostics.py</td><td>辅助</td><td>模块内诊断码常量（22 个）</td></tr>
+</table>
+
+<h2>二、血缘解析全流程</h2>
+
+<div class="flow">
+<pre style="background:transparent;color:#1e293b;padding:0;">
+POST /api/sql/analyze
+  │
+  ▼
+┌─ analyze_controller.py ──────────────────────────────────────┐
+│                                                               │
+│  1. parse_sql(sql, dialect)                                  │
+│     └─→ complex_sql_guard（6 阶段防御解析）                     │
+│         ├─ preflight:    大小/复杂度/引号/括号检查               │
+│         ├─ shields:      模板/字面量/注释 替换为占位符           │
+│         ├─ segmenter:    SQL 分句 (WITH/FROM/WHERE..)        │
+│         ├─ parser:       3 候选依次尝试解析                    │
+│         │   ├─ 原始 SQL                                      │
+│         │   ├─ 规范化 SQL                                    │
+│         │   └─ 净化后 SQL                                    │
+│         ├─ segment parse: 全量失败时按子句解析                  │
+│         └─ tree diagnostics: AST 走查 (UDF/lateral)          │
+│     └─→ 返回 tree + output_fields + diagnostics              │
+│                                                               │
+│  2. 判断 CTE / 非-CTE                                        │
+│                                                               │
+│  ┌── CTE 分支 (sql.startswith("with")) ──────────────────┐  │
+│  │ analyze_cte_structure(tree=tree)                      │  │
+│  │  → physical → cte → cte → result 层级图               │  │
+│  │ build_cte_structure_graph()                           │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                               │
+│  └── 非-CTE 分支 ────────────────────────────────────────┐  │
+│     _extract_source_table_names(tree)                   │  │
+│     _load_metadata(table_names) ← SQLite                │  │
+│                                                         │  │
+│     analyze_table_structure(tree=tree)                  │  │
+│      → physical_table → query_result 边                 │  │
+│                                                         │  │
+│     resolve_column_lineage_names(tree, metadata)        │  │
+│      │                                                  │  │
+│      ├─ 有 * + 有元数据                                   │  │
+│      │  └─ star_expansion_service 展开                   │  │
+│      │     └─ 查 metadata → 生成 lineage                 │  │
+│      │                                                  │  │
+│      ├─ 有限定字段 (u.country_name)                       │  │
+│      │  └─ alias_to_table 解析 → 归属物理表               │  │
+│      │                                                  │  │
+│      ├─ 无限定 + 单表 → 直接归属                          │  │
+│      │                                                  │  │
+│      ├─ 无限定 + 多表 + 元数据齐全                         │  │
+│      │  ├─ 仅 1 表有  → 自动归属 ✅                      │  │
+│      │  ├─ 多表有    → AMBIGUOUS_COLUMN ⚠               │  │
+│      │  └─ 都无      → UNKNOWN_COLUMN ❌                 │  │
+│      │                                                  │  │
+│      └─ 无限定 + 多表 + 部分元数据缺失                      │  │
+│         └─ AMBIGUOUS_COLUMN（不猜）⚠                     │  │
+│                                                         │  │
+│     graph_builder:                                       │  │
+│      merge_graphs("table",                               │  │
+│        table_structure_graph,                            │  │
+│        column_lineage_graph)                             │  │
+│      → validate_graph（边源宿校验）                        │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                               │
+│  3. 组装 AnalysisResult → JSON → 返回前端                      │
+└───────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<h2>三、各 Service 调用关系</h2>
+
+<div class="flow">
+<pre style="background:transparent;color:#1e293b;padding:0;">
+Controller
+  │
+  ├─ parse_sql(sql)
+  │    └── complex_sql_guard.analyze_complex_sql(sql)
+  │         ├─ PreflightChecker.check()
+  │         ├─ DirtySqlPreprocessor.preprocess()
+  │         ├─ SqlSegmenter.segment()
+  │         ├─ SqlglotParserAdapter.parse() × 3 candidates
+  │         └─ tree diagnostics (UDF/lateral walk)
+  │
+  ├─ analyze_cte_structure(tree)        ← CTE 路径
+  │    └─ 提取 WITH 子句 → cte → table 依赖边
+  │
+  ├─ analyze_table_structure(tree)       ← 非-CTE 路径
+  │    └─ _query_sources → table → result 边
+  │
+  ├─ resolve_column_lineage_names(tree, metadata)
+  │    ├─ _detect_unsupported(has_metadata=True/False)
+  │    ├─ _has_any_star → expand_star_items()
+  │    │    ├─ _detect_star()  (exp.Star / Column(this=Star))     
+  │    │    ├─ _expand_qualified_star()   (o.* → alias 解析)
+  │    │    └─ _expand_unqualified_star()  (* → 全部源表展开)
+  │    ├─ _simple_column_from_select_item()  (exp.Column / Alias)
+  │    ├─ alias → table 解析 (alias_to_table mapping)
+  │    ├─ metadata 字段验证: cols_for_table check
+  │    └─ 多表消歧: tables_without_meta → AMBIGUOUS / candidates → 自动归属
+  │
+  └─ graph_builder
+       ├─ build_column_lineage_graph(lineages)
+       ├─ build_table_structure_graph(structure)
+       ├─ build_cte_structure_graph(structure)
+       ├─ merge_graphs(view_mode, *graphs)
+       └─ validate_graph(graph)  ← 每条边 source/target 必存在
+</pre>
+</div>
+
+<h2>四、Data Flow（数据流动）</h2>
+
+<table>
+<tr><th>输入</th><th>产出</th><th>由谁消费</th></tr>
+<tr><td>原始 SQL 字符串</td><td>sqlglot AST (tree)</td><td>所有 Service</td></tr>
+<tr><td>AST (tree)</td><td>output_fields (OutputField[])</td><td>前端 SearchBar / 控制器</td></tr>
+<tr><td>AST + metadata</td><td>lineages (SimpleColumnLineage[])</td><td>graph_builder</td></tr>
+<tr><td>lineages</td><td>GraphModel (nodes + edges + view_mode)</td><td>前端 LineageCanvas</td></tr>
+<tr><td>metadata JSON</td><td>{table_name: [column_name]}</td><td>name_resolver</td></tr>
+<tr><td>graph_view_model</td><td>前端 React 画布渲染</td><td>用户</td></tr>
+</table>
+
+<h2>五、当前能力矩阵</h2>
+
+<table>
+<tr><th>轮次</th><th>能力</th><th>状态</th><th>核心 Service</th></tr>
+<tr><td>C00</td><td>FastAPI 健康检查</td><td class="status-ok">✅</td><td>health_controller</td></tr>
+<tr><td>C02</td><td>SQL 输出字段识别</td><td class="status-ok">✅</td><td>sql_parse_service + complex_sql_guard</td></tr>
+<tr><td>C03</td><td>单表字段血缘</td><td class="status-ok">✅</td><td>name_resolver</td></tr>
+<tr><td>C04</td><td>Join 别名归属</td><td class="status-ok">✅</td><td>name_resolver + table_structure_service</td></tr>
+<tr><td>C05</td><td>CTE 子查询结构依赖</td><td class="status-ok">✅</td><td>cte_structure_service</td></tr>
+<tr><td>C06</td><td>元数据 JSON 导入 SQLite</td><td class="status-ok">✅</td><td>metadata_import_service + metadata_repository</td></tr>
+<tr><td>C07</td><td>select * 展开 + unknown/ambiguous</td><td class="status-ok">✅</td><td>star_expansion_service + name_resolver</td></tr>
+<tr><td>★</td><td>防御性 SQL 解析引擎</td><td class="status-ok">✅</td><td>complex_sql_guard (6-stage pipeline)</td></tr>
+<tr><td>C08</td><td>SourceLocation 定位</td><td class="status-pend">⬜</td><td>—</td></tr>
+<tr><td>C09</td><td>表达式口径详情</td><td class="status-pend">⬜</td><td>—</td></tr>
+<tr><td>C10</td><td>Golden Case 回归冻结</td><td class="status-pend">⬜</td><td>—</td></tr>
+</table>
+
+<h2>六、测试覆盖</h2>
+
+<table>
+<tr><th>测试文件</th><th>用例数</th><th>覆盖范围</th></tr>
+<tr><td class="dir">test_health.py</td><td>4</td><td>C00 健康检查</td></tr>
+<tr><td class="dir">test_sql_parse_service.py</td><td>11</td><td>C02 输出字段解析</td></tr>
+<tr><td class="dir">test_name_resolver.py</td><td>14</td><td>C03/C04/C07 字段归属 + alias + metadata 验证</td></tr>
+<tr><td class="dir">test_table_structure_service.py</td><td>3</td><td>C04 表结构边</td></tr>
+<tr><td class="dir">test_cte_structure_service.py</td><td>4</td><td>C05 CTE 依赖图</td></tr>
+<tr><td class="dir">test_metadata_repository.py</td><td>5</td><td>C06 数据库 CRUD</td></tr>
+<tr><td class="dir">test_star_expansion_service.py</td><td>8</td><td>C07 select * 展开</td></tr>
+<tr><td class="dir">test_analyze_api_c01.py</td><td>10</td><td>C01/C02 API 集成</td></tr>
+<tr><td class="dir">test_analyze_api_c02.py</td><td>9</td><td>C02 Golden Case</td></tr>
+<tr><td class="dir">test_analyze_api_c03.py</td><td>6</td><td>C03 单表图集成</td></tr>
+<tr><td class="dir">test_analyze_api_c04.py</td><td>5</td><td>C04 Join 图集成</td></tr>
+<tr><td class="dir">test_analyze_api_c05.py</td><td>3</td><td>C05 CTE 图集成</td></tr>
+<tr><td class="dir">test_metadata_api_c06.py</td><td>9</td><td>C06 metadata API 集成</td></tr>
+<tr><td class="dir">test_analyze_api_c07.py</td><td>8</td><td>C07 star + diagnostic 集成</td></tr>
+<tr><td colspan="2" style="text-align:right;font-weight:bold;">总计:</td><td style="font-weight:bold;">99</td></tr>
+</table>
+
+<h2>七、核心诊断码汇总</h2>
+
+<table>
+<tr><th>诊断码</th><th>含义</th><th>级别</th></tr>
+<tr><td class="dir">SQL_PARSE_ERROR</td><td>SQL 解析失败</td><td>error</td></tr>
+<tr><td class="dir">UNKNOWN_COLUMN</td><td>字段不在任何已知表的元数据中</td><td>warning</td></tr>
+<tr><td class="dir">AMBIGUOUS_COLUMN</td><td>多表都有同名字段，且无法消歧</td><td>warning</td></tr>
+<tr><td class="dir">UNKNOWN_TABLE_ALIAS</td><td>表别名无法解析</td><td>warning</td></tr>
+<tr><td class="dir">SELECT_STAR_METADATA_REQUIRED</td><td>select * 需要元数据才能展开</td><td>warning</td></tr>
+<tr><td class="dir">METADATA_MISSING</td><td>表在 SQL 中存在但元数据缺失</td><td>warning</td></tr>
+<tr><td class="dir">UNSUPPORTED_COMPLEX_QUERY</td><td>复杂表达式暂不支持</td><td>warning</td></tr>
+<tr><td class="dir">UNSUPPORTED_SELECT_STAR</td><td>旧版 select * 不支持（已废弃）</td><td>warning</td></tr>
+</table>
+
+</body>
+</html>

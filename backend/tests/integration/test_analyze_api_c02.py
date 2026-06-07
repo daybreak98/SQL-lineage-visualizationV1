@@ -76,6 +76,7 @@ def test_graph_model_has_column_lineage_on_success():
     edges = {(edge["source"], edge["target"]) for edge in graph["edges"]}
     assert ("physical_table:t", "query_result:final") in edges
     assert ("physical_column:t.a", "output_column:a") in edges
+    assert ("output_column:a", "query_result:final") in edges
 
 
 def test_graph_model_empty_on_failure():
@@ -102,4 +103,4 @@ def test_analyze_column_graph_replaces_empty_c02_graph():
 
     assert data["status"] == "success"
     assert len(data["graph_view_model"]["nodes"]) == 4
-    assert len(data["graph_view_model"]["edges"]) == 2
+    assert len(data["graph_view_model"]["edges"]) == 3

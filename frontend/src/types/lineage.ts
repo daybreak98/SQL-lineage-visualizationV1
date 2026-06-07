@@ -137,7 +137,26 @@ export interface BackendAnalysisResult {
       mapping?: string;
     }>;
   };
+  source_locations?: Record<string, SourceLocation>;
+  semantics_report?: SemanticsReport;
   summary?: Record<string, number>;
+}
+
+export interface MetricSemantics {
+  name: string;
+  entity_id: string;
+  expression: string;
+  depends_on: string[];
+  aggregate_functions: string[];
+  operators: string[];
+  function_names: string[];
+  description: string;
+  evidence: Record<string, unknown>;
+  confidence_level: string;
+}
+
+export interface SemanticsReport {
+  metrics: MetricSemantics[];
 }
 
 export interface MetadataPayload {
@@ -213,6 +232,7 @@ export interface WorkbenchState {
   lastTransition?: string;
   positions: Record<string, { x: number; y: number }>;
   sourceLocations?: Record<string, SourceLocation>;
+  semanticsReport?: SemanticsReport;
   backendGraph?: { nodes: GraphNode[]; edges: GraphEdge[] };
   backendSearchItems?: SearchItem[];
   backendDiagnostics?: Diagnostic[];

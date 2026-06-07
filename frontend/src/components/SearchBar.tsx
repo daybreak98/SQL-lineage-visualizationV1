@@ -19,8 +19,11 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
     ? allItems.filter((item) => `${item.displayName} ${item.sub} ${item.reason}`.toLowerCase().includes(q))
     : defaultItems;
 
-  if (state.scope === 'output') {
-    items = defaultItems.filter((item) => !q || item.displayName.toLowerCase().includes(q));
+  if (state.scope !== 'all') {
+    const scopedItems = state.scope === 'cte'
+      ? items.filter((item) => item.entityId.startsWith('cte:'))
+      : items.filter((item) => item.type === state.scope);
+    items = scopedItems;
   }
 
   const pc = buildPathContext(state);
@@ -69,12 +72,12 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
         {state.query && <button className="btn h-[22px] px-1.5" onClick={() => setState((s) => ({ ...s, query: '' }))}>Clear</button>}
       </div>
       <select className="select h-8" disabled={!canSearch} value={state.scope} onChange={(event) => setState((s) => ({ ...s, scope: event.target.value }))}>
-        <option value="all">All</option><option value="output">Output</option><option value="source">Source</option><option value="cte">CTE</option><option value="subquery">Subquery</option><option value="expression">Expression</option>
+        <option value="all">All</option><option value="output">Output</option><option value="source">Source</option><option value="cte">CTE</option><option value="subquery">Subquery</option>
       </select>
       <button className={cx('output-capsule', pc.status === 'stale' && 'stale', pc.status === 'partial' && 'partial', pc.status === 'low_confidence' && 'low')} onClick={() => setState((s) => ({ ...s, query: '', scope: 'output' }))}>
         <span className={cx('dot', state.trustStatus !== 'trusted' && 'stale')} />
         <span className="name">{pc.display}</span>
-        <span className="meta">路 {pc.status === 'ready' ? `${pc.warnings}⚠` : pc.status === 'idle' ? 'none' : pc.status}</span>
+        <span className="meta">· {pc.status === 'ready' ? `${pc.warnings}⚠` : pc.status === 'idle' ? 'none' : pc.status}</span>
       </button>
       <span className={cx('pill', state.trustStatus === 'trusted' ? 'trusted' : 'stale')}>{state.trustStatus === 'stale' ? 'stale' : `${items.length} results`}</span>
 

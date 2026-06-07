@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,18 @@ class AnalyzeRequest(BaseModel):
     case_sensitive: bool = False
     analysis_options: AnalysisOptions = Field(default_factory=AnalysisOptions)
     options: dict[str, Any] = Field(default_factory=dict)
+
+
+class FormatSqlRequest(BaseModel):
+    sql: str
+    dialect: str = "spark"
+
+
+class FormatSqlResponse(BaseModel):
+    status: str = "success"
+    dialect: str = "spark"
+    formatted_sql: str | None = None
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
 
 
 # ─── 响应体的各个零件 ──────────────────────────────────────────────
@@ -62,6 +74,23 @@ class OutputField(BaseModel):
     display_name: str
     expression: str
     source_type: str = "unknown"  # unknown | expression | column
+
+
+class MetricSemantics(BaseModel):
+    name: str
+    entity_id: str = ""
+    expression: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    aggregate_functions: list[str] = Field(default_factory=list)
+    operators: list[str] = Field(default_factory=list)
+    function_names: list[str] = Field(default_factory=list)
+    description: str = ""
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    confidence_level: str = "high"
+
+
+class SemanticsReport(BaseModel):
+    metrics: list[MetricSemantics] = Field(default_factory=list)
 
 
 class StageStatus(BaseModel):
