@@ -1,6 +1,6 @@
-"""DerivedRelationSchema builder — builds CTE and inline subquery output column schemas.
+"""DerivedRelationSchema builder.
 
-Uses name_resolver + ExpressionDependencyExtractor to extract column→source mappings.
+Uses name_resolver + ExpressionDependencyExtractor to extract column-source mappings.
 Handles select * expansion for relations that already have schemas.
 """
 from dataclasses import dataclass, field
@@ -18,9 +18,13 @@ from app.services.name_resolver import resolve_column_lineage_names
 
 
 @dataclass
-class CTESelectNode:
-    cte_name: str
+class DerivedSelectNode:
+    relation_name: str
     select_node: exp.Select
+    relation_kind: str = "cte"
+
+
+CTESelectNode = DerivedSelectNode
 
 
 @dataclass
@@ -29,8 +33,8 @@ class BuildDerivedSchemasResult:
     diagnostics: List[LineageDiagnostic] = field(default_factory=list)
 
 
-def extract_cte_select_nodes(tree: Any) -> List[CTESelectNode]:
-    nodes: List[CTESelectNode] = []
+def extract_cte_select_nodes(tree: Any) -> List[DerivedSelectNode]:
+    nodes: List[DerivedSelectNode] = []
     with_expr = tree.args.get("with_") or tree.args.get("with")
     if with_expr is None:
         return nodes
@@ -40,32 +44,45 @@ def extract_cte_select_nodes(tree: Any) -> List[CTESelectNode]:
             continue
         inner_select = cte_expr.find(exp.Select)
         if inner_select is not None:
-            nodes.append(CTESelectNode(cte_name=name, select_node=inner_select))
+            nodes.append(DerivedSelectNode(
+                relation_name=name,
+                select_node=inner_select,
+                relation_kind="cte",
+            ))
     return nodes
+
+
+def build_derived_relation_schemas(
+    tree: Any, dialect: str = "spark",
+) -> BuildDerivedSchemasResult:
+    cte_nodes = extract_cte_select_nodes(tree)
+    schemas: Dict[str, DerivedRelationSchema] = {}
+    cte_names: Set[str] = {n.relation_name.lower().strip("`") for n in cte_nodes}
+
+    # Phase 1: Build CTE schemas in WITH order so earlier CTEs are visible later.
+    for cte_node in cte_nodes:
+        schema = _build_single_schema(
+            cte_node.select_node, cte_node.relation_name, "cte", cte_names, schemas)
+        schemas[schema.relation_key] = schema
+
+    # Phase 2: Build inline subquery schemas in the final SELECT and CTE bodies.
+    select_nodes = [node.select_node for node in cte_nodes]
+    outer_select = _outer_select(tree)
+    if outer_select is not None:
+        select_nodes.append(outer_select)
+    _build_inline_subquery_schemas(select_nodes, schemas, cte_names)
+
+    return BuildDerivedSchemasResult(schemas=schemas)
 
 
 def build_cte_schemas(
     tree: Any, dialect: str = "spark",
 ) -> BuildDerivedSchemasResult:
-    cte_nodes = extract_cte_select_nodes(tree)
-    schemas: Dict[str, DerivedRelationSchema] = {}
-    cte_names: Set[str] = {n.cte_name.lower().strip("`") for n in cte_nodes}
-
-    # Phase 1: Build CTE schemas in WITH order (earlier CTEs visible to later ones)
-    for cte_node in cte_nodes:
-        schema = _build_single_schema(
-            cte_node.select_node, cte_node.cte_name, "cte", cte_names, schemas)
-        schemas[schema.relation_key] = schema
-
-    # Phase 2: Build schemas for inline FROM/JOIN subqueries
-    # These reference CTEs already built in Phase 1
-    _build_inline_subquery_schemas(cte_nodes, schemas, cte_names)
-
-    return BuildDerivedSchemasResult(schemas=schemas)
+    return build_derived_relation_schemas(tree, dialect)
 
 
 def _build_inline_subquery_schemas(
-    cte_nodes: List[CTESelectNode],
+    select_nodes: List[exp.Select],
     schemas: Dict[str, DerivedRelationSchema],
     cte_names: Set[str],
     visited: Optional[Set[str]] = None,
@@ -78,8 +95,8 @@ def _build_inline_subquery_schemas(
 
     new_schemas: Dict[str, DerivedRelationSchema] = {}
 
-    for cte_node in cte_nodes:
-        for subquery, alias in _extract_from_subqueries(cte_node.select_node):
+    for select_node in select_nodes:
+        for subquery, alias in _extract_from_subqueries(select_node):
             key = alias.lower().strip("`")
             if key in schemas or key in new_schemas or key in visited:
                 continue
@@ -111,6 +128,16 @@ def _extract_from_subqueries(
             if alias and isinstance(inner, exp.Select):
                 pairs.append((inner, alias))
     return pairs
+
+
+def _outer_select(tree: Any) -> Optional[exp.Select]:
+    if isinstance(tree, exp.Select):
+        return tree
+    this = getattr(tree, "this", None)
+    if isinstance(this, exp.Select):
+        return this
+    found = tree.find(exp.Select) if tree is not None else None
+    return found if isinstance(found, exp.Select) else None
 
 
 def _build_single_schema(

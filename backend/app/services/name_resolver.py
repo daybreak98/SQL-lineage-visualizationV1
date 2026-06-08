@@ -283,7 +283,8 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
 
     status = "success" if not diagnostics else "partial"
     confidence_level = "high" if status == "success" else "unknown"
-    lineages = _resolve_subquery_lineages_to_physical(lineages, tree, dialect)
+    if not (context is not None and context.allow_subquery):
+        lineages = _resolve_subquery_lineages_to_physical(lineages, tree, dialect)
     return _result(
         started=started,
         status=status,
@@ -299,7 +300,13 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
 def _table_references(tree: exp.Expression, dialect: str,
                        is_cte_context: bool = False,
                        context: LineageResolveContext | None = None) -> list[TableReference]:
-    if is_cte_context or (context is not None and context.has_cte):
+    if (
+        is_cte_context
+        or (
+            context is not None
+            and (context.has_cte or context.allow_cte or context.allow_subquery)
+        )
+    ):
         cte_names = set(context.cte_names) if context else set()
         return _table_references_from_final_select(tree, dialect, cte_names)
     tables: list[TableReference] = []
@@ -330,6 +337,7 @@ def _extract_table_or_subquery(node, tables: list[TableReference], dialect: str,
         table_name = _table_name_without_alias(target, dialect)
         alias = target.alias or target.name
         if alias in cte_names or table_name.split(".")[-1] in cte_names:
+            tables.append(TableReference(table_name=table_name.split(".")[-1], alias=alias))
             return
         tables.append(TableReference(table_name=table_name, alias=alias))
     elif isinstance(target, exp.Subquery):

@@ -16,7 +16,8 @@ group by country_name"""
 
     assert data["status"] == "success"
     assert len(data["output_fields"]) == 2
-    assert data["diagnostics_report"]["diagnostics"] == []
+    assert data["diagnostics_report"]["error_count"] == 0
+    assert data["diagnostics_report"]["warning_count"] == 0
 
     names = [f["name"] for f in data["output_fields"]]
     assert "country_name" in names

@@ -16,7 +16,10 @@ from app.services.graph_builder import (
 from app.services.name_resolver import resolve_column_lineage_names
 from app.services.expression_analyzer import ExpressionAnalyzer, metrics_to_semantics_report
 from app.services.cte_column_rollup_service import CteColumnRollupService
-from app.services.derived_relation_schema_builder import build_cte_schemas
+from app.services.derived_relation_schema_builder import (
+    build_cte_schemas,
+    build_derived_relation_schemas,
+)
 from app.services.lineage_adapter import dependencies_to_simple, simple_to_dependency
 from app.services.query_structure_service import analyze_query_structure
 from app.services.source_location_service import build_source_locations
@@ -136,13 +139,20 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
 
     # 3. Load metadata only for physical tables
     metadata = _load_metadata(sorted(structure.physical_table_names))
+    schema_result = (
+        build_derived_relation_schemas(tree, request.dialect)
+        if structure.has_cte or structure.has_subquery
+        else None
+    )
+    if schema_result is not None and schema_result.schemas:
+        metadata.update(_derived_schema_metadata(schema_result.schemas))
 
     # 4. Build resolver context
     context = LineageResolveContext(
         cte_names=structure.cte_names,
         final_select_source_names=structure.final_select_source_names,
         physical_table_names=structure.physical_table_names,
-        resolve_scope="final_select" if structure.has_cte else "full_query",
+        resolve_scope="final_select" if (structure.has_cte or structure.has_subquery) else "full_query",
         allow_cte=structure.has_cte,
         allow_subquery=structure.has_subquery,
     )
@@ -177,14 +187,13 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
             graphs.append(build_cte_structure_graph(cte_structure))
 
     if lineage_result.lineages:
-        # CTE rollup: expand immediate lineage to root physical tables
-        if structure.has_cte:
-            schema_result = build_cte_schemas(tree, request.dialect)
+        # Derived rollup: expand immediate CTE/subquery lineage to root physical tables.
+        if structure.has_cte or structure.has_subquery:
+            if schema_result is None:
+                schema_result = build_cte_schemas(tree, request.dialect)
             if schema_result.schemas:
                 immediate_deps = [
-                    simple_to_dependency(
-                        lin, output_relation_name="final",
-                        source_relation_kind="cte" if lin.source_table in structure.cte_names else "table")
+                    _simple_to_rollup_dependency(lin, structure.cte_names)
                     for lin in lineage_result.lineages
                 ]
                 rollup_service = CteColumnRollupService(schema_result.schemas)
@@ -428,6 +437,39 @@ def _load_metadata(table_names: list[str]) -> dict[str, list[str]]:
         else:
             result[table_name] = []
     return result
+
+
+def _derived_schema_metadata(schemas: dict) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for schema in schemas.values():
+        column_names = [
+            dependency.output.column_name
+            for dependency in schema.output_columns.values()
+        ]
+        if schema.relation_kind == "subquery":
+            result[f"subquery:{schema.relation_name}"] = column_names
+        else:
+            result[schema.relation_name] = column_names
+    return result
+
+
+def _simple_to_rollup_dependency(lineage: SimpleColumnLineage, cte_names: set[str]):
+    source_table = lineage.source_table
+    source_kind = "table"
+    if source_table.startswith("subquery:"):
+        source_table = source_table[len("subquery:"):]
+        source_kind = "subquery"
+    elif source_table.lower().strip("`") in {name.lower().strip("`") for name in cte_names}:
+        source_kind = "cte"
+    return simple_to_dependency(
+        SimpleColumnLineage(
+            source_table=source_table,
+            source_column=lineage.source_column,
+            output_column=lineage.output_column,
+        ),
+        output_relation_name="final",
+        source_relation_kind=source_kind,
+    )
 
 
 def _dedupe_diagnostics(diagnostics: list) -> list:
