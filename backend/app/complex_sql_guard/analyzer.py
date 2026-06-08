@@ -5,6 +5,7 @@ import time
 
 from . import diagnostics as diag_codes
 from .dialect import DialectProfile, get_dialect_profile
+from .feature_tagger import detect_dialect_features
 from .models import (
     AnalysisStatus,
     ComplexSqlAnalysisResult,
@@ -13,8 +14,10 @@ from .models import (
     ParseStatus,
     Severity,
 )
+from .normalizer import OffsetLocator
 from .parser_adapter import ParserAdapter, SqlglotParserAdapter
 from .preflight import PreflightChecker, PreflightOptions
+from .script_cleaner import select_analysis_statement
 from .segmenter import SqlSegmenter
 from .shields import DirtySqlPreprocessor, ShieldOptions
 
@@ -52,7 +55,43 @@ class ComplexSqlAnalyzer:
         ))
 
         stage_started = time.perf_counter()
-        text_bundle, preprocess_diagnostics = preprocessor.preprocess(sql)
+        statement_selection = select_analysis_statement(sql)
+        diagnostics.extend(statement_selection.diagnostics)
+        stage_statuses.append(self._stage_status(
+            "statement_clean",
+            stage_started,
+            statement_selection.diagnostics,
+            "Statement cleaning and analyzable query selection completed.",
+        ))
+
+        stage_started = time.perf_counter()
+        selected_sql = statement_selection.analysis_sql or sql
+        feature_result = detect_dialect_features(
+            selected_sql,
+            original_sql=sql,
+            offset_shift=statement_selection.start_offset,
+        )
+        diagnostics.extend(feature_result.diagnostics)
+        unsupported_features.extend(feature_result.risk_features)
+        stage_statuses.append(self._stage_status(
+            "feature_detect",
+            stage_started,
+            feature_result.diagnostics,
+            "Dialect feature tagging completed for selected analysis SQL.",
+        ))
+
+        stage_started = time.perf_counter()
+        text_bundle, preprocess_diagnostics = preprocessor.preprocess(selected_sql)
+        text_bundle = self._rebase_text_bundle(
+            text_bundle,
+            original_sql=sql,
+            offset_shift=statement_selection.start_offset,
+        )
+        preprocess_diagnostics = self._rebase_diagnostics(
+            preprocess_diagnostics,
+            original_sql=sql,
+            offset_shift=statement_selection.start_offset,
+        )
         diagnostics.extend(preprocess_diagnostics)
         stage_statuses.append(self._stage_status(
             "preprocess",
@@ -86,10 +125,15 @@ class ComplexSqlAnalyzer:
         parse_attempts = []
         selected_attempt = None
         seen_targets: set[str] = set()
+        target_prefix = (
+            f"{statement_selection.selected_target}:"
+            if statement_selection.selected_target != "analysis_sql" or statement_selection.selected_kind != "full_script"
+            else ""
+        )
         parse_candidates = [
-            ("original_sql", text_bundle.original_sql),
-            ("normalized_sql", text_bundle.normalized_sql),
-            ("analysis_sql", text_bundle.analysis_sql),
+            (f"{target_prefix}original_sql", selected_sql),
+            (f"{target_prefix}normalized_sql", text_bundle.normalized_sql),
+            (f"{target_prefix}analysis_sql", text_bundle.analysis_sql),
         ]
 
         stage_started = time.perf_counter()
@@ -203,13 +247,22 @@ class ComplexSqlAnalyzer:
         else:
             status = AnalysisStatus.FAILED
 
-        capabilities = self._capabilities(selected_attempt is not None, segment_parse_success, text_bundle, segments)
+        capabilities = self._capabilities(
+            selected_attempt is not None,
+            segment_parse_success,
+            text_bundle,
+            segments,
+            statement_selection,
+            feature_result.features,
+            feature_result.risk_features,
+        )
         confidence = self._confidence(
             selected_attempt is not None,
             segment_parse_success,
             unsupported_features,
             segments,
             hard_preflight_error=hard_preflight_error,
+            feature_confidence_cap=feature_result.confidence_cap,
         )
 
         return ComplexSqlAnalysisResult(
@@ -224,7 +277,7 @@ class ComplexSqlAnalyzer:
             capabilities=capabilities,
             confidence=confidence,
             unsupported_features=sorted(set(unsupported_features)),
-            selected_target=selected_attempt.target if selected_attempt is not None else None,
+            selected_target=selected_attempt.target if selected_attempt is not None else statement_selection.selected_target,
             selected_tree=selected_attempt.tree if selected_attempt is not None else None,
         )
 
@@ -358,18 +411,34 @@ class ComplexSqlAnalyzer:
             ))
             unsupported_features.append(f"udf:{function_name}")
 
-    def _capabilities(self, full_parse_success: bool, segment_parse_success: bool, text_bundle, segments) -> dict[str, object]:
+    def _capabilities(
+        self,
+        full_parse_success: bool,
+        segment_parse_success: bool,
+        text_bundle,
+        segments,
+        statement_selection,
+        detected_features: dict[str, int],
+        risk_features: list[str],
+    ) -> dict[str, object]:
         return {
             "table_lineage": full_parse_success,
             "subquery_lineage": full_parse_success,
             "column_lineage": full_parse_success,
             "complex_sql_guard": True,
+            "statement_clean": True,
             "full_parse": full_parse_success,
             "segment_parse": segment_parse_success,
             "literal_shield": True,
             "template_shield": True,
             "placeholder_count": len(text_bundle.placeholders),
             "segment_count": len(segments),
+            "statement_count": statement_selection.statement_count,
+            "skipped_statement_count": statement_selection.skipped_count,
+            "selected_statement_kind": statement_selection.selected_kind,
+            "dialect_feature_tagging": True,
+            "dialect_features": detected_features,
+            "dialect_feature_risks": risk_features,
         }
 
     def _confidence(
@@ -380,6 +449,7 @@ class ComplexSqlAnalyzer:
         segments,
         *,
         hard_preflight_error: bool = False,
+        feature_confidence_cap: float | None = None,
     ) -> dict[str, float]:
         parse_confidence = 0.95 if full_parse_success else (0.5 if segment_parse_success else 0.0)
         if hard_preflight_error:
@@ -389,6 +459,8 @@ class ComplexSqlAnalyzer:
             lineage_confidence = 0.55 if full_parse_success else 0.35
         else:
             lineage_confidence = 0.85 if full_parse_success else (0.45 if segment_parse_success else 0.0)
+        if feature_confidence_cap is not None:
+            lineage_confidence = min(lineage_confidence, feature_confidence_cap)
         return {
             "parse": parse_confidence,
             "segment_parse": 0.8 if segment_parse_success else 0.0,
@@ -405,6 +477,66 @@ class ComplexSqlAnalyzer:
             seen.add(key)
             result.append(diagnostic)
         return result
+
+    def _rebase_text_bundle(self, text_bundle, *, original_sql: str, offset_shift: int):
+        if offset_shift <= 0 and text_bundle.original_sql == original_sql:
+            return text_bundle
+
+        locator = OffsetLocator(original_sql)
+        placeholders = []
+        for placeholder in text_bundle.placeholders:
+            rebased_location = self._rebase_location(
+                placeholder.location,
+                locator=locator,
+                offset_shift=offset_shift,
+            )
+            placeholders.append(placeholder.__class__(
+                placeholder=placeholder.placeholder,
+                kind=placeholder.kind,
+                raw_text=placeholder.raw_text,
+                location=rebased_location,
+            ))
+
+        offset_mapping = text_bundle.offset_mapping
+        rebased_mapping = offset_mapping.__class__(
+            original_length=len(original_sql),
+            normalized_to_original=[offset + offset_shift for offset in offset_mapping.normalized_to_original],
+            analysis_to_original=[offset + offset_shift for offset in offset_mapping.analysis_to_original],
+        ) if offset_mapping is not None else None
+
+        return text_bundle.__class__(
+            original_sql=original_sql,
+            normalized_sql=text_bundle.normalized_sql,
+            analysis_sql=text_bundle.analysis_sql,
+            placeholders=placeholders,
+            offset_mapping=rebased_mapping,
+        )
+
+    def _rebase_diagnostics(self, diagnostics: list[Diagnostic], *, original_sql: str, offset_shift: int) -> list[Diagnostic]:
+        if offset_shift <= 0:
+            return diagnostics
+
+        locator = OffsetLocator(original_sql)
+        return [
+            Diagnostic(
+                code=diagnostic.code,
+                severity=diagnostic.severity,
+                message=diagnostic.message,
+                stage=diagnostic.stage,
+                location=self._rebase_location(diagnostic.location, locator=locator, offset_shift=offset_shift),
+                confidence=diagnostic.confidence,
+                extra=diagnostic.extra,
+            )
+            for diagnostic in diagnostics
+        ]
+
+    def _rebase_location(self, location, *, locator: OffsetLocator, offset_shift: int):
+        if location is None:
+            return None
+        return locator.location(
+            location.start_offset + offset_shift,
+            location.end_offset + offset_shift,
+        )
 
 
 def analyze_complex_sql(

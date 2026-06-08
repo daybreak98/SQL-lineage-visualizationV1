@@ -16,10 +16,20 @@ def _case_ids() -> list[str]:
     return sorted(path.name for path in GOLDEN_CASES_ROOT.iterdir() if path.is_dir())
 
 
+def _read_sql(path: Path) -> str:
+    data = path.read_bytes()
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise UnicodeDecodeError("utf-8", data, 0, 1, f"Unable to decode SQL fixture: {path}")
+
+
 @pytest.mark.parametrize("case_id", _case_ids())
 def test_golden_cases(case_id: str):
     case_dir = GOLDEN_CASES_ROOT / case_id
-    sql = (case_dir / "input.sql").read_text(encoding="utf-8")
+    sql = _read_sql(case_dir / "input.sql")
     metadata = json.loads((case_dir / "metadata.json").read_text(encoding="utf-8"))
     expected_diagnostics = json.loads((case_dir / "expected.diagnostics.json").read_text(encoding="utf-8"))
     expected_segments = json.loads((case_dir / "expected.segments.json").read_text(encoding="utf-8"))
@@ -39,4 +49,3 @@ def test_golden_cases(case_id: str):
     segment_types = {segment.segment_type for segment in result.segments}
     for required_type in expected_segments.get("required_segment_types", []):
         assert required_type in segment_types
-

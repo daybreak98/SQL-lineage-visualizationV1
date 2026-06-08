@@ -1,0 +1,6 @@
+{
+  "allowed_status": ["success", "partial"],
+  "required_diagnostics": [
+    "TEMPLATE_SQL_DETECTED"
+  ]
+}
