@@ -283,6 +283,7 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
 
     status = "success" if not diagnostics else "partial"
     confidence_level = "high" if status == "success" else "unknown"
+    lineages = _resolve_subquery_lineages_to_physical(lineages, tree, dialect)
     return _result(
         started=started,
         status=status,
@@ -336,6 +337,44 @@ def _extract_table_or_subquery(node, tables: list[TableReference], dialect: str,
         if alias:
             tables.append(TableReference(table_name=f"subquery:{alias}", alias=alias))
 
+
+def _resolve_subquery_lineages_to_physical(
+    lineages: list[SimpleColumnLineage],
+    tree: exp.Expression | None,
+    dialect: str,
+) -> list[SimpleColumnLineage]:
+    if tree is None:
+        return lineages
+    subq_map: dict[str, str] = {}
+    for join in tree.args.get("joins") or []:
+        from_expr = tree.args.get("from_")
+        for expr in ([from_expr] if from_expr else []) + list(tree.args.get("joins") or []):
+            if expr is None:
+                continue
+            target = getattr(expr, "this", expr)
+            if isinstance(target, exp.Subquery):
+                alias = getattr(expr, "alias_or_name", None) or getattr(target, "alias_or_name", None)
+                if alias:
+                    tables = set()
+                    for t in target.find_all(exp.Table):
+                        parts = [p for p in [t.catalog, t.db, t.name] if p]
+                        name = ".".join(parts) if parts else t.name
+                        tables.add(name)
+                    if len(tables) == 1:
+                        subq_map[alias] = list(tables)[0]
+    resolved: list[SimpleColumnLineage] = []
+    for lineage in lineages:
+        st = lineage.source_table
+        if st.startswith("subquery:"):
+            subq_alias = st[len("subquery:"):]
+            if subq_alias in subq_map:
+                st = subq_map[subq_alias]
+        resolved.append(SimpleColumnLineage(
+            source_table=st,
+            source_column=lineage.source_column,
+            output_column=lineage.output_column,
+        ))
+    return resolved
 
 def _table_name_without_alias(table: exp.Table, dialect: str) -> str:
     parts = [part for part in [table.catalog, table.db, table.name] if part]
