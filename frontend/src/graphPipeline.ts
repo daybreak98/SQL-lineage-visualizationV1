@@ -410,10 +410,9 @@ export function analysisToGraph(result: BackendAnalysisResult): {
 } {
   const normalized = normalizeBackendGraph(result);
   const withOutput = ensureTerminalOutputEdges({ nodes: normalized.nodes, edges: normalized.edges });
-  const layouted = layoutLayeredDag(withOutput);
-  const colToTables = buildColToTablesByEdges(layouted);
-  const searchItems = buildSearchItems(result, layouted, colToTables);
-  return { graph: layouted, searchItems, colToTables, invalidEdges: normalized.invalidEdges };
+  const colToTables = buildColToTablesByEdges(withOutput);
+  const searchItems = buildSearchItems(result, withOutput, colToTables);
+  return { graph: withOutput, searchItems, colToTables, invalidEdges: normalized.invalidEdges };
 }
 
 

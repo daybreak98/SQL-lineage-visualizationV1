@@ -44,59 +44,75 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
 
     capabilities: dict[str, object] = dict(parse_result.capabilities)
 
-    if parse_result.tree is None or not request.analysis_options.include_graph:
-        if not request.analysis_options.include_graph:
-            return _assemble_result(
-                request=request, status=status, confidence_level=_confidence_level_from_scores(confidence, status),
-                confidence=confidence, elapsed_ms=parse_result.elapsed_ms,
-                stage_statuses=stage_statuses, diagnostics=diagnostics,
-                output_fields=parse_result.output_fields, unsupported_features=unsupported_features,
-                graph_view_model=graph_view_model, source_locations=source_locations,
-                capabilities=capabilities, semantics_report=semantics_report_val,
-                normalized_sql=parse_result.normalized_sql,
-                analysis_sql=parse_result.analysis_sql,
-                sql_text_bundle=parse_result.sql_text_bundle,
-                preflight_report=parse_result.preflight_report,
-                segments=parse_result.segments,
-                parse_attempts=parse_result.parse_attempts,
-            )
+    # 4. Try recovery pipeline — never return empty graph if structure facts exist
+    if parse_result.tree is None and request.analysis_options.include_graph:
         recovery = ParseRecoveryPipeline()
         recovery_result = recovery.recover_from_parse_result(parse_result)
         diagnostics.extend(recovery_result.diagnostics)
-        if recovery_result.structure_facts:
-            partial_engine = PartialLineageEngine()
-            ir = partial_engine.build_from_sql(
-                sql=getattr(parse_result, "normalized_sql", "") or request.sql,
-                expression_dependencies=recovery_result.expression_dependencies,
-                tree=recovery_result.tree,
-            )
-            table_structure = analyze_table_structure(
-                request.sql, request.dialect, tree=recovery_result.tree,
-                table_names=sorted(ir.table_names),
-            )
-            graphs = []
-            if table_structure.nodes:
-                diagnostics.extend(table_structure.diagnostics)
-                stage_statuses.extend(table_structure.stage_statuses)
-                unsupported_features.extend(table_structure.unsupported_features)
-                graphs.append(build_table_structure_graph(table_structure))
-            if ir.column_edges:
-                lineages = _convert_ir_edges_to_lineages(ir)
-                if lineages:
-                    graphs.append(build_column_lineage_graph(lineages))
-                    stage_statuses.append({
-                        "stage": "column_lineage_recovery", "status": "success", "elapsed_ms": 0,
-                        "diagnostic_codes": [], "message": "Heuristic column lineage extracted.",
-                    })
-            if graphs:
-                graph = merge_graphs("table", *graphs)
-                graph_view_model = GraphViewModel(**graph.to_dict())
-                stage_statuses.append({
-                    "stage": "graph_build", "status": "success", "elapsed_ms": 0,
-                    "diagnostic_codes": [], "message": "Partial graph built from structure recovery.",
-                })
-                status = "partial"
-                confidence["lineage"] = 0.4
+        if recovery_result.structure_facts or recovery_result.tree:
+            tree = recovery_result.tree
+            if tree is not None:
+                structure = analyze_query_structure(tree)
+                metadata = _load_metadata(sorted(structure.physical_table_names))
+                context = LineageResolveContext(
+                    cte_names=structure.cte_names,
+                    final_select_source_names=structure.final_select_source_names,
+                    physical_table_names=structure.physical_table_names,
+                    resolve_scope="final_select" if structure.has_cte else "full_query",
+                    allow_cte=structure.has_cte,
+                    allow_subquery=structure.has_subquery,
+                )
+                lineage_result = resolve_column_lineage_names(
+                    request.sql, request.dialect, tree=tree, metadata=metadata, context=context)
+                diagnostics.extend(lineage_result.diagnostics)
+                stage_statuses.extend(lineage_result.stage_statuses)
+                unsupported_features.extend(lineage_result.unsupported_features)
+                status = _merge_status(status, lineage_result.status)
+                graphs = _build_structure_graphs(request, tree, structure, lineage_result, diagnostics, stage_statuses, unsupported_features)
+                if graphs:
+                    merge_graph = merge_graphs("table", *graphs)
+                    graph_view_model = GraphViewModel(**merge_graph.to_dict())
+                    status = "partial"
+            else:
+                partial_engine = PartialLineageEngine()
+                ir = partial_engine.build_from_sql(
+                    sql=getattr(parse_result, "normalized_sql", "") or request.sql,
+                    expression_dependencies=recovery_result.expression_dependencies,
+                    tree=None,
+                )
+                table_structure = analyze_table_structure(
+                    request.sql, request.dialect, tree=None,
+                    table_names=sorted(ir.table_names),
+                )
+                if table_structure.nodes:
+                    diagnostics.extend(table_structure.diagnostics)
+                    stage_statuses.extend(table_structure.stage_statuses)
+                    graphs = [build_table_structure_graph(table_structure)]
+                    if ir.column_edges:
+                        lineages = _convert_ir_edges_to_lineages(ir)
+                        if lineages:
+                            graphs.append(build_column_lineage_graph(lineages))
+                    if graphs:
+                        merge_graph = merge_graphs("table", *graphs)
+                        graph_view_model = GraphViewModel(**merge_graph.to_dict())
+                        status = "partial"
+                        confidence["lineage"] = 0.4
+        return _assemble_result(
+            request=request, status=status, confidence_level=_confidence_level_from_scores(confidence, status),
+            confidence=confidence, elapsed_ms=parse_result.elapsed_ms,
+            stage_statuses=stage_statuses, diagnostics=diagnostics,
+            output_fields=parse_result.output_fields, unsupported_features=unsupported_features,
+            graph_view_model=graph_view_model, source_locations=source_locations,
+            capabilities=capabilities, semantics_report=semantics_report_val,
+            normalized_sql=parse_result.normalized_sql,
+            analysis_sql=parse_result.analysis_sql,
+            sql_text_bundle=parse_result.sql_text_bundle,
+            preflight_report=parse_result.preflight_report,
+            segments=parse_result.segments,
+            parse_attempts=parse_result.parse_attempts,
+        )
+
+    if not request.analysis_options.include_graph:
         return _assemble_result(
             request=request, status=status, confidence_level=_confidence_level_from_scores(confidence, status),
             confidence=confidence, elapsed_ms=parse_result.elapsed_ms,
@@ -254,6 +270,27 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
             "segment_count": int(parse_result.capabilities.get("segment_count", 0)),
         },
     )
+
+
+def _build_structure_graphs(request, tree, structure, lineage_result, diagnostics, stage_statuses, unsupported_features):
+    """Build structure graphs from query structure and lineage result."""
+    graphs = []
+    table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree)
+    if table_structure.nodes:
+        diagnostics.extend(table_structure.diagnostics)
+        stage_statuses.extend(table_structure.stage_statuses)
+        unsupported_features.extend(table_structure.unsupported_features)
+        graphs.append(build_table_structure_graph(table_structure))
+    if structure.has_cte:
+        from app.services.cte_structure_service import analyze_cte_structure
+        cte_structure = analyze_cte_structure(request.sql, request.dialect, tree=tree)
+        if cte_structure.nodes:
+            diagnostics.extend(cte_structure.diagnostics)
+            stage_statuses.extend(cte_structure.stage_statuses)
+            graphs.append(build_cte_structure_graph(cte_structure))
+    if lineage_result and lineage_result.lineages:
+        graphs.append(build_column_lineage_graph(lineage_result.lineages))
+    return graphs
 
 
 def _convert_ir_edges_to_lineages(ir) -> list[SimpleColumnLineage]:

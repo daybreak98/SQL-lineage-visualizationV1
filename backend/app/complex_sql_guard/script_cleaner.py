@@ -41,6 +41,59 @@ class ScriptSelection:
     diagnostics: list[Diagnostic] = field(default_factory=list)
 
 
+@dataclass
+class SkippedStatement:
+    statement_type: str
+    sql_snippet: str
+    start_offset: int
+    end_offset: int
+
+
+@dataclass
+class InsertTarget:
+    target_table: str
+    partition_spec: str | None = None
+    is_overwrite: bool = True
+
+
+@dataclass
+class CleanedSqlScript:
+    original_sql: str
+    analyzable_sql: str
+    skipped_statements: list[SkippedStatement] = field(default_factory=list)
+    insert_target: InsertTarget | None = None
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+
+
+def clean_sql_script(sql: str) -> CleanedSqlScript:
+    """前置于 complex_sql_guard 的脚本清洗入口。
+    拆分壳语句和可分析查询，输出统一的 CleanedSqlScript。
+    """
+    selection = select_analysis_statement(sql)
+    skipped: list[SkippedStatement] = []
+    insert_target = _extract_insert_target_from_sql(sql)
+
+    return CleanedSqlScript(
+        original_sql=sql,
+        analyzable_sql=selection.analysis_sql,
+        skipped_statements=skipped,
+        insert_target=insert_target,
+        diagnostics=list(selection.diagnostics),
+    )
+
+
+def _extract_insert_target_from_sql(sql: str) -> InsertTarget | None:
+    m = re.search(r"(?ims)\binsert\s+(overwrite|into)\s+(?:table\s+)?(?P<table>(?:`[^`]+`|[A-Za-z_][\w]*)(?:\.(?:`[^`]+`|[A-Za-z_][\w]*)){0,2})", sql)
+    if m is None:
+        return None
+    is_overwrite = m.group(1).lower() == "overwrite"
+    partition_spec = None
+    pm = _PARTITION_RE.search(sql, pos=m.end())
+    if pm is not None:
+        partition_spec = sql[pm.start():pm.end()]
+    return InsertTarget(target_table=m.group("table"), partition_spec=partition_spec, is_overwrite=is_overwrite)
+
+
 def select_analysis_statement(sql: str) -> ScriptSelection:
     statements = _split_statements(sql)
     classified = [_classify_statement(statement) for statement in statements]

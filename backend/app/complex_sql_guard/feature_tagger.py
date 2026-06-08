@@ -8,9 +8,12 @@ from .models import Diagnostic, Severity
 from .normalizer import OffsetLocator
 
 
-@dataclass(frozen=True)
+@dataclass
 class FeatureDetectionResult:
     features: dict[str, int] = field(default_factory=dict)
+    supported_features: list[str] = field(default_factory=list)
+    requires_handlers: list[str] = field(default_factory=list)
+    unsupported_features: list[str] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     risk_features: list[str] = field(default_factory=list)
     confidence_cap: float | None = None
@@ -60,6 +63,20 @@ _RISK_FEATURES = {
     "chinese_backtick_alias": 0.78,
 }
 
+_FEATURE_CLASSIFICATION = {
+    "count_distinct": "supported",
+    "case_when": "supported",
+    "chinese_backtick_alias": "supported",
+    "group_by_ordinal": "requires_handler",
+    "json_func": "requires_handler",
+    "map_access": "requires_handler",
+    "lateral_view": "requires_handler",
+    "dynamic_sql": "unsupported",
+    "recursive_cte": "unsupported",
+    "unresolved_macro": "unsupported",
+    "severe_syntax_damage": "unsupported",
+}
+
 
 def detect_dialect_features(
     sql: str,
@@ -72,6 +89,9 @@ def detect_dialect_features(
     features: dict[str, int] = {}
     diagnostics: list[Diagnostic] = []
     risk_features: list[str] = []
+    supported: list[str] = []
+    requires_handler: list[str] = []
+    unsupported: list[str] = []
     confidence_cap: float | None = None
 
     for feature_name, regex, code, message in _FEATURE_SPECS:
@@ -79,6 +99,15 @@ def detect_dialect_features(
         if not matches:
             continue
         features[feature_name] = len(matches)
+
+        classification = _FEATURE_CLASSIFICATION.get(feature_name, "unsupported")
+        if classification == "supported":
+            supported.append(feature_name)
+        elif classification == "requires_handler":
+            requires_handler.append(feature_name)
+        else:
+            unsupported.append(feature_name)
+
         if feature_name in _RISK_FEATURES:
             risk_features.append(feature_name)
             cap = _RISK_FEATURES[feature_name]
@@ -100,6 +129,9 @@ def detect_dialect_features(
 
     return FeatureDetectionResult(
         features=features,
+        supported_features=supported,
+        requires_handlers=requires_handler,
+        unsupported_features=unsupported,
         diagnostics=diagnostics,
         risk_features=sorted(set(risk_features)),
         confidence_cap=confidence_cap,

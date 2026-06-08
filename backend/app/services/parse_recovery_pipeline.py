@@ -12,13 +12,21 @@ class ParseRecoveryResult:
     sql: str
     tree: Any = None
     full_ast_available: bool = False
+    best_ast_source: str = "none"
+    parse_attempts: list[dict] = field(default_factory=list)
+    fragment_asts: list[dict] = field(default_factory=list)
     structure_facts: list[dict] = field(default_factory=list)
     expression_dependencies: list = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    confidence: dict[str, float] = field(default_factory=dict)
 
     @property
     def can_build_graph(self) -> bool:
         return self.full_ast_available or bool(self.structure_facts)
+
+    @property
+    def has_any_content(self) -> bool:
+        return self.can_build_graph or bool(self.expression_dependencies)
 
 
 class ParseRecoveryPipeline:
