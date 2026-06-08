@@ -225,6 +225,11 @@ def _classify_statement(statement: ScriptStatement) -> ScriptStatement:
 
 def _candidate_from_statement(statement: ScriptStatement) -> ScriptSelection | None:
     if statement.statement_type == "query":
+        insert_m = re.search(r"(?ims)\binsert\s+(overwrite|into)\b", statement.sql)
+        if insert_m is not None:
+            extracted = _extract_insert_source(statement)
+            if extracted is not None and extracted.analysis_sql:
+                return extracted
         return ScriptSelection(
             analysis_sql=statement.sql,
             start_offset=statement.start_offset,
@@ -245,10 +250,9 @@ def _candidate_from_statement(statement: ScriptStatement) -> ScriptSelection | N
 
 
 def _extract_insert_source(statement: ScriptStatement) -> ScriptSelection | None:
-    match = _INSERT_HEAD_RE.search(statement.sql)
+    match = re.search(r"(?ims)\binsert\s+(overwrite|into)\s+(?:table\s+)?(?P<table>(?:`[^`]+`|[A-Za-z_][\w]*)(?:\.(?:`[^`]+`|[A-Za-z_][\w]*)){0,2})", statement.sql)
     if match is None:
         return None
-
     source_start = match.end()
     diagnostics: list[Diagnostic] = [
         Diagnostic(
@@ -282,10 +286,15 @@ def _extract_insert_source(statement: ScriptStatement) -> ScriptSelection | None
     if not source_sql or not _QUERY_RE.match(source_sql):
         return None
 
+    with_prefix = ""
+    with_m = re.search(r"(?ims)^\s*(with\b[^;]*?)(?=\s*insert\s)", statement.sql)
+    if with_m is not None:
+        with_prefix = with_m.group(1).strip() + "\n"
+
     start_offset = statement.start_offset + source_start + leading
     end_offset = statement.end_offset - trailing
     return ScriptSelection(
-        analysis_sql=source_sql,
+        analysis_sql=with_prefix + source_sql,
         start_offset=start_offset,
         end_offset=end_offset,
         selected_target=f"insert_source_{statement.index:04d}",
