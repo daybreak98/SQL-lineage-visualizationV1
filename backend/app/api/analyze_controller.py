@@ -22,6 +22,8 @@ from app.services.query_structure_service import analyze_query_structure
 from app.services.source_location_service import build_source_locations
 from app.services.sql_parse_service import parse_sql
 from app.services.table_structure_service import analyze_table_structure
+from app.services.parse_recovery_pipeline import ParseRecoveryPipeline
+from app.services.partial_lineage_engine import PartialLineageEngine
 
 router = APIRouter()
 
@@ -42,6 +44,46 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
     capabilities: dict[str, object] = dict(parse_result.capabilities)
 
     if parse_result.tree is None or not request.analysis_options.include_graph:
+        if not request.analysis_options.include_graph:
+            return _assemble_result(
+                request=request, status=status, confidence_level=_confidence_level_from_scores(confidence, status),
+                confidence=confidence, elapsed_ms=parse_result.elapsed_ms,
+                stage_statuses=stage_statuses, diagnostics=diagnostics,
+                output_fields=parse_result.output_fields, unsupported_features=unsupported_features,
+                graph_view_model=graph_view_model, source_locations=source_locations,
+                capabilities=capabilities, semantics_report=semantics_report_val,
+                normalized_sql=parse_result.normalized_sql,
+                analysis_sql=parse_result.analysis_sql,
+                sql_text_bundle=parse_result.sql_text_bundle,
+                preflight_report=parse_result.preflight_report,
+                segments=parse_result.segments,
+                parse_attempts=parse_result.parse_attempts,
+            )
+        recovery = ParseRecoveryPipeline()
+        recovery_result = recovery.recover_from_parse_result(parse_result)
+        diagnostics.extend(recovery_result.diagnostics)
+        if recovery_result.structure_facts:
+            partial_engine = PartialLineageEngine()
+            ir = partial_engine.build_from_sql(
+                sql=getattr(parse_result, "normalized_sql", "") or request.sql,
+                expression_dependencies=recovery_result.expression_dependencies,
+                tree=recovery_result.tree,
+            )
+            table_structure = analyze_table_structure(
+                request.sql, request.dialect, tree=recovery_result.tree,
+                table_names=sorted(ir.table_names),
+            )
+            if table_structure.nodes:
+                diagnostics.extend(table_structure.diagnostics)
+                stage_statuses.extend(table_structure.stage_statuses)
+                unsupported_features.extend(table_structure.unsupported_features)
+                graph_view_model = GraphViewModel(**build_table_structure_graph(table_structure).to_dict())
+                stage_statuses.append({
+                    "stage": "graph_build", "status": "success", "elapsed_ms": 0,
+                    "diagnostic_codes": [], "message": "Partial table graph built from structure recovery.",
+                })
+                status = "partial"
+                confidence["lineage"] = 0.4
         return _assemble_result(
             request=request, status=status, confidence_level=_confidence_level_from_scores(confidence, status),
             confidence=confidence, elapsed_ms=parse_result.elapsed_ms,

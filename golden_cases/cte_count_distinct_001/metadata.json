@@ -1,0 +1,13 @@
+{
+  "tables": [
+    {
+      "name": "dwd_search_log_di",
+      "columns": [
+        "user_id",
+        "search_request_uid",
+        "search_time",
+        "dt"
+      ]
+    }
+  ]
+}
