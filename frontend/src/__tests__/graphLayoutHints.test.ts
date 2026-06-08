@@ -59,7 +59,7 @@ describe('graph layout hints', () => {
 
     const ports = buildComfortPortIndexes(graph);
 
-    expect(ports.sourcePortIndex.get('edge-a')).toBe(0);
-    expect(ports.sourcePortIndex.get('edge-b')).toBe(1);
+    expect(ports.sourcePortIndex.get('edge-b')).toBe(0);
+    expect(ports.sourcePortIndex.get('edge-a')).toBe(1);
   });
 });

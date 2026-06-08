@@ -206,7 +206,7 @@ export function layoutComfortGraph(graph: ComfortGraph, options?: {
 }
 
 
-function portOffset(index: number, count: number, gap = 8) {
+function portAnchorOffset(index: number, count: number, gap = 8) {
   if (count <= 1) return 0;
   return (index - (count - 1) / 2) * gap;
 }
@@ -225,24 +225,10 @@ export function buildComfortPortIndexes(graph: ComfortGraph) {
   }
 
   for (const list of outgoing.values()) {
-    list.sort((a, b) => {
-      const ao = a.sourcePortOrder;
-      const bo = b.sourcePortOrder;
-      if (typeof ao === 'number' && typeof bo === 'number') return ao - bo;
-      if (typeof ao === 'number') return -1;
-      if (typeof bo === 'number') return 1;
-      return (nodeById.get(a.target)?.y ?? 0) - (nodeById.get(b.target)?.y ?? 0);
-    });
+    list.sort((a, b) => (nodeById.get(a.target)?.y ?? 0) - (nodeById.get(b.target)?.y ?? 0));
   }
   for (const list of incoming.values()) {
-    list.sort((a, b) => {
-      const ao = a.targetPortOrder;
-      const bo = b.targetPortOrder;
-      if (typeof ao === 'number' && typeof bo === 'number') return ao - bo;
-      if (typeof ao === 'number') return -1;
-      if (typeof bo === 'number') return 1;
-      return (nodeById.get(a.source)?.y ?? 0) - (nodeById.get(b.source)?.y ?? 0);
-    });
+    list.sort((a, b) => (nodeById.get(a.source)?.y ?? 0) - (nodeById.get(b.source)?.y ?? 0));
   }
 
   const sourcePortIndex = new Map<string, number>();
@@ -272,27 +258,34 @@ export function routeComfortEdgePath(params: {
   const sourceBox = getComfortNodeBox(sourceNode.type);
   const targetBox = getComfortNodeBox(targetNode.type);
 
-  const dx = targetNode.x - sourceNode.x;
-  const dy = targetNode.y - sourceNode.y;
-  const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-
   const sourceCount = ports?.sourcePortCount.get(edge.source) ?? 1;
   const sourceIndex = ports?.sourcePortIndex.get(edge.id) ?? 0;
   const targetCount = ports?.targetPortCount.get(edge.target) ?? 1;
   const targetIndex = ports?.targetPortIndex.get(edge.id) ?? 0;
 
-  const sx = sourceNode.x + (dx / dist) * (sourceBox.width * 0.42);
-  const sy = sourceNode.y + (dy / dist) * (sourceBox.height * 0.42) + portOffset(sourceIndex, sourceCount, 7);
-  const tx = targetNode.x - (dx / dist) * (targetBox.width * 0.46);
-  const ty = targetNode.y - (dy / dist) * (targetBox.height * 0.46) + portOffset(targetIndex, targetCount, 7);
+  const rawSourceOffset = portAnchorOffset(sourceIndex, sourceCount, 8);
+  const rawTargetOffset = portAnchorOffset(targetIndex, targetCount, 8);
 
-  const mx = (sx + tx) / 2;
-  const absDx = Math.abs(tx - sx);
+  const maxSourceY = Math.max(0, sourceBox.height / 2 - 10);
+  const maxTargetY = Math.max(0, targetBox.height / 2 - 10);
+  const sourceOffsetY = Math.max(-maxSourceY, Math.min(maxSourceY, rawSourceOffset));
+  const targetOffsetY = Math.max(-maxTargetY, Math.min(maxTargetY, rawTargetOffset));
 
-  if (absDx < 80) {
-    const loop = 96;
-    return `M ${sx} ${sy} C ${sx + loop} ${sy}, ${tx + loop} ${ty}, ${tx} ${ty}`;
+  const isForward = targetNode.x >= sourceNode.x;
+
+  const sx = isForward ? sourceNode.x + sourceBox.width / 2 : sourceNode.x - sourceBox.width / 2;
+  const sy = sourceNode.y + sourceOffsetY;
+  const tx = isForward ? targetNode.x - targetBox.width / 2 : targetNode.x + targetBox.width / 2;
+  const ty = targetNode.y + targetOffsetY;
+
+  const dx = tx - sx;
+  const absDx = Math.abs(dx);
+
+  if (isForward) {
+    const curve = Math.min(220, Math.max(56, absDx * 0.45));
+    return `M ${sx} ${sy} C ${sx + curve} ${sy}, ${tx - curve} ${ty}, ${tx} ${ty}`;
   }
 
-  return `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty}`;
+  const loop = Math.max(96, absDx + 72);
+  return `M ${sx} ${sy} C ${sx + loop} ${sy}, ${tx + loop} ${ty}, ${tx} ${ty}`;
 }
