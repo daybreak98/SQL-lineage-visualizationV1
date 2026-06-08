@@ -49,11 +49,10 @@ class ParseRecoveryPipeline:
             expr_deps = self._extract_expression_deps_from_tree(tree)
 
         if not facts:
-            facts_heuristic = self._extract_table_facts_heuristic(
-                getattr(parse_result, "analysis_sql", "")
-                or getattr(parse_result, "normalized_sql", "")
-                or ""
-            )
+            source_sql = (
+                getattr(parse_result, "sql_text_bundle", {}) or {}
+            ).get("original_sql", "") or getattr(parse_result, "normalized_sql", "") or ""
+            facts_heuristic = self._extract_table_facts_heuristic(source_sql)
             facts.extend(facts_heuristic)
 
         diags = []
