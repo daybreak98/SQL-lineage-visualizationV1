@@ -87,7 +87,8 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
     # 6. Build structure graphs — always table_structure, conditionally add CTE
     graphs = []
 
-    table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree)
+    table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree,
+                                               table_names=sorted(structure.physical_table_names))
     if table_structure.nodes:
         diagnostics.extend(table_structure.diagnostics)
         stage_statuses.extend(table_structure.stage_statuses)

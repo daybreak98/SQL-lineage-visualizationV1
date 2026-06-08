@@ -1,0 +1,8 @@
+{
+  "tables": [
+    {"name": "default.mdw_order_v3_international", "columns": [{"name": "user_id"}, {"name": "order_date"}, {"name": "province_name"}, {"name": "country_name"}, {"name": "terminal_channel_type"}, {"name": "order_status"}, {"name": "is_valid"}]},
+    {"name": "ihotel_default.dw_qunar_three_order_detail_intl_hi_back", "columns": [{"name": "order_no"}, {"name": "user_id"}, {"name": "order_date"}, {"name": "dt"}, {"name": "hour"}]},
+    {"name": "ihotel_default.dw_qunar_three_order_detail_intl_hi", "columns": [{"name": "user_id"}, {"name": "order_date"}, {"name": "dt"}]},
+    {"name": "temp.temp_yuchen_shen_c_country_area_relation", "columns": [{"name": "country_name"}, {"name": "area"}, {"name": "region"}]}
+  ]
+}

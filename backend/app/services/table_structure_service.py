@@ -25,7 +25,8 @@ class TableStructureResult:
 
 
 def analyze_table_structure(sql: str, dialect: str = "spark",
-                             tree: exp.Expression | None = None) -> TableStructureResult:
+                             tree: exp.Expression | None = None,
+                             table_names: list[str] | None = None) -> TableStructureResult:
     started = time.time()
 
     if tree is None:
@@ -62,7 +63,7 @@ def analyze_table_structure(sql: str, dialect: str = "spark",
             stage_status="partial",
         )
 
-    tables = _query_sources(tree, dialect)
+    tables = table_names if table_names is not None else _query_sources(tree, dialect)
     if not tables:
         return _result(
             started=started,
