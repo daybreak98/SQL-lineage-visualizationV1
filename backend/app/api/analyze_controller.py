@@ -24,6 +24,7 @@ from app.services.sql_parse_service import parse_sql
 from app.services.table_structure_service import analyze_table_structure
 from app.services.parse_recovery_pipeline import ParseRecoveryPipeline
 from app.services.partial_lineage_engine import PartialLineageEngine
+from app.domain.lineage_model import SimpleColumnLineage
 
 router = APIRouter()
 
@@ -73,14 +74,26 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
                 request.sql, request.dialect, tree=recovery_result.tree,
                 table_names=sorted(ir.table_names),
             )
+            graphs = []
             if table_structure.nodes:
                 diagnostics.extend(table_structure.diagnostics)
                 stage_statuses.extend(table_structure.stage_statuses)
                 unsupported_features.extend(table_structure.unsupported_features)
-                graph_view_model = GraphViewModel(**build_table_structure_graph(table_structure).to_dict())
+                graphs.append(build_table_structure_graph(table_structure))
+            if ir.column_edges:
+                lineages = _convert_ir_edges_to_lineages(ir)
+                if lineages:
+                    graphs.append(build_column_lineage_graph(lineages))
+                    stage_statuses.append({
+                        "stage": "column_lineage_recovery", "status": "success", "elapsed_ms": 0,
+                        "diagnostic_codes": [], "message": "Heuristic column lineage extracted.",
+                    })
+            if graphs:
+                graph = merge_graphs("table", *graphs)
+                graph_view_model = GraphViewModel(**graph.to_dict())
                 stage_statuses.append({
                     "stage": "graph_build", "status": "success", "elapsed_ms": 0,
-                    "diagnostic_codes": [], "message": "Partial table graph built from structure recovery.",
+                    "diagnostic_codes": [], "message": "Partial graph built from structure recovery.",
                 })
                 status = "partial"
                 confidence["lineage"] = 0.4
@@ -241,6 +254,25 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
             "segment_count": int(parse_result.capabilities.get("segment_count", 0)),
         },
     )
+
+
+def _convert_ir_edges_to_lineages(ir) -> list[SimpleColumnLineage]:
+    lineages: list[SimpleColumnLineage] = []
+    default_table = list(ir.table_names)[0] if ir.table_names else "unknown"
+    for edge in ir.column_edges:
+        source_str = edge["source"]
+        source_parts = source_str.rsplit(".", 1)
+        if len(source_parts) == 2:
+            source_table, source_col = source_parts[0], source_parts[1]
+        else:
+            source_table = default_table
+            source_col = source_parts[0]
+        lineages.append(SimpleColumnLineage(
+            source_table=source_table,
+            source_column=source_col,
+            output_column=edge["target"],
+        ))
+    return lineages
 
 
 def _assemble_result(

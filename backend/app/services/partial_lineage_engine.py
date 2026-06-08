@@ -96,13 +96,19 @@ class PartialLineageEngine:
 
     def _ingest_expressions(self, ir: PartialLineageIR, dependencies) -> None:
         for dep in dependencies:
-            if not dep.column_refs:
+            refs = dep.get("column_refs", []) if isinstance(dep, dict) else getattr(dep, "column_refs", [])
+            if not refs:
                 continue
-            for ref in dep.column_refs:
-                source = f"{ref.table_alias}.{ref.column_name}" if ref.table_alias else ref.column_name
+            name = dep.get("output_name", "") if isinstance(dep, dict) else getattr(dep, "output_name", "")
+            trans = dep.get("transform_type", "") if isinstance(dep, dict) else getattr(dep, "transform_type", "")
+            conf = dep.get("confidence", "unknown") if isinstance(dep, dict) else getattr(dep, "confidence", "unknown")
+            for ref in refs:
+                ta = ref.get("table_alias") if isinstance(ref, dict) else getattr(ref, "table_alias", None)
+                cn = ref.get("column_name") if isinstance(ref, dict) else getattr(ref, "column_name", "")
+                source = f"{ta}.{cn}" if ta else cn
                 ir.column_edges.append({
                     "source": source,
-                    "target": dep.output_name,
-                    "transform": dep.transform_type,
-                    "confidence": dep.confidence,
+                    "target": name,
+                    "transform": trans,
+                    "confidence": conf,
                 })

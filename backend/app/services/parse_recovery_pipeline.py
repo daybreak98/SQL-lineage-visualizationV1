@@ -55,6 +55,12 @@ class ParseRecoveryPipeline:
             facts_heuristic = self._extract_table_facts_heuristic(source_sql)
             facts.extend(facts_heuristic)
 
+        if not expr_deps and facts:
+            source_sql = (
+                getattr(parse_result, "sql_text_bundle", {}) or {}
+            ).get("original_sql", "") or getattr(parse_result, "normalized_sql", "") or ""
+            expr_deps = self._extract_expression_deps_heuristic(source_sql)
+
         diags = []
         if not full_ast:
             from app.domain import diagnostics_model as diag_codes
@@ -160,3 +166,47 @@ class ParseRecoveryPipeline:
         if any(k in sql for k in ("count(", "sum(", "avg(", "min(", "max(")):
             return "aggregate"
         return "expression"
+
+    def _extract_expression_deps_heuristic(self, sql: str) -> list[dict]:
+        import re
+        deps = []
+        func_kw = r'trim|regexp_replace|coalesce|cast|if|md5|concat|round|abs|sum|count|avg|min|max'
+        sql_kw = r'select|from|where|join|on|as|null|not|and|or|case|when|then|else|end|group|order|by|having|union|left|right|inner|outer|cross|full|distinct|over|partition|between|like|in|is'
+        kw_set = set((func_kw + '|' + sql_kw).split('|'))
+        as_pat = re.compile(r'\s+as\s+(\w+)', re.IGNORECASE)
+        col_pat = re.compile(r'\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)')
+        word_pat = re.compile(r'\b([a-zA-Z_]\w*)\b')
+        func_pat = re.compile(fr'\b({func_kw})\s*\(', re.IGNORECASE)
+
+        for line in sql.split('\n'):
+            m = as_pat.search(line)
+            if not m:
+                continue
+            alias = m.group(1).strip().lower()
+            if alias in kw_set:
+                continue
+            refs = []
+            for cm in col_pat.finditer(line):
+                if cm.group(2).lower() != alias and cm.group(1).lower() not in kw_set:
+                    refs.append({'table_alias': cm.group(1), 'column_name': cm.group(2)})
+            if not refs:
+                prefix = line[:m.start()]
+                for wm in word_pat.finditer(prefix):
+                    col_name = wm.group(1).lower()
+                    word_start = wm.start(1)
+                    prefix_before = prefix[:word_start]
+                    if prefix_before.count("'") % 2 != 0:
+                        continue
+                    if col_name in kw_set:
+                        continue
+                    if len(col_name) >= 2 and not col_name.isdigit():
+                        refs.append({'table_alias': None, 'column_name': wm.group(1)})
+            if refs:
+                is_func = bool(func_pat.search(line))
+                deps.append({
+                    'output_name': alias,
+                    'column_refs': refs,
+                    'transform_type': 'function' if is_func else 'direct',
+                })
+        return deps
+
