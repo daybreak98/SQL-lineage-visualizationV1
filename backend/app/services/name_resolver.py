@@ -288,16 +288,23 @@ def _table_references(tree: exp.Expression, dialect: str,
 def _table_references_from_final_select(tree: exp.Expression, dialect: str) -> list[TableReference]:
     tables: list[TableReference] = []
     from_expr = tree.args.get("from_")
-    if from_expr is not None and isinstance(from_expr.this, exp.Table):
-        t = from_expr.this
-        table_name = _table_name_without_alias(t, dialect)
-        tables.append(TableReference(table_name=table_name, alias=t.alias or t.name))
+    _extract_table_or_subquery(from_expr, tables, dialect)
     for join in tree.args.get("joins") or []:
-        if isinstance(join.this, exp.Table):
-            t = join.this
-            table_name = _table_name_without_alias(t, dialect)
-            tables.append(TableReference(table_name=table_name, alias=t.alias or t.name))
+        _extract_table_or_subquery(join, tables, dialect)
     return tables
+
+
+def _extract_table_or_subquery(node, tables: list[TableReference], dialect: str) -> None:
+    if node is None:
+        return
+    target = getattr(node, "this", node)
+    if isinstance(target, exp.Table):
+        table_name = _table_name_without_alias(target, dialect)
+        tables.append(TableReference(table_name=table_name, alias=target.alias or target.name))
+    elif isinstance(target, exp.Subquery):
+        alias = getattr(node, "alias_or_name", None) or getattr(target, "alias_or_name", None)
+        if alias:
+            tables.append(TableReference(table_name=f"subquery:{alias}", alias=alias))
 
 
 def _table_name_without_alias(table: exp.Table, dialect: str) -> str:
@@ -469,7 +476,8 @@ def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False,
                 "subquery",
             )
 
-    if any(isinstance(node, exp.Lateral) for node in tree.find_all(exp.Lateral)):
+    has_lateral = any(isinstance(node, exp.Lateral) for node in tree.find_all(exp.Lateral))
+    if has_lateral and not skip_subq_check:
         return (
             diag_codes.UNSUPPORTED_LATERAL_VIEW,
             "lateral view / explode lineage is not supported in the current name resolver.",

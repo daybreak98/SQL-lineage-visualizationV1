@@ -128,7 +128,7 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
         physical_table_names=structure.physical_table_names,
         resolve_scope="final_select" if structure.has_cte else "full_query",
         allow_cte=structure.has_cte,
-        allow_subquery=False,
+        allow_subquery=structure.has_subquery,
     )
 
     # 5. Resolve column lineage (unified)
