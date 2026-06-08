@@ -182,6 +182,28 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
             continue
 
         # Unqualified column
+        physical_tables = [t for t in tables if not t.table_name.startswith("subquery:")]
+        if len(physical_tables) == 1:
+            source_table = physical_tables[0].table_name
+            cols_for_table = metadata_cols.get(source_table)
+            if cols_for_table and column.name not in cols_for_table:
+                diagnostics.append(
+                    Diagnostic(
+                        code=diag_codes.UNKNOWN_COLUMN,
+                        level="warning",
+                        message=f"Column {column.name} not found in table {source_table} metadata.",
+                    )
+                )
+                continue
+            lineages.append(
+                SimpleColumnLineage(
+                    source_table=source_table,
+                    source_column=column.name,
+                    output_column=output_column,
+                )
+            )
+            continue
+
         if len(tables) == 1:
             source_table = tables[0].table_name
             cols_for_table = metadata_cols.get(source_table)
@@ -277,7 +299,8 @@ def _table_references(tree: exp.Expression, dialect: str,
                        is_cte_context: bool = False,
                        context: LineageResolveContext | None = None) -> list[TableReference]:
     if is_cte_context or (context is not None and context.has_cte):
-        return _table_references_from_final_select(tree, dialect)
+        cte_names = set(context.cte_names) if context else set()
+        return _table_references_from_final_select(tree, dialect, cte_names)
     tables: list[TableReference] = []
     for table in tree.find_all(exp.Table):
         table_name = _table_name_without_alias(table, dialect)
@@ -285,22 +308,29 @@ def _table_references(tree: exp.Expression, dialect: str,
     return tables
 
 
-def _table_references_from_final_select(tree: exp.Expression, dialect: str) -> list[TableReference]:
+def _table_references_from_final_select(tree: exp.Expression, dialect: str,
+                                         cte_names: set[str] | None = None) -> list[TableReference]:
+    cte_names = cte_names or set()
     tables: list[TableReference] = []
     from_expr = tree.args.get("from_")
-    _extract_table_or_subquery(from_expr, tables, dialect)
+    _extract_table_or_subquery(from_expr, tables, dialect, cte_names)
     for join in tree.args.get("joins") or []:
-        _extract_table_or_subquery(join, tables, dialect)
+        _extract_table_or_subquery(join, tables, dialect, cte_names)
     return tables
 
 
-def _extract_table_or_subquery(node, tables: list[TableReference], dialect: str) -> None:
+def _extract_table_or_subquery(node, tables: list[TableReference], dialect: str,
+                                 cte_names: set[str] | None = None) -> None:
+    cte_names = cte_names or set()
     if node is None:
         return
     target = getattr(node, "this", node)
     if isinstance(target, exp.Table):
         table_name = _table_name_without_alias(target, dialect)
-        tables.append(TableReference(table_name=table_name, alias=target.alias or target.name))
+        alias = target.alias or target.name
+        if alias in cte_names or table_name.split(".")[-1] in cte_names:
+            return
+        tables.append(TableReference(table_name=table_name, alias=alias))
     elif isinstance(target, exp.Subquery):
         alias = getattr(node, "alias_or_name", None) or getattr(target, "alias_or_name", None)
         if alias:
@@ -410,6 +440,18 @@ def _resolve_source_table_for_column(
 
     if len(tables) == 1:
         source_table = tables[0].table_name
+        cols_for_table = metadata_cols.get(source_table)
+        if cols_for_table and column.name not in cols_for_table:
+            return None, Diagnostic(
+                code=diag_codes.UNKNOWN_COLUMN,
+                level="warning",
+                message=f"Column {column.name} not found in table {source_table} metadata.",
+            )
+        return source_table, None
+
+    physical_tables = [t for t in tables if not t.table_name.startswith("subquery:")]
+    if len(physical_tables) == 1:
+        source_table = physical_tables[0].table_name
         cols_for_table = metadata_cols.get(source_table)
         if cols_for_table and column.name not in cols_for_table:
             return None, Diagnostic(
