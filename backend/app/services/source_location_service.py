@@ -104,10 +104,17 @@ def build_source_locations(
 
     # ── Table locations (FROM/JOIN, exclude CTE names) ──
     if "physical_table" in entity_ids_by_type:
+        tbl_set = entity_ids_by_type["physical_table"]
         for loc in _find_table_spans(sql, masked_sql, offset_map, cte_names, sql_len):
-            entity_id = f"physical_table:{loc.rawText}"
-            if entity_id in entity_ids_by_type["physical_table"]:
-                _append_occurrence(locations, entity_id, loc)
+            full_name = loc.rawText
+            short_name = full_name.split(".")[-1] if "." in full_name else full_name
+            # Try full name first, then short name
+            entity_id_full = f"physical_table:{full_name}"
+            entity_id_short = f"physical_table:{short_name}"
+            if entity_id_full in tbl_set:
+                _append_occurrence(locations, entity_id_full, loc)
+            elif entity_id_short in tbl_set:
+                _append_occurrence(locations, entity_id_short, loc)
 
     # ── Output column locations (SELECT) ──
     if "output_column" in entity_ids_by_type:
@@ -130,6 +137,32 @@ def build_source_locations(
                 _add_column_location(
                     locations, sql, span, span.output_name,
                     "exact" if not span.approximate else "approximate")
+
+    # ── Physical column locations (source columns in SELECT) ──
+    if "physical_column" in entity_ids_by_type:
+        col_set = entity_ids_by_type["physical_column"]
+        for ent_id in col_set:
+            parts = ent_id.rsplit(".", 1)
+            if len(parts) == 2:
+                table_part, col_name = parts[0], parts[1]
+            else:
+                table_part, col_name = "", ent_id
+            col_name_clean = col_name.split(":")[-1]
+            idx = sql.find(col_name_clean)
+            if idx >= 0:
+                while idx < len(sql) and idx > 0 and sql[idx-1].isalnum():
+                    idx = sql.find(col_name_clean, idx + 1)
+                    if idx < 0:
+                        break
+                if idx >= 0:
+                    sl, sc = _line_col(sql, idx)
+                    loc = SourceLocation(
+                        entityId=ent_id, entityType="physical_column",
+                        rawText=col_name_clean, rangeType="approximate",
+                        occurrences=[Occurrence(line=sl, col=sc, end_line=sl,
+                                                  end_col=sc + len(col_name_clean),
+                                                  offset=idx, end_offset=idx + len(col_name_clean))])
+                    _append_occurrence(locations, ent_id, loc)
 
     elapsed_ms = int((time.time() - started) * 1000)
     return SourceLocationResult(
@@ -283,19 +316,20 @@ def _find_table_spans(
 
         m = re.match(r"(`[^`]+`|\w+(?:\.\w+)*)", masked_sql[after:])
         if m:
-            name = m.group(1).split(".")[-1].strip("`")
-            if name.lower() not in {"on", "as", "where", "join", "left", "right", "inner",
+            full_name = m.group(1).strip("`")
+            short_name = full_name.split(".")[-1]
+            if short_name.lower() not in {"on", "as", "where", "join", "left", "right", "inner",
                                      "outer", "full", "cross", "select", "group", "order",
                                      "having", "union", "limit", "with"}:
-                if name.lower() not in {cte.lower() for cte in cte_names}:
+                if short_name.lower() not in {cte.lower() for cte in cte_names}:
                     tbl_start = after + m.start(1)
                     tbl_end = after + m.end(1)
                     if all(offset_map[idx] is not None for idx in range(tbl_start, tbl_end)):
                         sl, sc = _line_col(original_sql, tbl_start)
                         el, ec = _line_col(original_sql, tbl_end)
                         results.append(SourceLocation(
-                            entityId=f"physical_table:{name}", entityType="physical_table",
-                            rawText=name, rangeType="exact",
+                            entityId=f"physical_table:{short_name}", entityType="physical_table",
+                            rawText=full_name, rangeType="exact",
                             occurrences=[Occurrence(line=sl, col=sc, end_line=el, end_col=ec,
                                                       offset=tbl_start, end_offset=tbl_end)]))
             i = after + m.end()

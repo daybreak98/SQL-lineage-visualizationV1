@@ -499,7 +499,7 @@ def _target_entities(graph_view_model: GraphViewModel) -> list[dict[str, str]]:
     type_map = {
         "output_column": "output_column",
         "output_field": "output_column",
-        "physical_column": "output_column",
+        "physical_column": "physical_column",
         "table": "physical_table",
         "physical_table": "physical_table",
         "cte": "cte",
@@ -512,13 +512,13 @@ def _target_entities(graph_view_model: GraphViewModel) -> list[dict[str, str]]:
         entity_type = type_map.get(ntype)
         if entity_type is None:
             continue
-        label = str(node.get("label", "")).split(".")[-1]
+        label = str(node.get("label", ""))
         if not label:
             continue
-        entity_id = f"{entity_type}:{label}"
-        key = f"{entity_id}::{entity_type}"
-        if key not in seen:
-            seen.add(key)
-            entities.append({"entityId": entity_id, "entityType": entity_type})
+        entity_id = node.get("entity_id") or node.get("id", "")
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        entities.append({"entityId": entity_id, "entityType": entity_type})
     return entities
 
