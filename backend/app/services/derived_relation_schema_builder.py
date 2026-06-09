@@ -173,6 +173,14 @@ def _build_single_schema(
     _expand_star_from_schemas(select_node, relation_name, relation_kind,
                                existing_schemas, resolved_columns, schema)
 
+    # Path D: LATERAL VIEW output column → source column mapping
+    _extract_lateral_view_dependencies(select_node, relation_name, relation_kind,
+                                        cte_names, resolved_columns, schema)
+
+    # Path E: post-process — resolve columns incorrectly mapped to tables with no such column
+    _resolve_lateral_column_sources(select_node, relation_name, relation_kind,
+                                      cte_names, existing_schemas, schema)
+
     return schema
 
 
@@ -201,6 +209,119 @@ def _extract_complex_dependencies(
                 schema.add_dependency(dep)
     except Exception:
         pass
+
+
+def _extract_lateral_view_dependencies(
+    select_node: exp.Select, relation_name: str, relation_kind: str,
+    cte_names: Set[str], resolved_columns: Set[str],
+    schema: DerivedRelationSchema,
+) -> None:
+    try:
+        lateral_aliases = {}
+        for lateral in select_node.find_all(exp.Lateral):
+            view_expr = getattr(lateral, "this", None)
+            if view_expr is None:
+                continue
+            alias = getattr(lateral, "alias_or_name", None) or getattr(lateral, "alias", None)
+            if not alias:
+                continue
+            src_cols = []
+            try:
+                for col in view_expr.find_all(exp.Column):
+                    tbl = getattr(col, "table", None)
+                    rk = "cte" if (tbl and tbl.lower().strip("`") in cte_names) else "table"
+                    src_cols.append(ColumnRef(tbl or relation_name, col.name, rk if tbl else relation_kind))
+            except Exception:
+                pass
+            if src_cols:
+                lateral_aliases[alias.lower().strip("`")] = src_cols
+
+        for col in select_node.find_all(exp.Column):
+            tbl = getattr(col, "table", None) or ""
+            if tbl.lower().strip("`") in lateral_aliases:
+                col_name = getattr(col, "name", None) or ""
+                if col_name:
+                    dep = ColumnDependency(
+                        output=ColumnRef(relation_name, col_name, relation_kind),
+                        inputs=[ColumnRef(r.relation_name, r.column_name, r.relation_kind)
+                                for r in lateral_aliases[tbl.lower().strip("`")]],
+                        transform_type="lateral_view",
+                    )
+                    schema.add_dependency(dep)
+                    resolved_columns.add(col_name.lower().strip("`"))
+    except Exception:
+        pass
+
+
+def _resolve_lateral_column_sources(
+    select_node: exp.Select, relation_name: str, relation_kind: str,
+    cte_names: Set[str],
+    existing_schemas: Dict[str, DerivedRelationSchema],
+    schema: DerivedRelationSchema,
+) -> None:
+    try:
+        lateral_aliases = {}
+        for lateral in select_node.find_all(exp.Lateral):
+            view_expr = getattr(lateral, "this", None)
+            if view_expr is None:
+                continue
+            alias = getattr(lateral, "alias_or_name", None) or getattr(lateral, "alias", None)
+            if not alias:
+                continue
+            src_cols = []
+            for col in view_expr.find_all(exp.Column):
+                tbl = getattr(col, "table", None)
+                rk = "cte" if (tbl and tbl.lower().strip("`") in cte_names) else "table"
+                src_cols.append(ColumnRef(tbl or relation_name, col.name, rk if tbl else relation_kind))
+            if src_cols:
+                lateral_aliases[alias.lower().strip("`")] = src_cols
+
+        for out_name, dep in list(schema.output_columns.items()):
+            if dep.transform_type == "lateral_view":
+                continue
+            new_inputs = []
+            changed = False
+            for inp in dep.inputs:
+                src_key = inp.relation_name.lower().strip("`")
+                src_schema = existing_schemas.get(src_key)
+                if src_schema is not None and inp.column_name.lower().strip("`") not in src_schema.output_columns:
+                    resolved = _resolve_through_laterals(inp.column_name, lateral_aliases, existing_schemas)
+                    if resolved:
+                        new_inputs.extend(resolved)
+                        changed = True
+                        continue
+                new_inputs.append(inp)
+            if changed:
+                new_dep = ColumnDependency(
+                    output=dep.output,
+                    inputs=new_inputs,
+                    transform_type=dep.transform_type,
+                    expression=dep.expression,
+                )
+                schema.add_dependency(new_dep)
+    except Exception:
+        pass
+
+
+def _resolve_through_laterals(col_name, lateral_aliases, existing_schemas, visited=None):
+    if visited is None:
+        visited = set()
+    key = col_name.lower().strip("`")
+    if key in visited:
+        return None
+    visited.add(key)
+    for src_cols in lateral_aliases.values():
+        for src in src_cols:
+            if src.column_name.lower().strip("`") == key:
+                src_key = src.relation_name.lower().strip("`")
+                src_schema = existing_schemas.get(src_key)
+                if src_schema and key in src_schema.output_columns:
+                    src_dep = src_schema.output_columns[key]
+                    return [ColumnRef(i.relation_name, i.column_name, i.relation_kind) for i in src_dep.inputs]
+                recurse = _resolve_through_laterals(src.column_name, lateral_aliases, existing_schemas, visited)
+                if recurse:
+                    return recurse
+    return None
 
 
 def _expand_star_from_schemas(
