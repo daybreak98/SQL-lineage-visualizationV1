@@ -50,8 +50,9 @@ describe('selectors', () => {
       const backendGraph = { nodes: [subqueryNodes[0]], edges: [subqueryEdges[0]] };
       const state = baseState({ graphViewMode: 'semantics', backendGraph });
       const graph = visibleGraph(state);
-      expect(graph.nodes).toEqual(backendGraph.nodes);
-      expect(graph.edges).toEqual(backendGraph.edges);
+      expect(graph.nodes.length).toBe(1);
+      expect(graph.nodes[0].entityId).toBe(subqueryNodes[0].entityId);
+      expect(graph.edges.length).toBe(1);
     });
 
     it('returns an empty graph for column view mode without backendGraph', () => {

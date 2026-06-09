@@ -675,5 +675,6 @@ export function visibleGraph(state: WorkbenchState): GraphLike {
   if (mode === 'subquery') return visibleSubqueryGraph(base, positions);
   if (mode === 'column') return visibleColumnGraph(base, positions);
 
-  return base;
+  // semantics / diagnostics / expression / fallback — apply layout too
+  return applyManualPositions(layoutLayeredDag(base), positions);
 }
