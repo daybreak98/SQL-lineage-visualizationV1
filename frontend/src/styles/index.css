@@ -69,6 +69,18 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 
 .app-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .workspace { flex: 1; min-height: 0; display: flex; overflow: hidden; position: relative; }
+.convert-page { flex: 1; min-height: 0; display: flex; flex-direction: column; background: white; }
+.convert-toolbar { height: 52px; flex-shrink: 0; border-bottom: 1px solid var(--line); background: white; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; }
+.convert-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.convert-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--slate-500); }
+.convert-label span { font-weight: 700; color: var(--slate-600); }
+.convert-workspace { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.convert-source { width: 44%; min-width: 320px; }
+.convert-target-panel { flex: 1; min-width: 420px; display: flex; flex-direction: column; background: white; }
+.convert-head-actions { display: flex; align-items: center; gap: 8px; }
+.convert-status-panel { flex-shrink: 0; border-top: 1px solid var(--line); background: white; display: flex; flex-direction: column; max-height: 220px; }
+.convert-status-bar { height: 38px; flex-shrink: 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--slate-600); }
+.convert-diagnostics { min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; padding: 12px; background: #F8FAFC; }
 .editor { width: var(--split); min-width: 300px; background: white; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .panel-head { height: 32px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 8px; font-size: 11px; color: var(--slate-500); }
 .badge { display: inline-flex; align-items: center; height: 18px; border: 1px solid var(--line); border-radius: 4px; background: #F8FAFC; color: var(--slate-500); padding: 0 6px; font-size: 10px; margin-left: 5px; }
@@ -315,4 +327,6 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width:1023px) { .metadata-grid, .metadata-footer { grid-template-columns:1fr; } .metadata-footer { max-height: 320px; overflow: auto; } }
 @media (max-width:980px) { .output-capsule { max-width:160px; } .output-capsule .meta { display:none; } }
 @media (max-width:760px) { .output-capsule { width:42px; min-width:42px; justify-content:center; padding:0; } .output-capsule .name, .output-capsule .meta { display:none; } #fieldSearch::placeholder { color:transparent; } }
+@media (max-width:1279px) { .convert-diagnostics { grid-template-columns:1fr; } }
+@media (max-width:1120px) { .convert-toolbar { height:auto; padding:10px 12px; align-items:flex-start; flex-direction:column; } .convert-workspace { flex-direction:column; } .convert-source, .convert-target-panel { width:100%; min-width:0; min-height:280px; } }
 @media (max-width:1023px) { .app::after { content:"Screen too narrow. v1.4 P0-Core standard workbench requires 1366px+ for visual regression."; position:fixed; inset:0; z-index:999; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.82); color:white; text-align:center; padding:24px; font-size:14px; line-height:22px; } }

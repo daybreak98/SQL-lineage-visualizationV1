@@ -25,6 +25,18 @@ vi.mock('@monaco-editor/react', () => ({
       {loading}
     </div>
   ),
+  DiffEditor: ({
+    original,
+    modified,
+  }: {
+    original?: string;
+    modified?: string;
+  }) => (
+    <div data-testid="monaco-diff-editor">
+      <textarea data-testid="monaco-diff-original" value={original ?? ''} readOnly />
+      <textarea data-testid="monaco-diff-modified" value={modified ?? ''} readOnly />
+    </div>
+  ),
   loader: {
     config: vi.fn(),
   },

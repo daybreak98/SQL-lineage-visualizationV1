@@ -39,6 +39,22 @@ class FormatSqlResponse(BaseModel):
     diagnostics: list[Diagnostic] = Field(default_factory=list)
 
 
+class ConvertSqlRequest(BaseModel):
+    sql: str
+    source_dialect: str = "spark"
+    target_dialect: str = "spark"
+    pretty: bool = True
+
+
+class ConvertSqlResponse(BaseModel):
+    status: str = "success"
+    source_dialect: str = "spark"
+    target_dialect: str = "spark"
+    converted_sql: str | None = None
+    elapsed_ms: int = 0
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
+
+
 # ─── 响应体的各个零件 ──────────────────────────────────────────────
 
 class Diagnostic(BaseModel):

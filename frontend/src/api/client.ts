@@ -1,7 +1,8 @@
-import type { BackendAnalysisResult, FormatSqlResponse, MetadataImportResult, MetadataListResponse, MetadataPayload } from '../types/lineage';
+import type { BackendAnalysisResult, ConvertSqlResponse, FormatSqlResponse, MetadataImportResult, MetadataListResponse, MetadataPayload } from '../types/lineage';
 
 function normalizeDialect(dialect: string) {
   const value = dialect.trim().toLowerCase();
+  if (value === 'sr') return 'starrocks';
   if (['spark', 'hive', 'mysql', 'starrocks', 'doris'].includes(value)) return value;
   return 'spark';
 }
@@ -22,6 +23,19 @@ export function formatSql(sql: string, dialect: string) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sql, dialect: normalizeDialect(dialect) }),
+  });
+}
+
+export function convertSql(sql: string, sourceDialect: string, targetDialect: string) {
+  return request<ConvertSqlResponse>('/api/sql/convert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sql,
+      source_dialect: normalizeDialect(sourceDialect),
+      target_dialect: normalizeDialect(targetDialect),
+      pretty: true,
+    }),
   });
 }
 

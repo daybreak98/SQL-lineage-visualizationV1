@@ -1,7 +1,8 @@
 import { cx } from '../utils/cx';
 
-const items = [
-  ['workbench', '⌘', 'Workbench'],
+const items: Array<[string, string, string]> = [
+  ['workbench', 'W', 'Workbench'],
+  ['convert', 'C', 'Dialect Convert'],
   ['render', 'R', 'RenderMode'],
   ['taxonomy', 'N', 'Taxonomy'],
   ['snapshots', 'S', 'Snapshots'],
@@ -17,7 +18,14 @@ export function LeftNav({ active, onOpen }: Props) {
   return (
     <aside className="leftnav">
       {items.map(([key, label, title]) => (
-        <button key={key} title={title} className={cx('nav-btn', active === key && 'active')} onClick={() => onOpen(key)}>{label}</button>
+        <button
+          key={key}
+          title={title}
+          className={cx('nav-btn', active === key && 'active')}
+          onClick={() => onOpen(key)}
+        >
+          {label}
+        </button>
       ))}
     </aside>
   );

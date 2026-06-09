@@ -95,6 +95,15 @@ export interface FormatSqlResponse {
   diagnostics: BackendDiagnostic[];
 }
 
+export interface ConvertSqlResponse {
+  status: 'success' | 'partial' | 'failed';
+  source_dialect: string;
+  target_dialect: string;
+  converted_sql: string | null;
+  elapsed_ms: number;
+  diagnostics: BackendDiagnostic[];
+}
+
 export interface BackendAnalysisResult {
   schema_version?: string;
   analysis_id: string;

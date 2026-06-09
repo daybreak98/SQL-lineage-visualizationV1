@@ -26,11 +26,33 @@ vi.mock('@monaco-editor/react', () => ({
       />
     </div>
   ),
+  DiffEditor: ({
+    original,
+    modified,
+    onChange,
+  }: {
+    original?: string;
+    modified?: string;
+    onChange?: (v: string) => void;
+  }) => (
+    <div data-testid="monaco-diff-editor">
+      <textarea data-testid="monaco-diff-original" value={original ?? ''} readOnly />
+      <textarea
+        data-testid="monaco-diff-modified"
+        value={modified ?? ''}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          onChange?.(e.target.value)
+        }
+        readOnly
+      />
+    </div>
+  ),
   loader: { config: vi.fn() },
 }));
 
 // API client — control responses from test
 const mockAnalyzeSql = vi.fn();
+const mockConvertSql = vi.fn();
 const mockFormatSql = vi.fn();
 const mockGetHealth = vi.fn();
 const mockListMetadataTables = vi.fn();
@@ -38,6 +60,7 @@ const mockListMetadataColumns = vi.fn();
 
 vi.mock('../api/client', () => ({
   analyzeSql: (...args: unknown[]) => mockAnalyzeSql(...args),
+  convertSql: (...args: unknown[]) => mockConvertSql(...args),
   formatSql: (...args: unknown[]) => mockFormatSql(...args),
   getHealth: (...args: unknown[]) => mockGetHealth(...args),
   listMetadataTables: (...args: unknown[]) => mockListMetadataTables(...args),
