@@ -165,17 +165,30 @@ async def analyze(request: AnalyzeRequest) -> AnalysisResult:
     unsupported_features.extend(lineage_result.unsupported_features)
     status = _merge_status(status, lineage_result.status)
 
-    # 6. Build structure graphs — always table_structure, conditionally add CTE
+    # 6. Build structure graphs — CTE takes precedence, table_structure only for final SELECT tables
     graphs = []
 
-    table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree,
-                                               table_names=sorted(structure.physical_table_names))
-    if table_structure.nodes:
-        diagnostics.extend(table_structure.diagnostics)
-        stage_statuses.extend(table_structure.stage_statuses)
-        unsupported_features.extend(table_structure.unsupported_features)
-        status = _merge_status(status, table_structure.status)
-        graphs.append(build_table_structure_graph(table_structure))
+    if structure.has_cte:
+        final_table_names = sorted(
+            structure.final_select_source_names & structure.physical_table_names)
+        if final_table_names:
+            table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree,
+                                                       table_names=final_table_names)
+            if table_structure.nodes:
+                diagnostics.extend(table_structure.diagnostics)
+                stage_statuses.extend(table_structure.stage_statuses)
+                unsupported_features.extend(table_structure.unsupported_features)
+                status = _merge_status(status, table_structure.status)
+                graphs.append(build_table_structure_graph(table_structure))
+    else:
+        table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree,
+                                                   table_names=sorted(structure.physical_table_names))
+        if table_structure.nodes:
+            diagnostics.extend(table_structure.diagnostics)
+            stage_statuses.extend(table_structure.stage_statuses)
+            unsupported_features.extend(table_structure.unsupported_features)
+            status = _merge_status(status, table_structure.status)
+            graphs.append(build_table_structure_graph(table_structure))
 
     if structure.has_cte:
         cte_structure = analyze_cte_structure(request.sql, request.dialect, tree=tree)
