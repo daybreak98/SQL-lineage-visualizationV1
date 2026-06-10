@@ -244,12 +244,8 @@ export function DialectConvertPage() {
                 theme="vs"
                 original={sourceSql}
                 modified={targetSql}
-                onChange={(value) => {
-                  setTargetSql(value || '');
-                  setIsTargetDirty(true);
-                }}
                 options={{
-                  readOnly: false,
+                  readOnly: true,
                   renderSideBySide: true,
                   minimap: { enabled: false },
                   scrollBeyondLastLine: false,

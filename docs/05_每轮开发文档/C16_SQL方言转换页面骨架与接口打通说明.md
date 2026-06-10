@@ -1,8 +1,8 @@
 # C16 SQL方言转换页面骨架与接口打通说明
 
 日期：2026-06-09  
-阶段：实现中  
-状态：待开发
+阶段：已实现  
+状态：已完成第一版闭环
 
 ## 本轮目标
 
@@ -41,3 +41,38 @@
 - 不复用运行期 mock 数据
 - 尽量复用现有 Monaco 依赖
 - 先以 `sqlglot` 的 transpile 能力为主
+
+## 已完成内容
+
+- 左侧导航新增 `Convert` 入口
+- `App.tsx` 支持 `Workbench / Convert` 页面级切换
+- 新增 `DialectConvertPage`
+- 新增 `ConvertTopBar`
+- 后端新增 `POST /api/sql/convert`
+- 前端新增 `convertSql(...)` 客户端调用
+- 支持 `Hive / Spark / StarRocks`
+- 支持 `Swap / Load Example / Clear / Copy Target`
+- 支持 `Split Diff / Target Only`
+
+## 当前交互说明
+
+- `Split Diff`
+  - 使用 `Monaco DiffEditor`
+  - 当前为只读对比模式
+- `Target Only`
+  - 使用普通 `Monaco Editor`
+  - 允许用户继续修改目标 SQL
+
+这样处理的原因是：
+
+- Monaco DiffEditor 当前类型约束不直接提供本项目所需的受控编辑回写接口
+- 第一版优先保证构建稳定和交互闭环
+
+## 验证结果
+
+- `pytest backend/tests/integration/test_convert_api.py -q`
+  - `2 passed`
+- `npm test -- --run src/pages/__tests__/DialectConvertPage.test.tsx src/api/__tests__/client.test.ts src/__tests__/analyzeFlow.test.tsx`
+  - `37 passed`
+- `npm run build`
+  - passed
