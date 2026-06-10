@@ -48,14 +48,14 @@ describe('API Client', () => {
       );
     });
 
-    it('defaults to spark dialect for unrecognized dialect', async () => {
+    it('preserves unrecognized dialects so the backend can reject them', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
           Promise.resolve({
             status: 'success',
             formatted_sql: 'SELECT 1',
-            dialect: 'spark',
+            dialect: 'postgresql',
             diagnostics: [],
           }),
       });
@@ -65,7 +65,7 @@ describe('API Client', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         '/api/sql/format',
         expect.objectContaining({
-          body: JSON.stringify({ sql: 'select 1', dialect: 'spark' }),
+          body: JSON.stringify({ sql: 'select 1', dialect: 'postgresql' }),
         }),
       );
     });
@@ -148,6 +148,35 @@ describe('API Client', () => {
           body: JSON.stringify({
             sql: 'select 1',
             source_dialect: 'starrocks',
+            target_dialect: 'hive',
+            pretty: true,
+          }),
+        }),
+      );
+    });
+
+    it('preserves unsupported dialect values for backend diagnostics', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'failed',
+            source_dialect: 'mysql',
+            target_dialect: 'hive',
+            converted_sql: null,
+            elapsed_ms: 1,
+            diagnostics: [{ code: 'UNSUPPORTED_DIALECT', level: 'error', message: 'Unsupported dialect' }],
+          }),
+      });
+
+      await convertSql('select 1', 'mysql', 'hive');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/sql/convert',
+        expect.objectContaining({
+          body: JSON.stringify({
+            sql: 'select 1',
+            source_dialect: 'mysql',
             target_dialect: 'hive',
             pretty: true,
           }),

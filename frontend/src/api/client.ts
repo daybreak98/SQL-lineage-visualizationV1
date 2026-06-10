@@ -3,8 +3,7 @@ import type { BackendAnalysisResult, ConvertSqlResponse, FormatSqlResponse, Meta
 function normalizeDialect(dialect: string) {
   const value = dialect.trim().toLowerCase();
   if (value === 'sr') return 'starrocks';
-  if (['spark', 'hive', 'mysql', 'starrocks', 'doris'].includes(value)) return value;
-  return 'spark';
+  return value || 'spark';
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {

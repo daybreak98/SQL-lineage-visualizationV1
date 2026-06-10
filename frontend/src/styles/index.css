@@ -45,6 +45,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .actions { display: flex; align-items: center; gap: 8px; }
 .btn, .select { height: 30px; border: 1px solid var(--line); background: white; color: var(--slate-700); border-radius: 7px; padding: 0 10px; font-size: 12px; outline: none; }
 .btn:hover, .select:hover { border-color: #93C5FD; background: #F8FBFF; }
+.btn:disabled, .tool-btn:disabled, .btn-primary:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
 .btn-primary { height: 34px; border: 0; border-radius: 8px; padding: 0 16px; background: var(--blue); color: white; font-size: 12px; font-weight: 750; box-shadow: 0 2px 6px rgba(37,99,235,.22); }
 .btn-primary.secondary { background: white; border: 1px solid var(--line); color: var(--slate-700); box-shadow: none; }
 .pill { height: 26px; border: 1px solid var(--line); border-radius: 999px; padding: 0 9px; display: inline-flex; align-items: center; gap: 6px; background: #F8FAFC; color: var(--slate-600); font-size: 11px; white-space: nowrap; }
@@ -75,11 +76,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .convert-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--slate-500); }
 .convert-label span { font-weight: 700; color: var(--slate-600); }
 .convert-workspace { flex: 1; min-height: 0; display: flex; overflow: hidden; }
-.convert-source { width: 44%; min-width: 320px; }
+.convert-source { width: var(--convert-split, 50%); min-width: 280px; }
 .convert-target-panel { flex: 1; min-width: 420px; display: flex; flex-direction: column; background: white; }
-.convert-head-actions { display: flex; align-items: center; gap: 8px; }
+.convert-compare-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; background: white; }
+.convert-splitter-zone { width: 10px; flex: 0 0 10px; position: relative; z-index: 50; display: flex; justify-content: center; background: #F8FAFC; }
+.convert-head-actions { display: flex; align-items: center; gap: 6px; }
 .convert-status-panel { flex-shrink: 0; border-top: 1px solid var(--line); background: white; display: flex; flex-direction: column; max-height: 220px; }
 .convert-status-bar { height: 38px; flex-shrink: 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--slate-600); }
+.convert-risk-message { color: #B45309; font-weight: 700; }
 .convert-diagnostics { min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; padding: 12px; background: #F8FAFC; }
 .editor { width: var(--split); min-width: 300px; background: white; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .panel-head { height: 32px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 8px; font-size: 11px; color: var(--slate-500); }
@@ -110,12 +114,12 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   visibility: visible;
 }
 
-.splitter-zone { width: 0; position: relative; z-index: 50; display: flex; justify-content: center; }
-.splitter { position: absolute; top: 0; height: 100%; width: 18px; border: 0; background: transparent; cursor: col-resize; }
+.splitter-zone { width: 10px; flex: 0 0 10px; position: relative; z-index: 50; display: flex; justify-content: center; }
+.splitter { position: absolute; inset: 0; width: 100%; border: 0; background: transparent; cursor: col-resize; }
 .splitter-line { position: absolute; top: 0; left: 50%; transform: translateX(-50%); height: 100%; width: 2px; border-radius: 999px; background: var(--line-2); transition: .1s; }
 .splitter:hover .splitter-line, .splitter.dragging .splitter-line { width: 4px; background: var(--blue); }
 .split-tooltip { display: none; pointer-events: none; position: absolute; left: 12px; top: 8px; z-index: 60; background: white; border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; box-shadow: 0 12px 24px rgba(15,23,42,.14); font-size: 11px; color: var(--slate-600); white-space: nowrap; }
-.splitter-zone:hover .split-tooltip, .split-tooltip.show { display: block; }
+.splitter-zone:hover .split-tooltip, .convert-splitter-zone:hover .split-tooltip, .split-tooltip.show { display: block; }
 .overlay { position:fixed; inset:0; z-index:45; cursor:col-resize; display:none; background:transparent; }
 .overlay.show { display:block; }
 

@@ -83,9 +83,11 @@ export interface BackendDiagnostic {
   code: string;
   level: 'info' | 'warning' | 'error';
   message: string;
+  location?: Record<string, unknown> | null;
   suggestion?: string | null;
   related_entity_ids?: string[];
   details?: Record<string, unknown>;
+  extra?: Record<string, unknown>;
 }
 
 export interface FormatSqlResponse {
