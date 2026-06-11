@@ -78,7 +78,14 @@ def _normalize_dialect(dialect: str) -> DialectNormalization:
                 f"Supported dialects are: {', '.join(sorted(SUPPORTED_DIALECTS))}."
             ),
         ),
-    )
+        )
+
+
+def _join_transpiled_sql(statements: list[str]) -> str:
+    cleaned = [statement.strip().rstrip(";") for statement in statements if statement and statement.strip()]
+    if not cleaned:
+        raise ValueError("No SQL statements were produced during transpilation.")
+    return ";\n\n".join(cleaned)
 
 
 @router.post("/sql/format", response_model=FormatSqlResponse)
@@ -95,12 +102,14 @@ async def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
         )
 
     try:
-        formatted = sqlglot.transpile(
-            request.sql,
-            read=dialect.normalized,
-            write=dialect.normalized,
-            pretty=True,
-        )[0]
+        formatted = _join_transpiled_sql(
+            sqlglot.transpile(
+                request.sql,
+                read=dialect.normalized,
+                write=dialect.normalized,
+                pretty=True,
+            )
+        )
         return FormatSqlResponse(
             status="success",
             dialect=dialect.normalized,
@@ -145,12 +154,14 @@ async def convert_sql(request: ConvertSqlRequest) -> ConvertSqlResponse:
         )
 
     try:
-        converted = sqlglot.transpile(
-            request.sql,
-            read=source_dialect.normalized,
-            write=target_dialect.normalized,
-            pretty=request.pretty,
-        )[0]
+        converted = _join_transpiled_sql(
+            sqlglot.transpile(
+                request.sql,
+                read=source_dialect.normalized,
+                write=target_dialect.normalized,
+                pretty=request.pretty,
+            )
+        )
         converted = _minimize_diff_noise(
             request.sql,
             converted,
@@ -190,7 +201,7 @@ async def convert_sql(request: ConvertSqlRequest) -> ConvertSqlResponse:
 def _conversion_diagnostics(sqlglot, source_sql: str, converted_sql: str, target_dialect: str) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = _source_function_diagnostics(source_sql, target_dialect)
     try:
-        sqlglot.parse_one(converted_sql, read=target_dialect)
+        sqlglot.parse(converted_sql, read=target_dialect)
     except Exception as exc:
         diagnostics.append(
             Diagnostic(

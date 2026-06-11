@@ -16,49 +16,22 @@ import { StatusStrip } from './components/StatusStrip';
 import { TopBar } from './components/TopBar';
 import { exampleSql } from './data/exampleSql';
 import { transitionRenderMode } from './data/selectors';
-import { analysisToGraph } from './graphPipeline';
 import { DialectConvertPage } from './pages/DialectConvertPage';
-import type { BackendDiagnostic, Diagnostic, SearchItem, WorkbenchState } from './types/lineage';
-
-const initialState: WorkbenchState = {
-  pageMode: 'empty',
-  analysisStatus: 'none',
-  trustStatus: 'untrusted',
-  selectedOutput: null,
-  selectedEntity: 'out:group',
-  selectedMapping: null,
-  renderMode: 'subquery_dependency',
-  graphViewMode: 'table',
-  detailMode: 'compact',
-  detailTab: 'summary',
-  drawerOpen: false,
-  drawerTab: 'diagnostics',
-  split: 28,
-  query: '',
-  scope: 'all',
-  large: false,
-  positions: {},
-  backendStatus: 'checking...',
-  metadataStatus: 'checking...',
-};
-
-function normalizeDiagnostic(diagnostic: BackendDiagnostic, index: number): Diagnostic {
-  return {
-    id: diagnostic.diagnostic_id || `backend-diag-${index}`,
-    code: diagnostic.code,
-    entityId: diagnostic.related_entity_ids?.[0] || 'out:group',
-    severity: diagnostic.level,
-    reason: diagnostic.message,
-    impact: diagnostic.details ? JSON.stringify(diagnostic.details) : 'Backend diagnostic',
-    action: diagnostic.suggestion || 'Review SQL, metadata, or parser diagnostics.',
-  };
-}
+import type { SearchItem, WorkbenchState } from './types/lineage';
+import {
+  applySearchSelection,
+  applySqlDraftChange,
+  buildAnalyzeFailureState,
+  buildAnalyzeRunningState,
+  buildAnalyzeSuccessState,
+  initialWorkbenchState,
+} from './workbench/state';
 
 export default function App() {
   const [sql, setSqlValue] = useState(exampleSql);
   const [dialect, setDialect] = useState('spark');
   const [activeNav, setActiveNav] = useState('workbench');
-  const [state, setState] = useState<WorkbenchState>(initialState);
+  const [state, setState] = useState<WorkbenchState>(initialWorkbenchState);
   const [metadataOpen, setMetadataOpen] = useState(false);
 
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
@@ -106,12 +79,7 @@ export default function App() {
 
   const setSql = (value: string) => {
     setSqlValue(value);
-    setState((s) => {
-      if (!value.trim()) return { ...s, pageMode: 'empty', analysisStatus: 'none', trustStatus: 'untrusted' };
-      if (s.pageMode === 'analyzed' || s.trustStatus === 'trusted') return { ...s, pageMode: 'dirty', trustStatus: 'stale' };
-      if (s.pageMode === 'empty') return { ...s, pageMode: 'ready', trustStatus: 'untrusted' };
-      return s;
-    });
+    setState((s) => applySqlDraftChange(s, value));
   };
 
   const onTransition = useCallback((event: string) => {
@@ -129,94 +97,18 @@ export default function App() {
 
   const onAnalyze = async () => {
     if (!sql.trim()) return;
-    setState((s) => ({ ...s, pageMode: 'analyzing', analysisStatus: 'running', trustStatus: 'untrusted' }));
+    setState((s) => buildAnalyzeRunningState(s));
     try {
       const result = await analyzeSql(sql, dialect);
-      const { graph, searchItems, colToTables, invalidEdges } = analysisToGraph(result);
-      const diagnostics = (result.diagnostics_report?.diagnostics || []).map(normalizeDiagnostic);
-      setState((s) => {
-        const failed = result.status === 'failed';
-        const partial = result.status === 'partial';
-        const t = transitionRenderMode(s.renderMode, failed ? 'ANALYZE_FAILED' : 'ANALYZE_SUCCESS');
-        return {
-          ...s,
-          pageMode: failed ? 'failed' : 'analyzed',
-          analysisStatus: failed ? 'failed' : partial ? 'partial' : 'success',
-          trustStatus: failed ? 'untrusted' : 'trusted',
-          selectedOutput: null,
-          selectedEntity: 'out:group',
-          selectedMapping: null,
-          drawerOpen: s.drawerOpen,
-          drawerTab: s.drawerTab,
-          renderMode: t.mode,
-          graphViewMode: result.graph_view_model?.view_mode === 'column'
-            ? 'column'
-            : result.graph_view_model?.view_mode === 'subquery_dependency'
-              ? 'subquery'
-              : 'table',
-          lastTransition: t.description,
-          backendGraph: graph,
-          backendSearchItems: searchItems,
-          backendDiagnostics: diagnostics,
-          sourceLocations: result.source_locations ?? {},
-          semanticsReport: (result.semantics_report as any) ?? undefined,
-          colToTables,
-          backendInvalidEdges: invalidEdges,
-          backendMessage: `${result.analysis_id} 路 ${result.summary?.table_count ?? graph.nodes.length} nodes from backend`,
-          positions: {},
-        };
-      });
+      setState((s) => buildAnalyzeSuccessState(s, result));
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analyze request failed';
-      setState((s) => {
-        const t = transitionRenderMode(s.renderMode, 'ANALYZE_FAILED');
-        return {
-          ...s,
-          pageMode: 'failed',
-          analysisStatus: 'failed',
-          trustStatus: 'untrusted',
-          drawerOpen: s.drawerOpen,
-          drawerTab: s.drawerTab,
-          renderMode: t.mode,
-          lastTransition: t.description,
-          backendMessage: message,
-          backendDiagnostics: [{
-            id: 'frontend-api-error',
-            code: 'FRONTEND_API_ERROR',
-            entityId: 'out:group',
-            severity: 'error',
-            reason: message,
-            impact: 'The UI could not call /api/sql/analyze.',
-            action: 'Start the backend service or inspect the API response.',
-          }],
-        };
-      });
+      setState((s) => buildAnalyzeFailureState(s, message));
     }
   };
 
   const onSelectResult = (item: SearchItem) => {
-    setState((s) => {
-      let targetEntity = item.entityId;
-      if (item.type === 'output' && item.entityId !== 'out:query_result' && s.graphViewMode !== 'column') {
-        const ct = s.colToTables?.[item.entityId];
-        if (ct && ct.length > 0 && s.backendGraph) {
-          const tableNode = s.backendGraph.nodes.find((n) => n.type === 'table' && ct.some((t) => n.entityId.includes(t)));
-          if (tableNode) targetEntity = tableNode.entityId;
-        }
-      }
-      const event = item.type === 'output' ? 'SELECT_OUTPUT_FIELD' : 'FOCUS_FIELD';
-      const t = transitionRenderMode(s.renderMode, event);
-      return {
-        ...s,
-        selectedOutput: item.type === 'output' ? item.entityId : s.selectedOutput,
-        selectedEntity: targetEntity,
-        selectedMapping: null,
-        detailMode: 'compact',
-        detailTab: 'summary',
-        renderMode: t.mode,
-        lastTransition: t.description,
-      };
-    });
+    setState((s) => applySearchSelection(s, item));
   };
 
   const setSplit = (split: number) => setState((s) => ({ ...s, split }));
@@ -239,7 +131,7 @@ export default function App() {
               const response = await formatSql(sql, dialect);
               if (response.formatted_sql) {
                 setSql(response.formatted_sql);
-                setState((s) => ({ ...s, backendMessage: `formatted by /api/sql/format 路 ${response.dialect}` }));
+                setState((s) => ({ ...s, backendMessage: `Formatted by /api/sql/format | ${response.dialect}` }));
               }
             } catch (err) {
               const message = err instanceof Error ? err.message : 'Format request failed';

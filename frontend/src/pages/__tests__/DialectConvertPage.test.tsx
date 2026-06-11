@@ -11,22 +11,46 @@ vi.mock('../../api/client', () => ({
   formatSql: (...args: unknown[]) => mockFormatSql(...args),
 }));
 
+function createMonacoStub() {
+  return {
+    languages: {
+      registerCompletionItemProvider: vi.fn(),
+      registerHoverProvider: vi.fn(),
+      CompletionItemKind: { Keyword: 17, Function: 1, Class: 7, Field: 4 },
+    },
+  };
+}
+
 vi.mock('@monaco-editor/react', () => ({
   default: ({
     value,
     onChange,
+    onMount,
   }: {
     value?: string;
     onChange?: (value: string) => void;
-  }) => (
-    <div data-testid="monaco-editor">
-      <textarea
-        data-testid="monaco-textarea"
-        value={value ?? ''}
-        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange?.(e.target.value)}
-      />
-    </div>
-  ),
+    onMount?: (editor: {
+      getModel: () => { uri: { toString: () => string } };
+      onDidDispose: (handler: () => void) => { dispose: () => void };
+    }, monaco: ReturnType<typeof createMonacoStub>) => void;
+  }) => {
+    useEffect(() => {
+      onMount?.({
+        getModel: () => ({ uri: { toString: () => 'inmemory://editor/standalone.sql' } }),
+        onDidDispose: () => ({ dispose: vi.fn() }),
+      }, createMonacoStub());
+    }, [onMount]);
+
+    return (
+      <div data-testid="monaco-editor">
+        <textarea
+          data-testid="monaco-textarea"
+          value={value ?? ''}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange?.(e.target.value)}
+        />
+      </div>
+    );
+  },
   DiffEditor: ({
     original,
     modified,
@@ -35,25 +59,35 @@ vi.mock('@monaco-editor/react', () => ({
     original?: string;
     modified?: string;
     onMount?: (editor: {
+      getOriginalEditor: () => {
+        getModel: () => { uri: { toString: () => string } };
+      };
       getModifiedEditor: () => {
+        getModel: () => { uri: { toString: () => string } };
         getValue: () => string;
         onDidChangeModelContent: (handler: () => void) => { dispose: () => void };
       };
-    }) => void;
+      onDidDispose: (handler: () => void) => { dispose: () => void };
+    }, monaco: ReturnType<typeof createMonacoStub>) => void;
   }) => {
     let modifiedValue = modified ?? '';
     let changeHandler: (() => void) | null = null;
 
     useEffect(() => {
       onMount?.({
+        getOriginalEditor: () => ({
+          getModel: () => ({ uri: { toString: () => 'inmemory://diff/original.sql' } }),
+        }),
         getModifiedEditor: () => ({
+          getModel: () => ({ uri: { toString: () => 'inmemory://diff/modified.sql' } }),
           getValue: () => modifiedValue,
           onDidChangeModelContent: (handler: () => void) => {
             changeHandler = handler;
             return { dispose: vi.fn() };
           },
         }),
-      });
+        onDidDispose: () => ({ dispose: vi.fn() }),
+      }, createMonacoStub());
     }, [onMount]);
 
     return (

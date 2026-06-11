@@ -142,3 +142,22 @@ def test_convert_sql_reports_risky_source_function_line_number():
     assert risky
     assert risky[0]["location"]["line"] == 3
     assert risky[0]["extra"]["function"] == "bitmap_count"
+
+
+def test_convert_sql_keeps_all_statements_in_multi_statement_input():
+    response = client.post(
+        "/api/sql/convert",
+        json={
+            "sql": "select 1 as a; select 2 as b",
+            "source_dialect": "spark",
+            "target_dialect": "hive",
+            "pretty": True,
+        },
+    )
+    data = response.json()
+
+    assert data["status"] == "success"
+    assert data["converted_sql"]
+    assert "select\n  1 as a" in data["converted_sql"]
+    assert "select\n  2 as b" in data["converted_sql"]
+    assert data["converted_sql"].count("select\n") == 2

@@ -3,7 +3,10 @@ interface Props {
 }
 
 export function ConvertTopBar({ backendStatus }: Props) {
-  const backendOnline = (backendStatus || '').includes('0.3.0');
+  const normalizedStatus = (backendStatus || '').trim().toLowerCase();
+  const backendOnline = normalizedStatus.startsWith('backend:')
+    && !normalizedStatus.includes('offline')
+    && !normalizedStatus.includes('checking');
 
   return (
     <div className="topbar">

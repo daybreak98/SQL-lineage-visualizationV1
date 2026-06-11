@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import Editor, { DiffEditor, loader } from '@monaco-editor/react';
+import Editor, { DiffEditor } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
 import { convertSql, formatSql } from '../api/client';
 import type { BackendDiagnostic } from '../types/lineage';
+import {
+  bindModelDialect,
+  configureSqlMonacoLoader,
+  registerSqlLanguageProviders,
+  unbindModelDialect,
+} from '../components/SqlEditor/providers';
 
-loader.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.50.0/min/vs' } });
+configureSqlMonacoLoader();
 
 type Dialect = 'hive' | 'spark' | 'starrocks';
 type ConvertStatus = 'idle' | 'running' | 'success' | 'partial' | 'failed';
@@ -73,6 +80,10 @@ export function DialectConvertPage() {
   const [splitDragging, setSplitDragging] = useState(false);
   const [splitStart, setSplitStart] = useState({ x: 0, split: 50 });
   const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const sourceDialectRef = useRef(sourceDialect);
+  const targetDialectRef = useRef(targetDialect);
+  sourceDialectRef.current = sourceDialect;
+  targetDialectRef.current = targetDialect;
 
   const statusBadgeClass = useMemo(() => {
     if (convertStatus === 'success') return 'trusted';
@@ -204,6 +215,36 @@ export function DialectConvertPage() {
     setBackendMessage('Cleared both editors.');
   };
 
+  const editorOptions = {
+    fontSize: 13,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    wordWrap: 'on' as const,
+    automaticLayout: true,
+    wordBasedSuggestions: 'off' as const,
+    suggest: { showKeywords: true, showSnippets: false },
+  };
+
+  const bindStandaloneEditor = (editor: MonacoEditor.IStandaloneCodeEditor, monaco: any, getDialect: () => string) => {
+    registerSqlLanguageProviders(monaco);
+    const model = editor.getModel();
+    bindModelDialect(model, getDialect);
+    editor.onDidDispose(() => unbindModelDialect(model));
+  };
+
+  const bindDiffEditors = (editor: MonacoEditor.IStandaloneDiffEditor, monaco: any) => {
+    registerSqlLanguageProviders(monaco);
+    const originalModel = editor.getOriginalEditor().getModel();
+    const modifiedModel = editor.getModifiedEditor().getModel();
+    bindModelDialect(originalModel, () => sourceDialectRef.current);
+    bindModelDialect(modifiedModel, () => targetDialectRef.current);
+    editor.onDidDispose(() => {
+      unbindModelDialect(originalModel);
+      unbindModelDialect(modifiedModel);
+    });
+  };
+
   return (
     <section className="convert-page">
       <div className="convert-toolbar">
@@ -262,7 +303,8 @@ export function DialectConvertPage() {
                 theme="vs"
                 original={sourceSql}
                 modified={targetSql}
-                onMount={(editor) => {
+                onMount={(editor, monaco) => {
+                  bindDiffEditors(editor, monaco);
                   const modifiedEditor = editor.getModifiedEditor();
                   modifiedEditor.onDidChangeModelContent(() => {
                     setTargetSql(modifiedEditor.getValue());
@@ -273,10 +315,7 @@ export function DialectConvertPage() {
                   readOnly: false,
                   originalEditable: false,
                   renderSideBySide: true,
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  automaticLayout: true,
+                  ...editorOptions,
                 }}
               />
             </div>
@@ -299,13 +338,8 @@ export function DialectConvertPage() {
                   theme="vs"
                   value={sourceSql}
                   onChange={(value) => setSourceSql(value || '')}
-                  options={{
-                    fontSize: 13,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                  }}
+                  onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => sourceDialectRef.current)}
+                  options={editorOptions}
                 />
               </div>
               <div className="editor-foot">
@@ -359,13 +393,8 @@ export function DialectConvertPage() {
                     setTargetSql(value || '');
                     setIsTargetDirty(true);
                   }}
-                  options={{
-                    fontSize: 13,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                  }}
+                  onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => targetDialectRef.current)}
+                  options={editorOptions}
                 />
               </div>
               <div className="editor-foot">
