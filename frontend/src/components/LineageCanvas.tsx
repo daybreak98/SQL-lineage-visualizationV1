@@ -1,14 +1,19 @@
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets } from '../data/selectors';
-import { visibleGraph, buildPortIndexes, routeEdgePath, nodeBox } from '../graphPipeline';
+import { buildPortIndexes, nodeBox, routeEdgePath, visibleGraph } from '../graphPipeline';
 import type { GraphEdge, GraphNode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
+import {
+  applyDraggedPositions,
+  clearSelectedMapping,
+  selectEdgeMapping,
+  selectNodeEntity,
+} from '../workbench/actions';
 
 interface Props {
   state: WorkbenchState;
   setState: React.Dispatch<React.SetStateAction<WorkbenchState>>;
-  /** Called when a graph node is double-clicked to navigate to SQL. */
   onNodeDoubleClick?: (entityId: string) => void;
 }
 
@@ -50,50 +55,48 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const current = useMemo(() => currentEntitySet(state), [state]);
   const highlights = useMemo(() => viewHighlightSets(state), [state]);
   const selectedEdges = useMemo(() => {
-    const eid = state.selectedEntity;
-    if (!eid || eid === 'out:group') return new Set<string>();
+    const entityId = state.selectedEntity;
+    if (!entityId || entityId === 'out:group') return new Set<string>();
     const ids = new Set<string>();
-    // BFS up: find all upstream edges from selected entity
     const reverse = new Map<string, string[]>();
     const edgeByKey = new Map<string, string>();
-    graph.edges.forEach(e => {
-      if (!reverse.has(e.target)) reverse.set(e.target, []);
-      reverse.get(e.target)!.push(e.source);
-      edgeByKey.set(`${e.source}->${e.target}`, e.id);
+    graph.edges.forEach((edge) => {
+      if (!reverse.has(edge.target)) reverse.set(edge.target, []);
+      reverse.get(edge.target)!.push(edge.source);
+      edgeByKey.set(`${edge.source}->${edge.target}`, edge.id);
     });
-    const visited = new Set<string>([eid]);
-    const queue = [eid];
+    const visited = new Set<string>([entityId]);
+    const queue = [entityId];
     while (queue.length > 0) {
-      const cur = queue.shift()!;
-      for (const src of reverse.get(cur) ?? []) {
-        const key = `${src}->${cur}`;
+      const currentEntity = queue.shift()!;
+      for (const source of reverse.get(currentEntity) ?? []) {
+        const key = `${source}->${currentEntity}`;
         const edgeId = edgeByKey.get(key);
         if (edgeId) ids.add(edgeId);
-        if (!visited.has(src)) {
-          visited.add(src);
-          queue.push(src);
+        if (!visited.has(source)) {
+          visited.add(source);
+          queue.push(source);
         }
       }
     }
     return ids;
   }, [state.selectedEntity, graph.edges]);
-  // All nodes reachable upstream from selected entity (BFS)
   const selectedNodeIds = useMemo(() => {
-    const eid = state.selectedEntity;
-    if (!eid || eid === 'out:group') return new Set<string>();
-    const ids = new Set<string>([eid]);
+    const entityId = state.selectedEntity;
+    if (!entityId || entityId === 'out:group') return new Set<string>();
+    const ids = new Set<string>([entityId]);
     const reverse = new Map<string, string[]>();
-    graph.edges.forEach(e => {
-      if (!reverse.has(e.target)) reverse.set(e.target, []);
-      reverse.get(e.target)!.push(e.source);
+    graph.edges.forEach((edge) => {
+      if (!reverse.has(edge.target)) reverse.set(edge.target, []);
+      reverse.get(edge.target)!.push(edge.source);
     });
-    const queue = [eid];
+    const queue = [entityId];
     while (queue.length > 0) {
-      const cur = queue.shift()!;
-      for (const src of reverse.get(cur) ?? []) {
-        if (!ids.has(src)) {
-          ids.add(src);
-          queue.push(src);
+      const currentEntity = queue.shift()!;
+      for (const source of reverse.get(currentEntity) ?? []) {
+        if (!ids.has(source)) {
+          ids.add(source);
+          queue.push(source);
         }
       }
     }
@@ -110,11 +113,11 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const panDragRef = useRef(panDrag);
   const draftPositionsRef = useRef(draftPositions);
   const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const pc = buildPathContext(state);
-  const gvm = state.graphViewMode ?? 'table';
-  const byEntity = Object.fromEntries(graph.nodes.map((n) => [n.entityId, n]));
+  const pathContext = buildPathContext(state);
+  const graphViewMode = state.graphViewMode ?? 'table';
+  const byEntity = Object.fromEntries(graph.nodes.map((node) => [node.entityId, node]));
   const positions = useMemo(
-    () => ({ ...Object.fromEntries(graph.nodes.map((n) => [n.id, { x: n.x, y: n.y }])), ...state.positions, ...draftPositions }),
+    () => ({ ...Object.fromEntries(graph.nodes.map((node) => [node.id, { x: node.x, y: node.y }])), ...state.positions, ...draftPositions }),
     [graph.nodes, state.positions, draftPositions],
   );
   const graphBounds = useMemo(() => {
@@ -172,13 +175,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
       const activeDrag = dragRef.current;
       if (activeDrag && Object.keys(draftPositionsRef.current).length > 0) {
         const nextPositions = draftPositionsRef.current;
-        setState((s) => ({
-          ...s,
-          positions: {
-            ...s.positions,
-            ...nextPositions,
-          },
-        }));
+        setState((s) => applyDraggedPositions(s, nextPositions));
       }
       setDraftPositions({});
       setDrag(null);
@@ -211,11 +208,11 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     event.preventDefault();
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const p = positions[node.id] ?? { x: node.x, y: node.y };
+    const position = positions[node.id] ?? { x: node.x, y: node.y };
     setDrag({
       id: node.id,
-      ox: (event.clientX - rect.left - viewOffset.x) / zoom - p.x,
-      oy: (event.clientY - rect.top - viewOffset.y) / zoom - p.y,
+      ox: (event.clientX - rect.left - viewOffset.x) / zoom - position.x,
+      oy: (event.clientY - rect.top - viewOffset.y) / zoom - position.y,
     });
   };
 
@@ -225,7 +222,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     if (target.closest('.node, .edge, .edge-hit, button, .stats, .mode-tip, .path-anchor')) return;
     event.preventDefault();
     setPanDrag({ x: event.clientX, y: event.clientY, panX: manualPan.x, panY: manualPan.y });
-    setState((s) => ({ ...s, selectedMapping: null }));
+    setState((s) => clearSelectedMapping(s));
   };
 
   const zoomBy = (nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
@@ -302,64 +299,64 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
         <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom + 0.25)}>+</button>
         <button className="btn h-[24px] px-2 text-[11px]" onClick={() => { setZoomOverride(null); setManualPan({ x: 0, y: 0 }); }}>Reset</button>
       </div>
-      {!(state.pageMode === 'analyzed' && state.trustStatus === 'trusted') && <div className="message block">{state.pageMode === 'failed' ? 'Analysis failed · Search disabled · fix SQL and re-analyze.' : state.pageMode === 'empty' ? 'Paste SQL or load example.' : 'Analyze SQL to build subquery dependency view.'}</div>}
+      {!(state.pageMode === 'analyzed' && state.trustStatus === 'trusted') && <div className="message block">{state.pageMode === 'failed' ? 'Analysis failed | Search disabled | fix SQL and re-analyze.' : state.pageMode === 'empty' ? 'Paste SQL or load example.' : 'Analyze SQL to build subquery dependency view.'}</div>}
       <div className={cx('mode-tip', ['subquery_dependency', 'large_graph', 'full_graph_preview', 'focus_field'].includes(state.renderMode) && 'show')}>
-        {state.renderMode === 'subquery_dependency' ? 'Default Subquery Dependency View · field entities preserved, hidden by default' : state.renderMode === 'full_graph_preview' ? 'Full Graph Preview · user-triggered only' : state.renderMode === 'focus_field' ? 'Focus Field Mode · local field expansion' : 'Large Graph Mode · render degradation, not failed'}
+        {state.renderMode === 'subquery_dependency' ? 'Default Subquery Dependency View | field entities preserved, hidden by default' : state.renderMode === 'full_graph_preview' ? 'Full Graph Preview | user-triggered only' : state.renderMode === 'focus_field' ? 'Focus Field Mode | local field expansion' : 'Large Graph Mode | render degradation, not failed'}
       </div>
       <div className={cx('path-anchor', state.renderMode !== 'subquery_dependency' && state.detailMode !== 'expanded' && 'show')}>
-        <div className="path-anchor-title"><span className={cx('dot', pc.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pc.status) && 'warn')} /><span>{state.selectedOutput ? `${pc.display} · ${pc.status}` : 'Choose output'}</span></div>
-        <div className="path-anchor-body">{state.selectedOutput ? `PathContextStore · ${pc.nodes} nodes · ${pc.mappings} mappings · ${pc.warnings} warnings` : 'Default view shows subquery / CTE dependency.'}</div>
+        <div className="path-anchor-title"><span className={cx('dot', pathContext.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pathContext.status) && 'warn')} /><span>{state.selectedOutput ? `${pathContext.display} | ${pathContext.status}` : 'Choose output'}</span></div>
+        <div className="path-anchor-body">{state.selectedOutput ? `PathContextStore | ${pathContext.nodes} nodes | ${pathContext.mappings} mappings | ${pathContext.warnings} warnings` : 'Default view shows subquery / CTE dependency.'}</div>
       </div>
       <div className="canvas-transform" style={{ transform: `translate(${viewOffset.x}px, ${viewOffset.y}px)`, transformOrigin: 'top left' }}>
-      <div className="stage" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left' }} onClick={() => setState((s) => ({ ...s, selectedMapping: null }))}>
-        <svg className="edge-layer">
-          <defs>
-            <marker id="arrowDefault" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#94A3B8" /></marker>
-            <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
-          </defs>
-          {(() => {
-            const ports = buildPortIndexes(graph, positions);
+        <div className="stage" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left' }} onClick={() => setState((s) => clearSelectedMapping(s))}>
+          <svg className="edge-layer">
+            <defs>
+              <marker id="arrowDefault" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#94A3B8" /></marker>
+              <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
+            </defs>
+            {(() => {
+              const ports = buildPortIndexes(graph, positions);
 
-            return graph.edges.map((edge: GraphEdge) => {
-            const s = byEntity[edge.source];
-            const t = byEntity[edge.target];
-            if (!s || !t) return null;
-            const sp = positions[s.id] ?? { x: s.x, y: s.y };
-            const tp = positions[t.id] ?? { x: t.x, y: t.y };
-            const edgePath = routeEdgePath({ edge, sourceNode: s, targetNode: t, sourcePos: sp, targetPos: tp, ports, style: 'smooth' });
-            const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
-            const isSelectedEdge = selectedEdges.has(edge.id);
-            const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
-            const dimmed = hasActiveSelection && !isRelated;
-            const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
-            const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+              return graph.edges.map((edge: GraphEdge) => {
+                const sourceNode = byEntity[edge.source];
+                const targetNode = byEntity[edge.target];
+                if (!sourceNode || !targetNode) return null;
+                const sourcePos = positions[sourceNode.id] ?? { x: sourceNode.x, y: sourceNode.y };
+                const targetPos = positions[targetNode.id] ?? { x: targetNode.x, y: targetNode.y };
+                const edgePath = routeEdgePath({ edge, sourceNode, targetNode, sourcePos, targetPos, ports, style: 'smooth' });
+                const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
+                const isSelectedEdge = selectedEdges.has(edge.id);
+                const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
+                const dimmed = hasActiveSelection && !isRelated;
+                const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
+                const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+                return (
+                  <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectEdgeMapping(s, edge.target, edge.mapping || null)); }}>
+                    <path className="edge-hit" d={edgePath} />
+                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
+                  </g>
+                );
+              });
+            })()}
+          </svg>
+          {graph.nodes.map((node) => {
+            const position = positions[node.id] ?? { x: node.x, y: node.y };
+            const box = nodeBox(node.type);
+            const selected = state.selectedEntity === node.entityId;
+            const isCurrent = current.has(node.entityId);
+            const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
+            const dimmed = hasActiveSelection && !selected && !inSelection;
+            const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
+            const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
             return (
-              <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); setState((st) => { const already = st.selectedEntity === edge.target && st.selectedMapping === edge.mapping; return { ...st, selectedMapping: already ? null : (edge.mapping || null), selectedEntity: already ? 'out:group' : edge.target, detailMode: 'compact', detailTab: already ? 'summary' : (edge.mapping ? 'mapping' : 'summary') }; }); }}>
-                <path className="edge-hit" d={edgePath} />
-                <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
-              </g>
+              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
+                <span className="strip" /><span className="title" title={node.label}>{node.label}</span><span className="state-dot" />
+              </div>
             );
-          });
-          })()}
-        </svg>
-        {graph.nodes.map((node) => {
-          const p = positions[node.id] ?? { x: node.x, y: node.y };
-          const nBox = nodeBox(node.type);
-          const selected = state.selectedEntity === node.entityId;
-          const isCurrent = current.has(node.entityId);
-          const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
-          const dimmed = hasActiveSelection && !selected && !inSelection;
-          const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
-          const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
-          return (
-            <div key={node.id} className="node" style={{ left: p.x - nBox.width / 2, top: p.y - nBox.height / 2 }} data-type={node.type} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(e) => startDrag(e, node)} onDoubleClick={(e) => { e.stopPropagation(); setState((s) => { const already = s.selectedEntity === node.entityId; return { ...s, selectedEntity: already ? 'out:group' : node.entityId, selectedMapping: null, detailMode: already ? 'collapsed' : 'compact', detailTab: 'summary' }; }); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
-              <span className="strip" /><span className="title" title={node.label}>{node.label}</span><span className="state-dot" />
-            </div>
-          );
-        })}
+          })}
+        </div>
       </div>
-      </div>
-      <div className="stats"><h4>GraphRenderMode</h4><div className="stats-grid"><span>mode</span><b>{state.renderMode.replace('_dependency', '').replace('current_field_', 'field_')}</b><span>view</span><b>{gvm}</b><span>visible</span><b>{graph.nodes.length}/{graph.edges.length}</b><span>layout</span><b>{state.lastTransition?.includes('layout:recompute') ? 'recomputed' : 'stable'}</b><span>labels</span><b>{drag ? 'off' : 'lazy'}</b></div></div>
+      <div className="stats"><h4>GraphRenderMode</h4><div className="stats-grid"><span>mode</span><b>{state.renderMode.replace('_dependency', '').replace('current_field_', 'field_')}</b><span>view</span><b>{graphViewMode}</b><span>visible</span><b>{graph.nodes.length}/{graph.edges.length}</b><span>layout</span><b>{state.lastTransition?.includes('layout:recompute') ? 'recomputed' : 'stable'}</b><span>labels</span><b>{drag ? 'off' : 'lazy'}</b></div></div>
     </div>
   );
 }

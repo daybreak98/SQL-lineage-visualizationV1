@@ -2,6 +2,12 @@ import type React from 'react';
 import { buildPathContext } from '../data/selectors';
 import type { GraphViewMode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
+import {
+  openDrawer,
+  resetViewport,
+  switchGraphViewMode,
+  toggleDetailCollapsed,
+} from '../workbench/actions';
 
 interface Props {
   state: WorkbenchState;
@@ -19,19 +25,24 @@ const VIEW_MODES: { mode: GraphViewMode; label: string; title: string }[] = [
 
 export function CanvasToolbar({ state, setState, onTransition }: Props) {
   const pc = buildPathContext(state);
+
   return (
     <div className="toolbar">
       <div className="tool-left">
         <span className="tool-title">Canvas</span>
         <button className="tool-btn">Fit Path</button>
         <button className="tool-btn">Center</button>
-        <button className="tool-btn" onClick={() => setState((s) => ({ ...s, positions: {} }))}>Reset Viewport</button>
+        <button className="tool-btn" onClick={() => setState((s) => resetViewport(s))}>Reset Viewport</button>
         <button className="tool-btn" onClick={() => onTransition('CLEAR_SELECTION')}>Clear</button>
         <button className="tool-btn" onClick={() => state.selectedOutput && onTransition('FOCUS_FIELD')}>Focus</button>
-        <button className="tool-btn" onClick={() => setState((s) => ({ ...s, drawerOpen: true, drawerTab: 'taxonomy' }))}>?</button>
+        <button className="tool-btn" onClick={() => setState((s) => openDrawer(s, 'taxonomy'))}>?</button>
         <div className="path-inline">
           <span className={cx('dot', pc.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pc.status) && 'warn')} />
-          <span id="pathText">{state.selectedOutput ? `${pc.display} · ${pc.status} · ${pc.nodes} nodes · ${pc.mappings} mappings` : 'Subquery dependency view · choose output for field path'}</span>
+          <span id="pathText">
+            {state.selectedOutput
+              ? `${pc.display} | ${pc.status} | ${pc.nodes} nodes | ${pc.mappings} mappings`
+              : 'Subquery dependency view | choose output for field path'}
+          </span>
           <span className="badge">{state.renderMode}</span>
         </div>
       </div>
@@ -42,14 +53,16 @@ export function CanvasToolbar({ state, setState, onTransition }: Props) {
               key={mode}
               className={cx('view-btn', state.graphViewMode === mode && 'active')}
               title={title}
-              onClick={() => setState((s) => ({ ...s, graphViewMode: mode, positions: {} }))}
+              onClick={() => setState((s) => switchGraphViewMode(s, mode))}
             >
               {label}
             </button>
           ))}
         </div>
         <button className="tool-btn" onClick={() => onTransition('OPEN_FULL_PREVIEW')}>Full Preview</button>
-        <button className="tool-btn" onClick={() => setState((s) => ({ ...s, detailMode: s.detailMode === 'collapsed' ? 'compact' : 'collapsed' }))}>{state.detailMode === 'collapsed' ? 'Show Detail' : 'Hide Detail'}</button>
+        <button className="tool-btn" onClick={() => setState((s) => toggleDetailCollapsed(s))}>
+          {state.detailMode === 'collapsed' ? 'Show Detail' : 'Hide Detail'}
+        </button>
       </div>
     </div>
   );
