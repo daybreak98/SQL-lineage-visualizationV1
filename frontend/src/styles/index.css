@@ -123,12 +123,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .overlay { position:fixed; inset:0; z-index:45; cursor:col-resize; display:none; background:transparent; }
 .overlay.show { display:block; }
 
-.canvas-panel { flex: 1; min-width: 420px; background: white; display: flex; flex-direction: column; min-height: 0; }
+.canvas-panel { flex: 1; min-width: 420px; background: white; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .searchbar { height: var(--search); flex-shrink: 0; border-bottom: 1px solid var(--line); background: white; display: flex; align-items: center; gap: 8px; padding: 0 8px; position: relative; z-index: 30; }
 .search-wrap { height: 32px; flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: white; display: flex; align-items: center; gap: 7px; padding: 0 9px; }
 .search-wrap:focus-within { border-color:#60A5FA; box-shadow:0 0 0 3px #DBEAFE; }
 #fieldSearch { border:0; outline:0; flex:1; min-width:0; font-size:12px; background:transparent; }
 .output-capsule { height: 30px; min-width: 132px; max-width: 248px; border: 1px solid #BFDBFE; background: #EFF6FF; color:#1D4ED8; border-radius: 999px; padding: 0 10px; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; flex-shrink: 0; }
+.output-capsule.idle { justify-content: center; }
+.output-capsule.idle .dot, .output-capsule.idle .meta { display: none; }
 .output-capsule .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .output-capsule.stale { border-color: var(--line); background:#F8FAFC; color:var(--slate-600); }
 .output-capsule.partial { border-color:#FDE68A; background:#FFFBEB; color:#B45309; }
@@ -258,7 +260,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .stats-grid { display:grid; grid-template-columns:auto auto; gap:3px 12px; font-size:10px; color:var(--slate-500); }
 .stats-grid b { color:var(--slate-700); text-align:right; }
 
-.detail { height:var(--detail); flex-shrink:0; background:white; border-top:1px solid var(--line); display:flex; flex-direction:column; }
+.detail { position:absolute; left:0; right:0; bottom:0; z-index:25; height:var(--detail); flex-shrink:0; background:white; border-top:1px solid var(--line); box-shadow:0 -8px 24px rgba(15,23,42,.08); display:flex; flex-direction:column; }
 .detail.collapsed { height:36px; }
 .detail.expanded { height:156px; }
 .detail-head { height:36px; flex-shrink:0; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; padding:0 12px; }

@@ -108,6 +108,7 @@ describe('SearchBar', () => {
     // Output capsule shows idle status when no output selected
     const capsule = document.querySelector('.output-capsule');
     expect(capsule).toBeInTheDocument();
+    expect(capsule).toHaveClass('idle');
 
     const nameEl = capsule?.querySelector('.name');
     expect(nameEl?.textContent).toBe('Choose output');

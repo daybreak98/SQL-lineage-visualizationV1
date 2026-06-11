@@ -74,7 +74,7 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
       <select className="select h-8" disabled={!canSearch} value={state.scope} onChange={(event) => setState((s) => ({ ...s, scope: event.target.value }))}>
         <option value="all">All</option><option value="output">Output</option><option value="source">Source</option><option value="cte">CTE</option><option value="subquery">Subquery</option>
       </select>
-      <button className={cx('output-capsule', pc.status === 'stale' && 'stale', pc.status === 'partial' && 'partial', pc.status === 'low_confidence' && 'low')} onClick={() => setState((s) => ({ ...s, query: '', scope: 'output' }))}>
+      <button className={cx('output-capsule', !state.selectedOutput && 'idle', pc.status === 'stale' && 'stale', pc.status === 'partial' && 'partial', pc.status === 'low_confidence' && 'low')} onClick={() => setState((s) => ({ ...s, query: '', scope: 'output' }))}>
         <span className={cx('dot', state.trustStatus !== 'trusted' && 'stale')} />
         <span className="name">{pc.display}</span>
         <span className="meta">· {pc.status === 'ready' ? `${pc.warnings}⚠` : pc.status === 'idle' ? 'none' : pc.status}</span>

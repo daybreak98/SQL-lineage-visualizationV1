@@ -10,6 +10,10 @@ import {
 } from '../state';
 
 describe('workbench state helpers', () => {
+  it('keeps the bottom detail panel closed by default', () => {
+    expect(initialWorkbenchState.detailMode).toBe('collapsed');
+  });
+
   it('marks analyzed workbench as dirty after sql edit', () => {
     const next = applySqlDraftChange(
       { ...initialWorkbenchState, pageMode: 'analyzed', trustStatus: 'trusted' },
@@ -58,11 +62,15 @@ describe('workbench state helpers', () => {
       summary: { table_count: 3 },
     };
 
-    const next = buildAnalyzeSuccessState(initialWorkbenchState, result);
+    const next = buildAnalyzeSuccessState(
+      { ...initialWorkbenchState, detailMode: 'compact' },
+      result,
+    );
 
     expect(next.pageMode).toBe('analyzed');
     expect(next.analysisStatus).toBe('success');
     expect(next.trustStatus).toBe('trusted');
+    expect(next.detailMode).toBe('collapsed');
     expect(next.graphViewMode).toBe('subquery');
     expect(next.backendGraph?.nodes).toHaveLength(3);
     expect(next.backendSearchItems?.length).toBeGreaterThan(0);
