@@ -1,7 +1,13 @@
 import type { DetailTab, GraphViewMode, WorkbenchState } from '../types/lineage';
 
+let canvasCommandId = 0;
+
+export function issueCanvasCommand(state: WorkbenchState, type: 'fit' | 'center' | 'reset'): WorkbenchState {
+  return { ...state, canvasCommand: { type, id: ++canvasCommandId } };
+}
+
 export function resetViewport(state: WorkbenchState): WorkbenchState {
-  return { ...state, positions: {} };
+  return issueCanvasCommand({ ...state, positions: {} }, 'reset');
 }
 
 export function openDrawer(state: WorkbenchState, drawerTab: string): WorkbenchState {

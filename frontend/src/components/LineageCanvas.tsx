@@ -29,6 +29,13 @@ export function fitZoom(bounds: { width: number; height: number } | null, viewpo
   return LINEAGE_ZOOM_BASELINE;
 }
 
+function fitBoundsZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
+  if (!bounds || viewport.width === 0 || viewport.height === 0) return LINEAGE_ZOOM_BASELINE;
+  const xFit = (viewport.width - 96) / bounds.width;
+  const yFit = (viewport.height - 104) / bounds.height;
+  return clamp(Math.min(xFit, yFit), 0.35, 3);
+}
+
 export function zoomDisplayPercent(zoom: number) {
   return Math.round((zoom / LINEAGE_ZOOM_BASELINE) * 100);
 }
@@ -194,6 +201,27 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     setZoomOverride(null);
     setDraftPositions({});
   }, [state.backendGraph, state.graphViewMode]);
+
+  useEffect(() => {
+    if (!state.canvasCommand) return;
+    if (state.canvasCommand.type === 'fit') {
+      const nextZoom = fitBoundsZoom(graphBounds, viewportSize);
+      setZoomOverride(nextZoom);
+      setManualPan({ x: 0, y: 0 });
+      setDraftPositions({});
+      return;
+    }
+    if (state.canvasCommand.type === 'center') {
+      setManualPan({ x: 0, y: 0 });
+      setDraftPositions({});
+      return;
+    }
+    if (state.canvasCommand.type === 'reset') {
+      setZoomOverride(null);
+      setManualPan({ x: 0, y: 0 });
+      setDraftPositions({});
+    }
+  }, [state.canvasCommand, graphBounds, viewportSize]);
 
   useEffect(() => {
     if (!drag && !panDrag) return;

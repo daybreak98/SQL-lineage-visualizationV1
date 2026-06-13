@@ -3,6 +3,7 @@ import { buildPathContext } from '../data/selectors';
 import type { GraphViewMode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
 import {
+  issueCanvasCommand,
   openDrawer,
   resetViewport,
   switchGraphViewMode,
@@ -25,16 +26,17 @@ const VIEW_MODES: { mode: GraphViewMode; label: string; title: string }[] = [
 
 export function CanvasToolbar({ state, setState, onTransition }: Props) {
   const pc = buildPathContext(state);
+  const hasSelection = Boolean(state.selectedOutput || state.selectedMapping || (state.selectedEntity && state.selectedEntity !== 'out:group'));
 
   return (
     <div className="toolbar">
       <div className="tool-left">
         <span className="tool-title">Canvas</span>
-        <button className="tool-btn">Fit Path</button>
-        <button className="tool-btn">Center</button>
+        <button className="tool-btn" onClick={() => setState((s) => issueCanvasCommand(s, 'fit'))}>Fit Path</button>
+        <button className="tool-btn" onClick={() => setState((s) => issueCanvasCommand(s, 'center'))}>Center</button>
         <button className="tool-btn" onClick={() => setState((s) => resetViewport(s))}>Reset Viewport</button>
-        <button className="tool-btn" onClick={() => onTransition('CLEAR_SELECTION')}>Clear</button>
-        <button className="tool-btn" onClick={() => state.selectedOutput && onTransition('FOCUS_FIELD')}>Focus</button>
+        <button className="tool-btn" disabled={!hasSelection} onClick={() => onTransition('CLEAR_SELECTION')}>Clear</button>
+        <button className="tool-btn" disabled={!state.selectedOutput} onClick={() => state.selectedOutput && onTransition('FOCUS_FIELD')}>Focus</button>
         <button className="tool-btn" onClick={() => setState((s) => openDrawer(s, 'taxonomy'))}>?</button>
         <div className="path-inline">
           <span className={cx('dot', pc.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pc.status) && 'warn')} />

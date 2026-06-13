@@ -5,6 +5,7 @@ export type GraphRenderMode = 'subquery_dependency' | 'current_field_path' | 'fo
 export type GraphViewMode = 'table' | 'subquery' | 'column' | 'expression' | 'semantics' | 'diagnostics';
 export type DetailTab = 'summary' | 'mapping' | 'source' | 'diagnostics' | 'semantics';
 export type DetailMode = 'collapsed' | 'compact' | 'expanded';
+export type CanvasCommand = { type: 'fit' | 'center' | 'reset'; id: number };
 
 export interface Entity {
   id: string;
@@ -254,6 +255,7 @@ export interface WorkbenchState {
   scope: string;
   large: boolean;
   lastTransition?: string;
+  canvasCommand?: CanvasCommand;
   positions: Record<string, { x: number; y: number }>;
   sourceLocations?: Record<string, SourceLocation>;
   semanticsReport?: SemanticsReport;

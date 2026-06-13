@@ -196,6 +196,26 @@ describe('LineageCanvas', () => {
     expect(transform.style.transform).toContain('translate(40px, 30px)');
   });
 
+  it('resets local pan and zoom when a reset viewport command is received', () => {
+    const state = baseState();
+    const setState = vi.fn();
+    const { container, rerender } = render(<LineageCanvas state={state} setState={setState} />);
+
+    const viewport = container.querySelector('.viewport') as HTMLElement;
+    fireEvent.mouseDown(viewport, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(viewport, { clientX: 140, clientY: 130 });
+    fireEvent.wheel(viewport, { deltaY: -120, clientX: 120, clientY: 120 });
+
+    const transformedOffset = (container.querySelector('.canvas-transform') as HTMLElement).style.transform;
+    expect(transformedOffset).not.toBe('');
+    expect(screen.getByText(/110%/)).toBeInTheDocument();
+
+    rerender(<LineageCanvas state={{ ...state, canvasCommand: { type: 'reset', id: 1 } }} setState={setState} />);
+
+    expect((container.querySelector('.canvas-transform') as HTMLElement).style.transform).not.toBe(transformedOffset);
+    expect(screen.getByText(/100%/)).toBeInTheDocument();
+  });
+
   it('positions graph nodes at the same coordinates used by edges', () => {
     const state = baseState();
     const setState = vi.fn();
