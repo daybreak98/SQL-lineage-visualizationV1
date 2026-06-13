@@ -98,6 +98,19 @@ describe('LineageCanvas', () => {
     expect(newState.detailMode).toBe('compact');
   });
 
+  it('uses a fast custom full-label tooltip without the left strip', () => {
+    const state = baseState();
+    const setState = vi.fn();
+    render(<LineageCanvas state={state} setState={setState} />);
+
+    const title = screen.getByText('dwd_order_di', { selector: '.title' });
+    const node = title.closest('.node') as HTMLElement;
+
+    expect(node).toHaveAttribute('data-full-label', 'dwd_order_di');
+    expect(title).not.toHaveAttribute('title');
+    expect(node.querySelector('.strip')).toBeNull();
+  });
+
   it('shows no message when fully analyzed and trusted', () => {
     const state = baseState({ pageMode: 'analyzed', trustStatus: 'trusted' });
     const setState = vi.fn();

@@ -24,10 +24,9 @@ function clamp(value: number, min: number, max: number) {
 export const LINEAGE_ZOOM_BASELINE = 0.72;
 
 export function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
-  if (!bounds || viewport.width === 0 || viewport.height === 0) return LINEAGE_ZOOM_BASELINE;
-  const xFit = (viewport.width - 96) / bounds.width;
-  const yFit = (viewport.height - 104) / bounds.height;
-  return clamp(Math.min(LINEAGE_ZOOM_BASELINE, xFit, yFit), 0.35, LINEAGE_ZOOM_BASELINE);
+  void bounds;
+  void viewport;
+  return LINEAGE_ZOOM_BASELINE;
 }
 
 export function zoomDisplayPercent(zoom: number) {
@@ -356,8 +355,8 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
             const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
             return (
-              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
-                <span className="strip" /><span className="title" title={node.label}>{node.label}</span><span className="state-dot" />
+              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
+                <span className="title">{node.label}</span><span className="state-dot" />
               </div>
             );
           })}

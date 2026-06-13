@@ -18,14 +18,14 @@ export const COMFORT_CANVAS = {
 };
 
 export const COMFORT_NODE_BOX: Record<string, { width: number; height: number; radius: number }> = {
-  table: { width: 138, height: 56, radius: 14 },
-  column: { width: 138, height: 56, radius: 14 },
-  cte: { width: 138, height: 56, radius: 14 },
-  subquery: { width: 138, height: 56, radius: 14 },
-  expression: { width: 138, height: 56, radius: 14 },
-  output: { width: 138, height: 56, radius: 14 },
-  output_field: { width: 138, height: 56, radius: 14 },
-  unknown: { width: 138, height: 56, radius: 14 },
+  table: { width: 207, height: 45, radius: 12 },
+  column: { width: 138, height: 45, radius: 12 },
+  cte: { width: 110, height: 45, radius: 12 },
+  subquery: { width: 110, height: 45, radius: 12 },
+  expression: { width: 138, height: 45, radius: 12 },
+  output: { width: 138, height: 45, radius: 12 },
+  output_field: { width: 138, height: 45, radius: 12 },
+  unknown: { width: 138, height: 45, radius: 12 },
 };
 
 export const COMFORT_EDGE = {
