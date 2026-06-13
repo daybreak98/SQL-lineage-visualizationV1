@@ -265,4 +265,6 @@ export interface WorkbenchState {
   metadataStatus?: string;
   colToTables?: Record<string, string[]>;
   backendInvalidEdges?: GraphEdge[];
+  lastAnalysisResult?: BackendAnalysisResult;
+  lastApiError?: string;
 }

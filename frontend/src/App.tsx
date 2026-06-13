@@ -16,6 +16,7 @@ import { StatusStrip } from './components/StatusStrip';
 import { TopBar } from './components/TopBar';
 import { exampleSql } from './data/exampleSql';
 import { transitionRenderMode } from './data/selectors';
+import { DebugPage } from './pages/DebugPage';
 import { DialectConvertPage } from './pages/DialectConvertPage';
 import type { SearchItem, WorkbenchState } from './types/lineage';
 import {
@@ -114,6 +115,7 @@ export default function App() {
   const setSplit = (split: number) => setState((s) => ({ ...s, split }));
   const workspaceStyle = useMemo(() => ({ ['--split' as string]: `${state.split}%` }), [state.split]);
   const isConvertPage = activeNav === 'convert';
+  const isDebugPage = activeNav === 'debug';
 
   return (
     <div className="app" style={workspaceStyle}>
@@ -165,7 +167,7 @@ export default function App() {
           active={activeNav}
           onOpen={(tab) => {
             setActiveNav(tab);
-            if (tab !== 'workbench' && tab !== 'convert') {
+            if (tab !== 'workbench' && tab !== 'convert' && tab !== 'debug') {
               setState((s) => ({ ...s, drawerOpen: true, drawerTab: tab }));
             }
           }}
@@ -173,6 +175,8 @@ export default function App() {
         <main className="app-main">
           {isConvertPage ? (
             <DialectConvertPage />
+          ) : isDebugPage ? (
+            <DebugPage state={state} dialect={dialect} sql={sql} />
           ) : (
             <>
               <div className="workspace" id="workspace">

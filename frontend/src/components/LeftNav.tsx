@@ -3,6 +3,7 @@ import { cx } from '../utils/cx';
 const items: Array<[string, string, string]> = [
   ['workbench', 'W', 'Workbench'],
   ['convert', 'C', 'Dialect Convert'],
+  ['debug', 'D', 'Debug Mode'],
   ['render', 'R', 'RenderMode'],
   ['taxonomy', 'N', 'Taxonomy'],
   ['snapshots', 'S', 'Snapshots'],

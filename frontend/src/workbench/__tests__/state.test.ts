@@ -25,11 +25,15 @@ describe('workbench state helpers', () => {
   });
 
   it('builds analyze running state', () => {
-    const next = buildAnalyzeRunningState(initialWorkbenchState);
+    const next = buildAnalyzeRunningState({
+      ...initialWorkbenchState,
+      lastApiError: 'previous error',
+    });
 
     expect(next.pageMode).toBe('analyzing');
     expect(next.analysisStatus).toBe('running');
     expect(next.trustStatus).toBe('untrusted');
+    expect(next.lastApiError).toBeUndefined();
   });
 
   it('builds analyze success state with normalized graph payload', () => {
@@ -71,6 +75,8 @@ describe('workbench state helpers', () => {
     expect(next.analysisStatus).toBe('success');
     expect(next.trustStatus).toBe('trusted');
     expect(next.detailMode).toBe('collapsed');
+    expect(next.lastAnalysisResult).toBe(result);
+    expect(next.lastApiError).toBeUndefined();
     expect(next.graphViewMode).toBe('subquery');
     expect(next.backendGraph?.nodes).toHaveLength(3);
     expect(next.backendSearchItems?.length).toBeGreaterThan(0);
@@ -82,6 +88,8 @@ describe('workbench state helpers', () => {
 
     expect(next.pageMode).toBe('failed');
     expect(next.analysisStatus).toBe('failed');
+    expect(next.lastApiError).toBe('network error');
+    expect(next.lastAnalysisResult).toBeUndefined();
     expect(next.backendDiagnostics?.[0].code).toBe('FRONTEND_API_ERROR');
   });
 

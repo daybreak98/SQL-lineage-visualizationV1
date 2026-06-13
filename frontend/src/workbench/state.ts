@@ -50,7 +50,13 @@ export function applySqlDraftChange(state: WorkbenchState, value: string): Workb
 }
 
 export function buildAnalyzeRunningState(state: WorkbenchState): WorkbenchState {
-  return { ...state, pageMode: 'analyzing', analysisStatus: 'running', trustStatus: 'untrusted' };
+  return {
+    ...state,
+    pageMode: 'analyzing',
+    analysisStatus: 'running',
+    trustStatus: 'untrusted',
+    lastApiError: undefined,
+  };
 }
 
 export function buildAnalyzeSuccessState(state: WorkbenchState, result: BackendAnalysisResult): WorkbenchState {
@@ -87,6 +93,8 @@ export function buildAnalyzeSuccessState(state: WorkbenchState, result: BackendA
     colToTables,
     backendInvalidEdges: invalidEdges,
     backendMessage: `${result.analysis_id} | ${result.summary?.table_count ?? graph.nodes.length} nodes from backend`,
+    lastAnalysisResult: result,
+    lastApiError: undefined,
     positions: {},
   };
 }
@@ -104,6 +112,8 @@ export function buildAnalyzeFailureState(state: WorkbenchState, message: string)
     renderMode: transition.mode,
     lastTransition: transition.description,
     backendMessage: message,
+    lastAnalysisResult: undefined,
+    lastApiError: message,
     backendDiagnostics: [{
       id: 'frontend-api-error',
       code: 'FRONTEND_API_ERROR',
