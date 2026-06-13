@@ -21,11 +21,17 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+export const LINEAGE_ZOOM_BASELINE = 0.72;
+
 export function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
-  if (!bounds || viewport.width === 0 || viewport.height === 0) return 1;
+  if (!bounds || viewport.width === 0 || viewport.height === 0) return LINEAGE_ZOOM_BASELINE;
   const xFit = (viewport.width - 96) / bounds.width;
   const yFit = (viewport.height - 104) / bounds.height;
-  return clamp(Math.min(1, xFit, yFit), 0.35, 1);
+  return clamp(Math.min(LINEAGE_ZOOM_BASELINE, xFit, yFit), 0.35, LINEAGE_ZOOM_BASELINE);
+}
+
+export function zoomDisplayPercent(zoom: number) {
+  return Math.round((zoom / LINEAGE_ZOOM_BASELINE) * 100);
 }
 
 function centerOffset(
@@ -137,6 +143,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   }, [graph.nodes]);
   const defaultZoom = useMemo(() => fitZoom(graphBounds, viewportSize), [graphBounds, viewportSize]);
   const zoom = zoomOverride ?? defaultZoom;
+  const zoomStep = LINEAGE_ZOOM_BASELINE * 0.25;
   const autoOffset = useMemo(() => centerOffset(graphBounds, viewportSize, zoom), [graphBounds, viewportSize, zoom]);
   const viewOffset = useMemo(() => ({ x: autoOffset.x + manualPan.x, y: autoOffset.y + manualPan.y }), [autoOffset, manualPan]);
 
@@ -294,9 +301,9 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
       style={{ position: 'relative' }}
     >
       <div style={{ position: 'absolute', top: 4, right: 4, zIndex: 50, display: 'flex', gap: 4 }}>
-        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom - 0.25)}>-</button>
-        <span className="pill" style={{ minWidth: 48, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
-        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom + 0.25)}>+</button>
+        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom - zoomStep)}>-</button>
+        <span className="pill" style={{ minWidth: 48, textAlign: 'center' }}>{zoomDisplayPercent(zoom)}%</span>
+        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom + zoomStep)}>+</button>
         <button className="btn h-[24px] px-2 text-[11px]" onClick={() => { setZoomOverride(null); setManualPan({ x: 0, y: 0 }); }}>Reset</button>
       </div>
       {!(state.pageMode === 'analyzed' && state.trustStatus === 'trusted') && <div className="message block">{state.pageMode === 'failed' ? 'Analysis failed | Search disabled | fix SQL and re-analyze.' : state.pageMode === 'empty' ? 'Paste SQL or load example.' : 'Analyze SQL to build subquery dependency view.'}</div>}

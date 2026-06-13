@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitZoom } from '../components/LineageCanvas';
+import { fitZoom, LINEAGE_ZOOM_BASELINE, zoomDisplayPercent } from '../components/LineageCanvas';
 import { getComfortNodeBox } from '../nodeVisualTokens';
 
 describe('lineage visual scale', () => {
@@ -19,7 +19,9 @@ describe('lineage visual scale', () => {
     }
   });
 
-  it('does not upscale small lineage graphs by default', () => {
-    expect(fitZoom({ width: 360, height: 220 }, { width: 1200, height: 800 })).toBe(1);
+  it('treats the former 72% subquery scale as the shared 100% visual baseline', () => {
+    expect(LINEAGE_ZOOM_BASELINE).toBe(0.72);
+    expect(fitZoom({ width: 360, height: 220 }, { width: 1200, height: 800 })).toBe(LINEAGE_ZOOM_BASELINE);
+    expect(zoomDisplayPercent(LINEAGE_ZOOM_BASELINE)).toBe(100);
   });
 });
