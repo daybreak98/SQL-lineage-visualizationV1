@@ -111,6 +111,21 @@ describe('LineageCanvas', () => {
     expect(node.querySelector('.strip')).toBeNull();
   });
 
+  it('marks downstream nodes and edges as impact targets for the selected node', () => {
+    const state = baseState({ graphViewMode: 'subquery', selectedEntity: 'table:dwd_order_di' });
+    const setState = vi.fn();
+    const { container } = render(<LineageCanvas state={state} setState={setState} />);
+
+    const downstreamNode = screen.getByText('metric_base', { selector: '.title' }).closest('.node') as HTMLElement;
+    const unrelatedSourceNode = screen.getByText('dim_user_df', { selector: '.title' }).closest('.node') as HTMLElement;
+    const selectedNode = screen.getByText('dwd_order_di', { selector: '.title' }).closest('.node') as HTMLElement;
+
+    expect(selectedNode).not.toHaveAttribute('data-downstream-impact');
+    expect(downstreamNode).toHaveAttribute('data-downstream-impact', 'true');
+    expect(unrelatedSourceNode).not.toHaveAttribute('data-downstream-impact');
+    expect(container.querySelectorAll('path.edge.downstream-impact')).toHaveLength(4);
+  });
+
   it('shows no message when fully analyzed and trusted', () => {
     const state = baseState({ pageMode: 'analyzed', trustStatus: 'trusted' });
     const setState = vi.fn();

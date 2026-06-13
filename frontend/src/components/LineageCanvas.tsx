@@ -86,6 +86,34 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     }
     return ids;
   }, [state.selectedEntity, graph.edges]);
+  const downstreamImpact = useMemo(() => {
+    const entityId = state.selectedEntity;
+    if (!entityId || entityId === 'out:group') return { nodeIds: new Set<string>(), edgeIds: new Set<string>() };
+
+    const outgoing = new Map<string, GraphEdge[]>();
+    graph.edges.forEach((edge) => {
+      if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
+      outgoing.get(edge.source)!.push(edge);
+    });
+
+    const nodeIds = new Set<string>();
+    const edgeIds = new Set<string>();
+    const visited = new Set<string>([entityId]);
+    const queue = [entityId];
+    while (queue.length > 0) {
+      const currentEntity = queue.shift()!;
+      for (const edge of outgoing.get(currentEntity) ?? []) {
+        edgeIds.add(edge.id);
+        if (!visited.has(edge.target)) {
+          visited.add(edge.target);
+          nodeIds.add(edge.target);
+          queue.push(edge.target);
+        }
+      }
+    }
+
+    return { nodeIds, edgeIds };
+  }, [state.selectedEntity, graph.edges]);
   const selectedNodeIds = useMemo(() => {
     const entityId = state.selectedEntity;
     if (!entityId || entityId === 'out:group') return new Set<string>();
@@ -332,14 +360,15 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                 const edgePath = routeEdgePath({ edge, sourceNode, targetNode, sourcePos, targetPos, ports, style: 'smooth' });
                 const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
                 const isSelectedEdge = selectedEdges.has(edge.id);
-                const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
+                const isDownstreamImpactEdge = downstreamImpact.edgeIds.has(edge.id);
+                const isRelated = isSelectedEdge || isDownstreamImpactEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
                 const dimmed = hasActiveSelection && !isRelated;
                 const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
                 const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
                 return (
                   <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectEdgeMapping(s, edge.target, edge.mapping || null)); }}>
                     <path className="edge-hit" d={edgePath} />
-                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
+                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
                   </g>
                 );
               });
@@ -351,11 +380,12 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             const selected = state.selectedEntity === node.entityId;
             const isCurrent = current.has(node.entityId);
             const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
-            const dimmed = hasActiveSelection && !selected && !inSelection;
+            const isDownstreamImpactNode = downstreamImpact.nodeIds.has(node.entityId);
+            const dimmed = hasActiveSelection && !selected && !inSelection && !isDownstreamImpactNode;
             const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
             const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
             return (
-              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
+              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={selected || undefined} data-current={isCurrent || undefined} data-downstream-impact={isDownstreamImpactNode || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
                 <span className="title">{node.label}</span><span className="state-dot" />
               </div>
             );
