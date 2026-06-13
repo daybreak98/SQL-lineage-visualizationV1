@@ -152,7 +152,7 @@ describe('LineageCanvas', () => {
     const viewport = document.querySelector('.viewport') as HTMLElement;
     fireEvent.wheel(viewport, { deltaY: -120, clientX: 120, clientY: 120 });
 
-    expect(screen.getByText(/138%/)).toBeInTheDocument();
+    expect(screen.getByText(/110%/)).toBeInTheDocument();
   });
 
   it('supports panning the canvas from empty space', () => {

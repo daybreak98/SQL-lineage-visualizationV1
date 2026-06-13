@@ -21,11 +21,11 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
-  if (!bounds || viewport.width === 0 || viewport.height === 0) return 1.25;
+export function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
+  if (!bounds || viewport.width === 0 || viewport.height === 0) return 1;
   const xFit = (viewport.width - 96) / bounds.width;
   const yFit = (viewport.height - 104) / bounds.height;
-  return clamp(Math.min(1.15, xFit, yFit), 0.35, 1.15);
+  return clamp(Math.min(1, xFit, yFit), 0.35, 1);
 }
 
 function centerOffset(
