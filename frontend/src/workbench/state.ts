@@ -146,6 +146,7 @@ export function applySearchSelection(state: WorkbenchState, item: SearchItem): W
     selectedOutput: item.type === 'output' ? item.entityId : state.selectedOutput,
     selectedEntity: targetEntity,
     selectedMapping: null,
+    query: item.displayName,
     detailMode: 'compact',
     detailTab: 'summary',
     renderMode: transition.mode,

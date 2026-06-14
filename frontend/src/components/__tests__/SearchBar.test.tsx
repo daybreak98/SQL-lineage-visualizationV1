@@ -169,6 +169,21 @@ describe('SearchBar', () => {
     expect(onSelect).toHaveBeenCalled();
   });
 
+  it('keeps the selected search term in the input after choosing a result', () => {
+    const state = baseState();
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={vi.fn()} />);
+
+    const input = screen.getByPlaceholderText(/Search field/i);
+    fireEvent.focus(input);
+
+    const resultButtons = document.querySelectorAll('.popover .result');
+    fireEvent.click(resultButtons[0]);
+
+    const nextStates = setState.mock.calls.map(([updater]) => (updater as (s: WorkbenchState) => WorkbenchState)(state));
+    expect(nextStates.some((next) => next.query === 'order_cnt')).toBe(true);
+  });
+
   it('shows empty state when backend returned no searchable items', () => {
     const state = baseState({ backendSearchItems: [] });
     const setState = vi.fn();

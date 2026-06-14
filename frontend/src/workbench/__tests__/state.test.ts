@@ -124,6 +124,7 @@ describe('workbench state helpers', () => {
 
     expect(next.selectedOutput).toBe('out:order_cnt');
     expect(next.selectedEntity).toBe('physical_table:dwd_order_di');
+    expect(next.query).toBe('order_cnt');
     expect(next.detailMode).toBe('compact');
     expect(next.renderMode).toBe('current_field_path');
   });

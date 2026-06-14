@@ -45,7 +45,7 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
 
   const handleSelect = (item: SearchItem) => {
     setSearchOpen(false);
-    setState((s) => ({ ...s, query: '' }));
+    setState((s) => ({ ...s, query: item.displayName }));
     onSelectResult(item);
   };
 
