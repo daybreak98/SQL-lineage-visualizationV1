@@ -128,13 +128,6 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .search-wrap { height: 32px; flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: white; display: flex; align-items: center; gap: 7px; padding: 0 9px; }
 .search-wrap:focus-within { border-color:#60A5FA; box-shadow:0 0 0 3px #DBEAFE; }
 #fieldSearch { border:0; outline:0; flex:1; min-width:0; font-size:12px; background:transparent; }
-.output-capsule { height: 30px; min-width: 132px; max-width: 248px; border: 1px solid #BFDBFE; background: #EFF6FF; color:#1D4ED8; border-radius: 999px; padding: 0 10px; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; flex-shrink: 0; }
-.output-capsule.idle { justify-content: center; }
-.output-capsule.idle .dot, .output-capsule.idle .meta { display: none; }
-.output-capsule .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.output-capsule.stale { border-color: var(--line); background:#F8FAFC; color:var(--slate-600); }
-.output-capsule.partial { border-color:#FDE68A; background:#FFFBEB; color:#B45309; }
-.output-capsule.low { border-color:#DDD6FE; background:#F5F3FF; color:#6D28D9; }
 .popover { position: absolute; left: 8px; right: 8px; top: 38px; max-height: 260px; overflow: auto; background: white; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 14px 32px rgba(15,23,42,.14); padding: 8px; }
 .popover-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; font-size:11px; color:var(--slate-500); }
 .result { width: 100%; border: 1px solid transparent; background: white; border-radius: 7px; padding: 8px; display:flex; justify-content:space-between; text-align:left; margin-bottom:4px; outline:0; }
@@ -362,8 +355,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width:1279px) { .sub, .actions .optional, .path-inline { display:none; } .grid, .cards { grid-template-columns:1fr; } }
 @media (max-width:1023px) { .metadata-grid, .metadata-footer { grid-template-columns:1fr; } .metadata-footer { max-height: 320px; overflow: auto; } }
 @media (max-width:1023px) { .debug-grid, .debug-columns { grid-template-columns:1fr; } .debug-head { flex-direction:column; } }
-@media (max-width:980px) { .output-capsule { max-width:160px; } .output-capsule .meta { display:none; } }
-@media (max-width:760px) { .output-capsule { width:42px; min-width:42px; justify-content:center; padding:0; } .output-capsule .name, .output-capsule .meta { display:none; } #fieldSearch::placeholder { color:transparent; } }
+@media (max-width:760px) { #fieldSearch::placeholder { color:transparent; } }
 @media (max-width:1279px) { .convert-diagnostics { grid-template-columns:1fr; } }
 @media (max-width:1120px) { .convert-toolbar { height:auto; padding:10px 12px; align-items:flex-start; flex-direction:column; } .convert-workspace { flex-direction:column; } .convert-source, .convert-target-panel { width:100%; min-width:0; min-height:280px; } }
 @media (max-width:1023px) { .app::after { content:"Screen too narrow. v1.4 P0-Core standard workbench requires 1366px+ for visual regression."; position:fixed; inset:0; z-index:999; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.82); color:white; text-align:center; padding:24px; font-size:14px; line-height:22px; } }

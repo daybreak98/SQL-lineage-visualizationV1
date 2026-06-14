@@ -48,7 +48,9 @@ function nodeTypeRankSeed(node: GraphNode) {
 function computeLongestPathLevels(nodes: GraphNode[], edges: GraphEdge[]) {
   const hinted = nodes.filter((n) => typeof n.rank === 'number');
   if (hinted.length === nodes.length && nodes.length > 0) {
-    return new Map(nodes.map((n) => [n.entityId, n.rank ?? 0]));
+    const ranks = Array.from(new Set(nodes.map((n) => n.rank ?? 0))).sort((a, b) => a - b);
+    const denseRank = new Map(ranks.map((rank, index) => [rank, index]));
+    return new Map(nodes.map((n) => [n.entityId, denseRank.get(n.rank ?? 0) ?? 0]));
   }
 
   const { incoming } = buildAdjacency(nodes, edges);
@@ -179,9 +181,17 @@ export function layoutComfortGraph(graph: ComfortGraph, options?: {
   const maxLevel = Math.max(1, ...Array.from(groups.keys()));
   const maxGroupSize = Math.max(1, ...Array.from(groups.values()).map((l) => l.length));
 
-  const width = Math.max(cfg.minWidth, cfg.marginX * 2 + maxLevel * cfg.minRankGap + 220);
-  const height = Math.max(cfg.minHeight, cfg.marginY * 2 + maxGroupSize * cfg.minNodeGap);
-  const rankGap = Math.max(cfg.minRankGap, (width - cfg.marginX * 2) / Math.max(maxLevel, 1));
+  const widestNode = Math.max(0, ...nodes.map((node) => getComfortNodeBox(node.type).width));
+  const tallestNode = Math.max(0, ...nodes.map((node) => getComfortNodeBox(node.type).height));
+  const width = Math.max(
+    cfg.marginX * 2 + maxLevel * cfg.minRankGap + widestNode,
+    cfg.marginX * 2 + widestNode,
+  );
+  const height = Math.max(
+    cfg.marginY * 2 + Math.max(0, maxGroupSize - 1) * cfg.minNodeGap + tallestNode,
+    cfg.marginY * 2 + tallestNode,
+  );
+  const rankGap = cfg.minRankGap;
 
   for (const [level, list] of groups.entries()) {
     const availableHeight = height - cfg.marginY * 2;

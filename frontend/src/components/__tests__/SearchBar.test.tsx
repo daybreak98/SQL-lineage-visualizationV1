@@ -100,27 +100,13 @@ describe('SearchBar', () => {
     expect(select).toBeDisabled();
   });
 
-  it('shows output capsule with path status', () => {
+  it('does not render the removed choose output capsule', () => {
     const state = baseState();
     const setState = vi.fn();
     render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
 
-    // Output capsule shows idle status when no output selected
-    const capsule = document.querySelector('.output-capsule');
-    expect(capsule).toBeInTheDocument();
-    expect(capsule).toHaveClass('idle');
-
-    const nameEl = capsule?.querySelector('.name');
-    expect(nameEl?.textContent).toBe('Choose output');
-  });
-
-  it('shows output capsule with selected output name', () => {
-    const state = baseState({ selectedOutput: 'out:order_cnt' });
-    const setState = vi.fn();
-    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
-
-    const nameEl = document.querySelector('.output-capsule .name');
-    expect(nameEl?.textContent).toBe('order_cnt');
+    expect(document.querySelector('.output-capsule')).toBeNull();
+    expect(screen.queryByText('Choose output')).toBeNull();
   });
 
   it('shows stale pill when trustStatus is stale', () => {

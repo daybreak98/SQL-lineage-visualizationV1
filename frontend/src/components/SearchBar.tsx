@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
-import { buildPathContext } from '../data/selectors';
 import type { SearchItem, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
 
@@ -26,7 +25,6 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
     items = scopedItems;
   }
 
-  const pc = buildPathContext(state);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchbarRef = useRef<HTMLDivElement>(null);
 
@@ -52,7 +50,7 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
   return (
     <div className="searchbar" ref={searchbarRef}>
       <div className="search-wrap">
-        <span className="text-slate-400">⌕</span>
+        <span className="text-slate-400" aria-hidden="true">⌕</span>
         <input
           id="fieldSearch"
           disabled={!canSearch}
@@ -74,11 +72,6 @@ export function SearchBar({ state, setState, onSelectResult }: Props) {
       <select className="select h-8" disabled={!canSearch} value={state.scope} onChange={(event) => setState((s) => ({ ...s, scope: event.target.value }))}>
         <option value="all">All</option><option value="output">Output</option><option value="source">Source</option><option value="cte">CTE</option><option value="subquery">Subquery</option>
       </select>
-      <button className={cx('output-capsule', !state.selectedOutput && 'idle', pc.status === 'stale' && 'stale', pc.status === 'partial' && 'partial', pc.status === 'low_confidence' && 'low')} onClick={() => setState((s) => ({ ...s, query: '', scope: 'output' }))}>
-        <span className={cx('dot', state.trustStatus !== 'trusted' && 'stale')} />
-        <span className="name">{pc.display}</span>
-        <span className="meta">· {pc.status === 'ready' ? `${pc.warnings}⚠` : pc.status === 'idle' ? 'none' : pc.status}</span>
-      </button>
       <span className={cx('pill', state.trustStatus === 'trusted' ? 'trusted' : 'stale')}>{state.trustStatus === 'stale' ? 'stale' : `${items.length} results`}</span>
 
       {canSearch && searchOpen && (
