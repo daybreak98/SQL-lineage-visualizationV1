@@ -388,7 +388,7 @@ function buildSearchItems(
         itemId: `search-output-${index}`, entityId: node.entityId, displayName: node.label,
         type: 'output' as const,
         sub: sources.length ? `from: ${sources.join(', ')}` : 'unknown source',
-        reason: sources.length ? 'lineage edge' : '鏃犳硶纭瀛楁鏉ユ簮',
+        reason: sources.length ? 'lineage edge' : 'source lineage not confirmed',
         confidence: (sources.length ? 'high' : result.status === 'partial' ? 'medium' : 'low') as 'high' | 'medium' | 'low',
         warning: !sources.length,
       };

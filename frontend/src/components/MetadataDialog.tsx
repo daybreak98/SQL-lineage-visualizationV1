@@ -22,11 +22,11 @@ const samplePayload = `{
       "catalog": "default",
       "schema": "default",
       "name": "dwd_order_di",
-      "comment": "订单明细表",
+      "comment": "Order detail table",
       "columns": [
-        { "name": "order_id", "data_type": "string", "comment": "订单ID", "ordinal": 1 },
-        { "name": "user_id", "data_type": "string", "comment": "用户ID", "ordinal": 2 },
-        { "name": "amount", "data_type": "decimal(18,2)", "comment": "订单金额", "ordinal": 3 }
+        { "name": "order_id", "data_type": "string", "comment": "Order ID", "ordinal": 1 },
+        { "name": "user_id", "data_type": "string", "comment": "User ID", "ordinal": 2 },
+        { "name": "amount", "data_type": "decimal(18,2)", "comment": "Order amount", "ordinal": 3 }
       ]
     }
   ]
@@ -47,17 +47,17 @@ function extractColumnsFromPayload(payloadText: string): Map<string, ColumnDispl
   try {
     const parsed = JSON.parse(payloadText);
     const tables: Array<Record<string, unknown>> = parsed?.tables ?? [];
-    for (const t of tables) {
-      const tableName = String(t.table_name || t.name || '');
-      const columns: ColumnDisplay[] = ((t.columns || []) as Array<Record<string, unknown>>).map((c) => ({
-        name: String(c.name || ''),
-        data_type: String(c.data_type || ''),
-        comment: String(c.comment || ''),
+    for (const table of tables) {
+      const tableName = String(table.table_name || table.name || '');
+      const columns: ColumnDisplay[] = ((table.columns || []) as Array<Record<string, unknown>>).map((column) => ({
+        name: String(column.name || ''),
+        data_type: String(column.data_type || ''),
+        comment: String(column.comment || ''),
       }));
       map.set(tableName, columns);
     }
   } catch {
-    // ignore parse errors — payload may not be valid JSON
+    // Ignore parse errors because the payload may still be mid-edit.
   }
   return map;
 }
@@ -73,8 +73,8 @@ function buildTableGroups(result: MetadataImportResult, payloadText: string): Ta
   const tableMap = new Map<string, { change_type: string }>();
 
   for (const change of result.changes) {
-    const t = change.object_ref.table;
-    if (!tableMap.has(t)) tableMap.set(t, { change_type: change.change_type });
+    const table = change.object_ref.table;
+    if (!tableMap.has(table)) tableMap.set(table, { change_type: change.change_type });
   }
 
   return Array.from(tableMap.entries()).map(([table, info]) => ({
@@ -97,11 +97,11 @@ function renderTableGroups(result: MetadataImportResult, payloadText: string): R
       {group.columns.length > 0 ? (
         <div className="table-group-body">
           <div className="table-group-cols">
-            {group.columns.map((col, i) => (
-              <div className="table-group-col-row" key={`${col.name}-${i}`}>
-                <span className="col-name">{col.name}</span>
-                <span className="col-comment">{col.comment || '-'}</span>
-                <span className="col-type">{col.data_type || '-'}</span>
+            {group.columns.map((column, index) => (
+              <div className="table-group-col-row" key={`${column.name}-${index}`}>
+                <span className="col-name">{column.name}</span>
+                <span className="col-comment">{column.comment || '-'}</span>
+                <span className="col-type">{column.data_type || '-'}</span>
               </div>
             ))}
           </div>
@@ -122,7 +122,7 @@ export function MetadataDialog({ open, onClose, onImported }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const hasBlockingErrors = useMemo(() => result?.diagnostics.some((d) => d.level === 'error') ?? false, [result]);
+  const hasBlockingErrors = useMemo(() => result?.diagnostics.some((diagnostic) => diagnostic.level === 'error') ?? false, [result]);
 
   useEffect(() => {
     if (!open) return;
@@ -189,13 +189,13 @@ export function MetadataDialog({ open, onClose, onImported }: Props) {
             {error && <div className="card diag error"><div className="card-title">Request failed</div>{error}</div>}
           </div>
 
-            <div className="metadata-pane">
+          <div className="metadata-pane">
             <div className="pane-title">Preview / commit result</div>
             {loading && <div className="card">Calling backend...</div>}
             {!loading && !result && <div className="card">Run preview to inspect backend validation and change summary.</div>}
             {result && (
               <div className="metadata-result">
-                <div className={cx('pill', result.status === 'committed' ? 'trusted' : hasBlockingErrors ? 'failed' : 'partial')}>{result.status} · {result.metadata_version}</div>
+                <div className={cx('pill', result.status === 'committed' ? 'trusted' : hasBlockingErrors ? 'failed' : 'partial')}>{result.status} | {result.metadata_version}</div>
                 <div className="metadata-table-list">
                   {renderTableGroups(result, text)}
                 </div>
@@ -217,14 +217,37 @@ export function MetadataDialog({ open, onClose, onImported }: Props) {
             <div className="metadata-list">
               {(tables?.tables || []).map((table) => {
                 const name = String(table.table_name || table.name || table.normalized_table_name || '-');
-                return <button className="result" key={`${table.catalog}.${table.schema_name}.${name}`} onClick={() => { setActiveTable(name); void refreshMetadata(name); }}><span><span className="result-title">{name}</span><span className="result-sub">{String(table.comment || table.schema_name || '')}</span></span><span className="reason">table</span></button>;
+                return (
+                  <button
+                    className="result"
+                    key={`${table.catalog}.${table.schema_name}.${name}`}
+                    onClick={() => {
+                      setActiveTable(name);
+                      void refreshMetadata(name);
+                    }}
+                  >
+                    <span>
+                      <span className="result-title">{name}</span>
+                      <span className="result-sub">{String(table.comment || table.schema_name || '')}</span>
+                    </span>
+                    <span className="reason">table</span>
+                  </button>
+                );
               })}
             </div>
           </div>
           <div className="metadata-pane">
-            <div className="pane-title">Columns {activeTable ? `· ${activeTable}` : ''} ({columns?.total ?? 0})</div>
+            <div className="pane-title">Columns {activeTable ? `| ${activeTable}` : ''} ({columns?.total ?? 0})</div>
             <div className="metadata-list">
-              {(columns?.columns || []).map((column, index) => <div className="result metadata-column" key={`${column.column_name}-${index}`}><span><span className="result-title">{String(column.column_name || '-')}</span><span className="result-sub">{String(column.comment || '')}</span></span><span className="reason">{String(column.data_type || 'unknown')}</span></div>)}
+              {(columns?.columns || []).map((column, index) => (
+                <div className="result metadata-column" key={`${column.column_name || column.name}-${index}`}>
+                  <span>
+                    <span className="result-title">{String(column.column_name || column.name || '-')}</span>
+                    <span className="result-sub">{String(column.comment || '')}</span>
+                  </span>
+                  <span className="reason">{String(column.data_type || 'unknown')}</span>
+                </div>
+              ))}
             </div>
           </div>
         </footer>

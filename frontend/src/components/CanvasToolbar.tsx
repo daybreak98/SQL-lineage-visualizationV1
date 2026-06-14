@@ -37,7 +37,7 @@ export function CanvasToolbar({ state, setState, onTransition }: Props) {
         <button className="tool-btn" onClick={() => setState((s) => resetViewport(s))}>Reset Viewport</button>
         <button className="tool-btn" disabled={!hasSelection} onClick={() => onTransition('CLEAR_SELECTION')}>Clear</button>
         <button className="tool-btn" disabled={!state.selectedOutput} onClick={() => state.selectedOutput && onTransition('FOCUS_FIELD')}>Focus</button>
-        <button className="tool-btn" onClick={() => setState((s) => openDrawer(s, 'taxonomy'))}>?</button>
+        <button className="tool-btn" onClick={() => setState((s) => openDrawer(s, 'diagnostics'))}>Diag</button>
         <div className="path-inline">
           <span className={cx('dot', pc.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pc.status) && 'warn')} />
           <span id="pathText">

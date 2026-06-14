@@ -118,44 +118,6 @@ export function deriveAttention(state: WorkbenchState): [string, string, string]
   return ['search_default_output', 'analyzed_no_field', 'path_context'];
 }
 
-/** Build mock field-level graph nodes for selector unit tests and local demos. */
-export function fieldNodes(state: WorkbenchState): GraphNode[] {
-  const output = state.selectedOutput || 'out:order_cnt';
-  const nodes: GraphNode[] = [
-    { id: 'f-src-order', entityId: 'table:dwd_order_di', type: 'table', label: 'dwd_order_di', x: 70, y: 132 },
-    { id: 'f-order-no', entityId: 'field:o.order_no', type: 'table', label: 'order_no', x: 70, y: 210 },
-    { id: 'f-order-base', entityId: 'cte:order_base', type: 'cte', label: 'order_base', tag: 'CTE', x: 278, y: 168 },
-    { id: 'f-subq', entityId: 'subq:valid_order_subq', type: 'subquery', label: 'valid_order_subq', tag: 'SUBQ', x: 500, y: 168 },
-    { id: 'f-expr', entityId: 'expr:valid_order_no', type: 'expression', label: 'CASE', tag: 'EXPR', x: 500, y: 246 },
-    { id: 'f-metric', entityId: 'cte:metric_base', type: 'cte', label: 'metric_base', tag: 'CTE', x: 742, y: 168 },
-    { id: 'f-output', entityId: output, type: 'output_field', label: entityName(output), tag: 'OUT', x: 972, y: 168 },
-  ];
-
-  if (output === 'out:gmv') nodes[1] = { id: 'f-amount', entityId: 'field:o.order_amount', type: 'table', label: 'order_amount', x: 70, y: 210 };
-  if (output === 'out:user_cnt') nodes[1] = { id: 'f-user', entityId: 'field:o.user_id', type: 'table', label: 'user_id', x: 70, y: 210 };
-  if (output === 'out:country_name') nodes[1] = { id: 'f-country', entityId: 'field:u.country_name', type: 'table', label: 'country_name', x: 70, y: 210 };
-  if (output === 'out:avg_order_amount') nodes.push({ id: 'f-avg-expr', entityId: 'expr:avg_order_amount', type: 'expression', label: 'AVG expr', tag: 'EXPR', x: 742, y: 248 });
-  if (state.analysisStatus === 'partial') nodes.push({ id: 'f-unknown', entityId: 'unknown:metadata_missing', type: 'unknown', label: 'unknown_col', tag: '?', x: 278, y: 282 });
-  return nodes;
-}
-
-export function fieldEdges(state: WorkbenchState): GraphEdge[] {
-  const out = state.selectedOutput || 'out:order_cnt';
-  const edges: GraphEdge[] = [
-    { id: 'fe-src-cte', source: 'table:dwd_order_di', target: 'cte:order_base', type: 'table' },
-    { id: 'fe-field-cte', source: 'field:o.order_no', target: 'cte:order_base', type: 'table', mapping: 'map_order_cnt' },
-    { id: 'fe-cte-subq', source: 'cte:order_base', target: 'subq:valid_order_subq', type: 'subq' },
-    { id: 'fe-subq-expr', source: 'subq:valid_order_subq', target: 'expr:valid_order_no', type: 'expr' },
-    { id: 'fe-expr-metric', source: 'expr:valid_order_no', target: 'cte:metric_base', type: 'expr', mapping: 'map_order_cnt' },
-    { id: 'fe-metric-out', source: 'cte:metric_base', target: out, type: 'output' },
-  ];
-  if (out === 'out:avg_order_amount') {
-    edges.push({ id: 'fe-metric-avg', source: 'cte:metric_base', target: 'expr:avg_order_amount', type: 'expr', mapping: 'map_avg_gmv' });
-    edges.push({ id: 'fe-avg-out', source: 'expr:avg_order_amount', target: out, type: 'expr', mapping: 'map_avg_order' });
-  }
-  return edges;
-}
-
 /** View-mode highlight sets for visual treatment in LineageCanvas */
 export function viewHighlightSets(state: WorkbenchState): { highlightedEntityIds: Set<string>; highlightedEdgeIds: Set<string> } {
   const gvm = state.graphViewMode ?? 'table';

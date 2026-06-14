@@ -8,8 +8,6 @@ import {
   entityName,
   entityOf,
   deriveAttention,
-  fieldNodes,
-  fieldEdges,
   transitionRenderMode,
 } from '../selectors';
 import type { WorkbenchState } from '../../types/lineage';
