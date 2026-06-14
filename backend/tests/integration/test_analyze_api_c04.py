@@ -18,8 +18,8 @@ join dwd_order_di o
     data = response.json()
 
     assert response.status_code == 200
-    assert data["schema_version"] == "0.3.0-c05"
-    assert data["analysis_id"] == "analysis:c05"
+    assert data["schema_version"] == "0.3.0-c09"
+    assert data["analysis_id"] == "analysis:c09"
     assert data["status"] == "success"
 
     graph = data["graph_view_model"]

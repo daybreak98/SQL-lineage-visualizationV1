@@ -1,0 +1,11 @@
+{
+  "case_id": "hive_lateral_view_explode",
+  "dialect": "hive",
+  "difficulty": "S2",
+  "covered_features": [
+    "lateral view",
+    "explode",
+    "row expanding function"
+  ]
+}
+

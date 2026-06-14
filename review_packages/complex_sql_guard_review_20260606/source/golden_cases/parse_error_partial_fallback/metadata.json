@@ -1,0 +1,11 @@
+{
+  "case_id": "parse_error_partial_fallback",
+  "dialect": "spark",
+  "difficulty": "S2",
+  "covered_features": [
+    "broken cte item",
+    "segment fallback",
+    "partial parse result"
+  ]
+}
+

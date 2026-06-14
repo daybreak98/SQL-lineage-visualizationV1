@@ -35,8 +35,8 @@ def test_analyze_c05_golden_cte_returns_structure_graph():
     data = response.json()
 
     assert response.status_code == 200
-    assert data["schema_version"] == "0.3.0-c05"
-    assert data["analysis_id"] == "analysis:c05"
+    assert data["schema_version"] == "0.3.0-c09"
+    assert data["analysis_id"] == "analysis:c09"
     assert data["status"] == "success"
     assert data["graph_view_model"]["view_mode"] == "subquery_dependency"
 

@@ -14,16 +14,24 @@ group by country_name"""
     response = client.post("/api/sql/analyze", json={"sql": sql, "dialect": "spark"})
     data = response.json()
 
-    assert data["status"] == "partial"
+    assert data["status"] == "success"
     assert len(data["output_fields"]) == 2
-    assert any(
-        diagnostic["code"] == "UNSUPPORTED_COMPLEX_QUERY"
-        for diagnostic in data["diagnostics_report"]["diagnostics"]
-    )
+    assert data["diagnostics_report"]["error_count"] == 0
+    assert data["diagnostics_report"]["warning_count"] == 0
 
     names = [f["name"] for f in data["output_fields"]]
     assert "country_name" in names
     assert "order_cnt" in names
+
+    edges = {
+        (edge["source"], edge["target"])
+        for edge in data["graph_view_model"]["edges"]
+        if edge["edge_type"] == "column_lineage"
+    }
+    assert edges == {
+        ("physical_column:dwd_order_di.country_name", "output_column:country_name"),
+        ("physical_column:dwd_order_di.order_no", "output_column:order_cnt"),
+    }
 
 
 def test_simple_select_output_field():
@@ -76,6 +84,7 @@ def test_graph_model_has_column_lineage_on_success():
     edges = {(edge["source"], edge["target"]) for edge in graph["edges"]}
     assert ("physical_table:t", "query_result:final") in edges
     assert ("physical_column:t.a", "output_column:a") in edges
+    assert ("output_column:a", "query_result:final") in edges
 
 
 def test_graph_model_empty_on_failure():
@@ -102,4 +111,4 @@ def test_analyze_column_graph_replaces_empty_c02_graph():
 
     assert data["status"] == "success"
     assert len(data["graph_view_model"]["nodes"]) == 4
-    assert len(data["graph_view_model"]["edges"]) == 2
+    assert len(data["graph_view_model"]["edges"]) == 3

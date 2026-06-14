@@ -1,0 +1,8 @@
+[project]
+name = "sql-lineage-layout-barycenter-delivery"
+version = "0.1.0"
+description = "Semantic layered layout and barycenter/median crossing minimization for SQL lineage graph"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

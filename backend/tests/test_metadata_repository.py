@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from app.domain.metadata_model import ColumnMeta, TableMeta
+from app.db import sqlite as sqlite_db
 from app.repositories import metadata_repository as repo
 
 
@@ -22,6 +25,12 @@ def test_version_exists_after_import():
     assert not repo.version_exists(version)
     repo.import_metadata(version, _sample_tables())
     assert repo.version_exists(version)
+
+
+def test_pytest_uses_isolated_metadata_db():
+    production_db_path = Path(sqlite_db.__file__).parent.parent.parent.parent / "data" / "metadata.db"
+    assert sqlite_db.DB_PATH.name == "metadata_test.db"
+    assert sqlite_db.DB_PATH != production_db_path
 
 
 def test_list_tables_returns_table():

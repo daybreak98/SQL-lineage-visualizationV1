@@ -1,0 +1,11 @@
+{
+  "case_id": "multi_cte_join_20_tables",
+  "dialect": "spark",
+  "difficulty": "S3",
+  "covered_features": [
+    "long with chain",
+    "20-table join fanout",
+    "complexity scoring"
+  ]
+}
+

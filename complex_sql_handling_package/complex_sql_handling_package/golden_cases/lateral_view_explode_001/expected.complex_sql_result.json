@@ -1,0 +1,5 @@
+{
+  "allowed_status": ["success", "partial"],
+  "required_risk_flags": ["ROW_EXPANDING_FUNCTION_DETECTED"],
+  "required_segment_types": ["main_select", "from_join", "lateral_view", "where"]
+}

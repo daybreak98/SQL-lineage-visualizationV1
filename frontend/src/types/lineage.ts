@@ -5,6 +5,7 @@ export type GraphRenderMode = 'subquery_dependency' | 'current_field_path' | 'fo
 export type GraphViewMode = 'table' | 'subquery' | 'column' | 'expression' | 'semantics' | 'diagnostics';
 export type DetailTab = 'summary' | 'mapping' | 'source' | 'diagnostics' | 'semantics';
 export type DetailMode = 'collapsed' | 'compact' | 'expanded';
+export type CanvasCommand = { type: 'fit' | 'center' | 'reset'; id: number };
 
 export interface Entity {
   id: string;
@@ -59,6 +60,12 @@ export interface GraphNode {
   tag?: string;
   x: number;
   y: number;
+  pinned?: boolean;
+  ordinal?: number;
+  rank?: number;
+  lane?: string;
+  semanticRole?: string;
+  orderInRank?: number;
 }
 
 export interface GraphEdge {
@@ -67,6 +74,9 @@ export interface GraphEdge {
   target: string;
   type: 'table' | 'cte' | 'subq' | 'output' | 'expr' | 'join' | 'projection' | 'alias' | 'unknown';
   mapping?: string;
+  synthetic?: boolean;
+  sourcePortOrder?: number;
+  targetPortOrder?: number;
 }
 
 export interface BackendDiagnostic {
@@ -74,15 +84,26 @@ export interface BackendDiagnostic {
   code: string;
   level: 'info' | 'warning' | 'error';
   message: string;
+  location?: Record<string, unknown> | null;
   suggestion?: string | null;
   related_entity_ids?: string[];
   details?: Record<string, unknown>;
+  extra?: Record<string, unknown>;
 }
 
 export interface FormatSqlResponse {
   status: 'success' | 'partial' | 'failed';
   dialect: string;
   formatted_sql: string | null;
+  diagnostics: BackendDiagnostic[];
+}
+
+export interface ConvertSqlResponse {
+  status: 'success' | 'partial' | 'failed';
+  source_dialect: string;
+  target_dialect: string;
+  converted_sql: string | null;
+  elapsed_ms: number;
   diagnostics: BackendDiagnostic[];
 }
 
@@ -124,6 +145,10 @@ export interface BackendAnalysisResult {
       x?: number;
       y?: number;
       data?: Record<string, unknown>;
+      rank?: number;
+      lane?: string;
+      semantic_role?: string;
+      order_in_rank?: number;
     }>;
     edges?: Array<{
       id?: string;
@@ -132,9 +157,31 @@ export interface BackendAnalysisResult {
       edge_type?: string;
       type?: string;
       mapping?: string;
+      source_port_order?: number;
+      target_port_order?: number;
     }>;
+    layout_hint?: Record<string, unknown>;
   };
+  source_locations?: Record<string, SourceLocation>;
+  semantics_report?: SemanticsReport;
   summary?: Record<string, number>;
+}
+
+export interface MetricSemantics {
+  name: string;
+  entity_id: string;
+  expression: string;
+  depends_on: string[];
+  aggregate_functions: string[];
+  operators: string[];
+  function_names: string[];
+  description: string;
+  evidence: Record<string, unknown>;
+  confidence_level: string;
+}
+
+export interface SemanticsReport {
+  metrics: MetricSemantics[];
 }
 
 export interface MetadataPayload {
@@ -208,8 +255,10 @@ export interface WorkbenchState {
   scope: string;
   large: boolean;
   lastTransition?: string;
+  canvasCommand?: CanvasCommand;
   positions: Record<string, { x: number; y: number }>;
   sourceLocations?: Record<string, SourceLocation>;
+  semanticsReport?: SemanticsReport;
   backendGraph?: { nodes: GraphNode[]; edges: GraphEdge[] };
   backendSearchItems?: SearchItem[];
   backendDiagnostics?: Diagnostic[];
@@ -217,4 +266,7 @@ export interface WorkbenchState {
   backendStatus?: string;
   metadataStatus?: string;
   colToTables?: Record<string, string[]>;
+  backendInvalidEdges?: GraphEdge[];
+  lastAnalysisResult?: BackendAnalysisResult;
+  lastApiError?: string;
 }

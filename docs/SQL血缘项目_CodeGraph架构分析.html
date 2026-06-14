@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>SQL 血缘解析可视化 — CodeGraph 架构分析报告</title>
+<style>
+  @page { size: A3 landscape; margin: 15mm; }
+  body { font-family: "Microsoft YaHei","PingFang SC",sans-serif; font-size:12px; line-height:1.7; color:#1e293b; max-width:1400px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; text-align:center; border-bottom:3px solid #2563eb; padding-bottom:10px; margin-bottom:4px; }
+  .subtitle { text-align:center; color:#64748b; font-size:12px; margin-bottom:24px; }
+  h2 { font-size:16px; color:#2563eb; border-left:4px solid #2563eb; padding-left:8px; margin-top:28px; margin-bottom:10px; }
+  h3 { font-size:13px; color:#334155; margin-top:20px; margin-bottom:8px; }
+  table { width:100%; border-collapse:collapse; margin:10px 0; font-size:11px; }
+  th { background:#1e40af; color:white; padding:6px 8px; text-align:left; }
+  td { padding:5px 8px; border-bottom:1px solid #e2e8f0; vertical-align:top; }
+  tr:nth-child(even) td { background:#f8fafc; }
+  .dir { font-family:"Cascadia Code",Consolas,monospace; font-size:10px; background:#f1f5f9; padding:1px 5px; border-radius:3px; }
+  .file { font-family:"Cascadia Code",Consolas,monospace; font-size:10px; }
+  .method { font-family:"Cascadia Code",Consolas,monospace; font-size:10px; color:#9333ea; }
+  .status-ok { color:#16a34a; font-weight:700; }
+  .status-pend { color:#d97706; font-weight:700; }
+  .status-no { color:#dc2626; font-weight:700; }
+  .flow { background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; padding:12px; margin:8px 0; font-family:"Cascadia Code",Consolas,monospace; font-size:10px; line-height:1.7; white-space:pre; overflow-x:auto; }
+  .box { border:1px solid #cbd5e1; border-radius:8px; padding:10px; margin:8px 0; background:#fafafa; }
+  .box-title { font-weight:700; color:#475569; margin-bottom:6px; }
+  .note { background:#fef3c7; border:1px solid #f59e0b; border-radius:6px; padding:8px 12px; margin:8px 0; font-size:11px; }
+  .arrow { color:#2563eb; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  .tag { display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; font-weight:700; }
+  .tag-ok { background:#dcfce7; color:#166534; }
+  .tag-warn { background:#fef3c7; color:#92400e; }
+  .tag-err { background:#fee2e2; color:#991b1b; }
+  .col-num { text-align:right; }
+</style>
+</head>
+<body>
+
+<h1>SQL 血缘解析可视化项目</h1>
+<p class="subtitle">CodeGraph 语义代码分析报告 ｜ 版本 0.3.0-c07+ ｜ 生成时间 2026-06-06</p>
+
+<!-- ======================== 一、分层架构 ======================== -->
+<h2>一、分层架构总览（六层模型）</h2>
+
+<table>
+<tr><th style="width:100px">层级</th><th style="width:140px">目录</th><th>职责</th><th>对上层暴露</th><th>禁止越界</th></tr>
+<tr>
+  <td><b>API / Controller</b><br><span style="color:#64748b;font-size:10px">控制器层</span></td>
+  <td class="dir">api/</td>
+  <td>接收 HTTP 请求，调用 Service，返回 JSON 响应。<br>三个控制器：健康检查、SQL分析、元数据导入</td>
+  <td>4 个 REST 端点</td>
+  <td>不写业务逻辑</td>
+</tr>
+<tr>
+  <td><b>Service</b><br><span style="color:#64748b;font-size:10px">服务层</span></td>
+  <td class="dir">services/</td>
+  <td>编排领域逻辑，调用 Adapter 和 Repository。<br>8 个服务文件，覆盖解析、血缘、图表、元数据</td>
+  <td>函数入口，返回 dataclass</td>
+  <td>不直接操作 HTTP / SQL</td>
+</tr>
+<tr>
+  <td><b>Domain</b><br><span style="color:#64748b;font-size:10px">领域层</span></td>
+  <td class="dir">domain/</td>
+  <td>纯数据结构定义，零外部依赖。<br>GraphNode、SimpleColumnLineage、TableMeta 等</td>
+  <td>dataclass 类</td>
+  <td>不引入任何第三方库</td>
+</tr>
+<tr>
+  <td><b>Adapter</b><br><span style="color:#64748b;font-size:10px">适配器层</span></td>
+  <td class="dir">adapters/</td>
+  <td>封装第三方库（sqlglot），翻译 AST 为内部类型。<br>输出字段提取 + 占位符还原</td>
+  <td><span class="method">extract_output_fields_from_tree()</span></td>
+  <td>不写业务规则</td>
+</tr>
+<tr>
+  <td><b>Repository</b><br><span style="color:#64748b;font-size:10px">仓储层</span></td>
+  <td class="dir">repositories/</td>
+  <td>SQLite 数据库 CRUD 操作。<br>6 个方法：导入、版本检查、表查询、列查询</td>
+  <td>函数入口</td>
+  <td>不写业务判断</td>
+</tr>
+<tr>
+  <td><b>Guard（独立模块）</b><br><span style="color:#64748b;font-size:10px">防御解析引擎</span></td>
+  <td class="dir">complex_sql_guard/</td>
+  <td>6 阶段防御性 SQL 解析管道。<br>预检→净化→分句→多候选解析→子句回退→AST走查</td>
+  <td><span class="method">analyze_complex_sql()</span></td>
+  <td>不依赖 app 其他模块</td>
+</tr>
+</table>
+
+<!-- ======================== 二、Controller 层 ======================== -->
+<h2>二、Controller 层（API 端点）</h2>
+
+<table>
+<tr><th>文件</th><th>端点</th><th>方法</th><th>功能说明</th></tr>
+<tr>
+  <td class="file">health_controller.py</td>
+  <td class="dir">GET /api/health</td>
+  <td class="method">health_check()</td>
+  <td>健康检查：返回服务名、版本号、状态</td>
+</tr>
+<tr>
+  <td class="file">analyze_controller.py</td>
+  <td class="dir">POST /api/sql/analyze</td>
+  <td class="method">analyze()</td>
+  <td><b>核心入口</b>：接收 SQL 文本，执行完整血缘分析管道，返回 AnalysisResult（含 graph_view_model + output_fields + diagnostics + source_locations）</td>
+</tr>
+<tr>
+  <td class="file">metadata_controller.py</td>
+  <td class="dir">POST /api/metadata/import/preview</td>
+  <td class="method">import_preview()</td>
+  <td>预览元数据导入：显示变更清单，不写库</td>
+</tr>
+<tr>
+  <td class="file">metadata_controller.py</td>
+  <td class="dir">POST /api/metadata/import/commit</td>
+  <td class="method">import_commit()</td>
+  <td>提交元数据导入：写入 SQLite，重复版本跳过</td>
+</tr>
+<tr>
+  <td class="file">metadata_controller.py</td>
+  <td class="dir">GET /api/metadata/tables</td>
+  <td class="method">list_tables()</td>
+  <td>查询已导入的表列表（含注释）</td>
+</tr>
+<tr>
+  <td class="file">metadata_controller.py</td>
+  <td class="dir">GET /api/metadata/columns</td>
+  <td class="method">list_columns()</td>
+  <td>查询指定表的列列表（含数据类型、注释）</td>
+</tr>
+</table>
+
+<!-- ======================== 三、Service 层 ======================== -->
+<h2>三、Service 层（业务逻辑）</h2>
+
+<table>
+<tr><th style="width:180px">文件</th><th>核心函数</th><th>输入</th><th>产出</th></tr>
+<tr>
+  <td class="file">sql_parse_service.py</td>
+  <td class="method">parse_sql()</td>
+  <td>SQL 字符串 + 方言 + 选项</td>
+  <td><span class="method">ParseServiceResult</span>（含 tree、output_fields、diagnostics、capabilities）<br>→ 桥接 complex_sql_guard 到 analyze_controller</td>
+</tr>
+<tr>
+  <td class="file">name_resolver.py</td>
+  <td class="method">resolve_column_lineage_names()</td>
+  <td>AST(tree) + metadata</td>
+  <td><span class="method">NameResolverResult</span>（lineages + diagnostics）<br>→ 处理字段归属、别名解析、metadata验证、star委托</td>
+</tr>
+<tr>
+  <td class="file">star_expansion_service.py</td>
+  <td class="method">expand_star_items()</td>
+  <td>select_items + 源表名 + columns_by_table</td>
+  <td><span class="method">StarExpansionResult</span><br>→ AST 级 * 展开（exp.Star / Column(this=Star)）</td>
+</tr>
+<tr>
+  <td class="file">table_structure_service.py</td>
+  <td class="method">analyze_table_structure()</td>
+  <td>AST(tree)</td>
+  <td><span class="method">TableStructureResult</span><br>→ 物理表→Query Result 边</td>
+</tr>
+<tr>
+  <td class="file">cte_structure_service.py</td>
+  <td class="method">analyze_cte_structure()</td>
+  <td>AST(tree)</td>
+  <td><span class="method">CteStructureResult</span><br>→ CTE 层级依赖图</td>
+</tr>
+<tr>
+  <td class="file">graph_builder.py</td>
+  <td class="method">build_column_lineage_graph()<br>build_table_structure_graph()<br>build_cte_structure_graph()<br>merge_graphs()<br>validate_graph()</td>
+  <td>lineages / structure</td>
+  <td><span class="method">GraphModel</span>（nodes + edges + view_mode）<br>→ 统一图组装 + 边校验</td>
+</tr>
+<tr>
+  <td class="file">metadata_import_service.py</td>
+  <td class="method">preview() / commit()</td>
+  <td>payload(dict)</td>
+  <td><span class="method">MetadataImportResult</span><br>→ preview不写库，commit写库+检查重复</td>
+</tr>
+<tr>
+  <td class="file">source_location_service.py</td>
+  <td class="method">build_source_locations()</td>
+  <td>SQL 字符串 + output_column_names</td>
+  <td><span class="method">SourceLocationResult</span><br>→ 正则定位最终SELECT列位置（★C08★）</td>
+</tr>
+<tr>
+  <td class="file">lineage_rollup_service.py</td>
+  <td class="method">rollup_structure_edges()</td>
+  <td>structure</td>
+  <td>（空壳，未来扩展CTE内部字段血缘）</td>
+</tr>
+</table>
+
+<!-- ======================== 四、complete pipeline ======================== -->
+<h2>四、analyze_controller 内部调用链（完整血缘解析管道）</h2>
+
+<div class="flow">
+<pre style="background:transparent;color:#1e293b;padding:0;margin:0;">
+<span style="color:#64748b;">POST /api/sql/analyze → analyze_controller.analyze()</span>
+│
+├─ <span style="color:#2563eb;">parse_sql(sql, dialect, options)</span>          <span style="color:#64748b;">← sql_parse_service</span>
+│    └─ <span style="color:#7c3aed;">analyze_complex_sql()</span>                    <span style="color:#64748b;">← complex_sql_guard 入口</span>
+│         ├─ PreflightChecker.check()               <span style="color:#64748b;">阶段1: 预检(大小/复杂度/括号/引号平衡)</span>
+│         ├─ DirtySqlPreprocessor.preprocess()       <span style="color:#64748b;">阶段2: 净化(模板变量/字面量→占位符)</span>
+│         ├─ SqlSegmenter.segment()                   <span style="color:#64748b;">阶段3: 分句(WITH/SELECT/FROM/WHERE/JOIN)</span>
+│         ├─ SqlglotParserAdapter.parse() ×3         <span style="color:#64748b;">阶段4: 多候选解析(原始/规范化/净化后)</span>
+│         ├─ per-segment parse fallback              <span style="color:#64748b;">阶段5: 全量失败按子句逐一尝试</span>
+│         └─ AST diagnostics walk                    <span style="color:#64748b;">阶段6: 走查AST(UDF/Lateral检测)</span>
+│
+├─ <span style="color:#64748b;">tree = parse_result.tree</span>
+│
+├─ <span style="color:#64748b;">if CTE:</span>
+│    └─ <span style="color:#7c3aed;">analyze_cte_structure(tree)</span> → CTE层级依赖图
+│         └─ build_cte_structure_graph()
+│
+├─ <span style="color:#64748b;">else (非CTE):</span>
+│    ├─ <span style="color:#7c3aed;">_extract_source_table_names(tree)</span>         <span style="color:#64748b;">从AST提取物理表名</span>
+│    ├─ <span style="color:#7c3aed;">_load_metadata(table_names)</span>               <span style="color:#64748b;">查SQLite获取列元数据</span>
+│    ├─ <span style="color:#7c3aed;">analyze_table_structure(tree)</span>              <span style="color:#64748b;">物理表→QueryResult边</span>
+│    ├─ <span style="color:#7c3aed;">resolve_column_lineage_names(tree, metadata)</span>  <span style="color:#64748b;">字段血缘+metadata验证</span>
+│    │    ├─ _detect_unsupported(has_metadata)        <span style="color:#64748b;">CTE/Subquery/Star检测</span>
+│    │    ├─ expand_star_items()                      <span style="color:#64748b;">*展开(有metadata时)</span>
+│    │    ├─ 有限定字段→alias_to_table解析
+│    │    ├─ 无限定单表→直接归属
+│    │    ├─ 无限定多表+metadata齐全→消歧/AMBIGUOUS/UNKNOWN
+│    │    └─ 无限定多表+部分metadata缺失→AMBIGUOUS(不猜)
+│    ├─ <span style="color:#7c3aed;">build_table_structure_graph()</span>
+│    ├─ <span style="color:#7c3aed;">build_column_lineage_graph(lineages)</span>
+│    └─ <span style="color:#7c3aed;">merge_graphs("table", ...)</span>
+│         └─ validate_graph()                         <span style="color:#64748b;">边源宿校验</span>
+│
+├─ <span style="color:#7c3aed;">build_source_locations(sql, output_names)</span>    <span style="color:#64748b;">★C08★ 字段→SQL位置映射</span>
+│
+└─ <span style="color:#7c3aed;">_assemble_result()</span> → <span style="color:#047857;">AnalysisResult(JSON)</span>
+     ├─ status / confidence / dialect / elapsed_ms
+     ├─ output_fields: [name, displayName, expression, sourceType]
+     ├─ graph_view_model: {view_mode, nodes, edges}
+     ├─ diagnostics_report: {diagnostics, error/warning/info_count}
+     ├─ stage_statuses: [{stage, status, elapsed, codes, message}]
+     ├─ source_locations: {entityId → {line, col, raw}}  ★C08★
+     ├─ normalized_sql / analysis_sql / sql_text_bundle
+     ├─ preflight_report / segments / parse_attempts
+     └─ capabilities / confidence / summary
+</pre>
+</div>
+
+<!-- ======================== 五、complex_sql_guard 详解 ======================== -->
+<h2>五、complex_sql_guard 防御解析引擎（★新增核心模块★）</h2>
+
+<p style="font-size:11px;color:#64748b;">独立于 app 其他模块的防御性 SQL 解析引擎。支持对脏 SQL（模板变量、正则函数、Freemarker 块、长 SQL）进行多阶段预处理后再解析，最大化解析成功率。</p>
+
+<div class="grid3">
+<div class="box">
+<div class="box-title">阶段1：Preflight（预检）</div>
+<p style="font-size:10px;margin:0;">文件：<span class="file">preflight.py</span><br>
+核心类：<span class="method">PreflightChecker</span><br>
+检查项：SQL大小(>50K)、复杂度(JOIN/UNION/子查询)、括号平衡、引号平衡、模板检测、隐式字符检测</p>
+</div>
+<div class="box">
+<div class="box-title">阶段2：Shields（净化）</div>
+<p style="font-size:10px;margin:0;">文件：<span class="file">shields.py</span><br>
+核心类：<span class="method">DirtySqlPreprocessor</span><br>
+替换：注释(单行/块)、Hint(/*+)、字符串字面量、模板变量(${}/#{}）、Freemarker块(&lt;#&gt;)、反引号标识符</p>
+</div>
+<div class="box">
+<div class="box-title">阶段3：Segmenter（分句）</div>
+<p style="font-size:10px;margin:0;">文件：<span class="file">segmenter.py</span><br>
+核心类：<span class="method">SqlSegmenter</span><br>
+按关键词切分：WITH→CTE、SELECT→列、FROM→源表、JOIN→连接块、WHERE→条件、GROUP/ORDER/HAVING/UNION</p>
+</div>
+<div class="box">
+<div class="box-title">阶段4：Parse（解析）</div>
+<p style="font-size:10px;margin:0;">文件：<span class="file">parser_adapter.py</span><br>
+核心类：<span class="method">SqlglotParserAdapter</span><br>
+3 个候选依次尝试：①原始SQL ②规范化SQL ③净化后SQL。任一成功即停止</p>
+</div>
+<div class="box">
+<div class="box-title">阶段5：Segment Parse（回退）</div>
+<p style="font-size:10px;margin:0;">文件：<span class="file">analyzer.py</span><br>
+全量解析失败时，为每个子句(SELECT列、WHERE条件、JOIN条件)套最小SQL包装后逐一尝试解析</p>
+</div>
+<div class="box">
+<div class="box-title">阶段6：AST Walk（走查）</div>
+<p style="font-size:10px;margin:0;">文件：<span class="file">analyzer.py</span><br>
+解析成功后走查 AST：检测 LateralView(lateral视图)、Anonymous函数(黑盒UDF)、行展开函数(explode等)</p>
+</div>
+</div>
+
+<div class="note">
+<b>设计要点：</b>该模块完全独立于 app 其他模块（不 import app.services/domain/controllers），仅依赖 sqlglot 库。<br>
+<b>输出：</b><span class="method">ComplexSqlAnalysisResult</span>（含 text_bundle、segments、parse_attempts、diagnostics、capabilities、confidence）<br>
+<b>桥接层：</b><span class="file">sql_parse_service.py</span> 调用 <span class="method">analyze_complex_sql()</span>，将结果翻译为 <span class="method">ParseServiceResult</span>
+</div>
+
+<!-- ======================== 六、数据流图 ======================== -->
+<h2>六、核心数据流（实体流转）</h2>
+
+<table>
+<tr><th style="width:160px">数据实体</th><th>产生方</th><th>消费方</th><th>说明</th></tr>
+<tr>
+  <td class="method">sql (str)</td>
+  <td>前端 POST 请求</td>
+  <td>analyze_controller → sql_parse_service → analyze_complex_sql</td>
+  <td>原始 SQL 输入</td>
+</tr>
+<tr>
+  <td class="method">tree (Expression)</td>
+  <td>sqlglot.parse_one()<br>← complex_sql_guard</td>
+  <td>所有 Service（通过 tree= 参数传入）</td>
+  <td>sqlglot AST；整个管道只解析一次</td>
+</tr>
+<tr>
+  <td class="method">output_fields (list[OutputField])</td>
+  <td>sql_parse_service<br>← extract_output_fields_from_tree()</td>
+  <td>analyze_controller → 前端 SearchBar</td>
+  <td>SELECT 输出字段（含 name/expression/sourceType）</td>
+</tr>
+<tr>
+  <td class="method">lineages (list[SimpleColumnLineage])</td>
+  <td>name_resolver<br>（含 star_expansion_service）</td>
+  <td>graph_builder → build_column_lineage_graph()</td>
+  <td>字段级血缘：source_table.col → output.col</td>
+</tr>
+<tr>
+  <td class="method">metadata (dict[str, list[str]])</td>
+  <td>analyze_controller._load_metadata()<br>← metadata_repository.get_columns_for_tables()</td>
+  <td>name_resolver（metadata= 参数）</td>
+  <td>表→列名映射，用于字段验证和消歧</td>
+</tr>
+<tr>
+  <td class="method">graph_view_model (GraphViewModel)</td>
+  <td>graph_builder → merge_graphs()</td>
+  <td>analyze_controller → 前端 LineageCanvas</td>
+  <td>画布数据：nodes + edges + view_mode</td>
+</tr>
+<tr>
+  <td class="method">source_locations (dict[str,dict])</td>
+  <td>source_location_service<br>← build_source_locations()</td>
+  <td>analyze_controller → 前端 MonacoEditor 定位</td>
+  <td>★C08★ 输出列→SQL 源码位置映射</td>
+</tr>
+<tr>
+  <td class="method">diagnostics (list[Diagnostic])</td>
+  <td>各 Service 返回<br>统一合并去重</td>
+  <td>analyze_controller → 前端诊断面板</td>
+  <td>警告/错误/信息 列表</td>
+</tr>
+</table>
+
+<!-- ======================== 七、Domain 层 ======================== -->
+<h2>七、Domain 层（领域模型）</h2>
+
+<table>
+<tr><th style="width:200px">文件</th><th>核心类</th><th>用途</th></tr>
+<tr>
+  <td class="file">lineage_model.py</td>
+  <td class="method">SimpleColumnLineage(source_table, source_column, output_column)</td>
+  <td>字段血缘三元组。由 name_resolver 生成，graph_builder 消费</td>
+</tr>
+<tr>
+  <td class="file">graph_view_model.py</td>
+  <td class="method">GraphNode / GraphEdge / GraphModel</td>
+  <td>图数据结构。nodes = [{id, node_type, label}]；edges = [{id, source, target, edge_type}]</td>
+</tr>
+<tr>
+  <td class="file">metadata_model.py</td>
+  <td class="method">ColumnMeta / TableMeta / MetadataPayload</td>
+  <td>元数据导入的输入/输出结构</td>
+</tr>
+<tr>
+  <td class="file">diagnostics_model.py</td>
+  <td>常量：SQL_PARSE_ERROR, UNKNOWN_COLUMN, AMBIGUOUS_COLUMN, SELECT_STAR_METADATA_REQUIRED, METADATA_MISSING 等 10+ 个</td>
+  <td>全局诊断码常量，避免硬编码字符串</td>
+</tr>
+</table>
+
+<!-- ======================== 八、文件依赖图 ======================== -->
+<h2>八、模块间依赖关系（import 图）</h2>
+
+<div class="flow"><pre style="background:transparent;color:#1e293b;padding:0;margin:0;font-size:10px;">
+<span style="color:#64748b;">analyze_controller（主控制器）</span>
+ ├── models.AnalyzeRequest / AnalysisResult / GraphViewModel
+ ├── <span class="method">sql_parse_service.parse_sql()</span>          → <span class="method">complex_sql_guard.analyze_complex_sql()</span>
+ │    └── <span class="method">adapters.sqlglot_adapter.extract_output_fields_from_tree()</span>
+ ├── <span class="method">cte_structure_service.analyze_cte_structure()</span>
+ ├── <span class="method">table_structure_service.analyze_table_structure()</span>
+ ├── <span class="method">name_resolver.resolve_column_lineage_names()</span>  → <span class="method">star_expansion_service.expand_star_items()</span>
+ │    ├── <span class="method">domain.lineage_model.SimpleColumnLineage</span>
+ │    └── <span class="method">domain.diagnostics_model.*</span>
+ ├── <span class="method">source_location_service.build_source_locations()</span>  ★C08★
+ ├── <span class="method">graph_builder.build_*_graph() + merge_graphs() + validate_graph()</span>
+ │    ├── <span class="method">domain.graph_view_model.GraphNode/GraphEdge/GraphModel</span>
+ │    └── <span class="method">domain.lineage_model.SimpleColumnLineage</span>
+ ├── <span class="method">repositories.metadata_repository.get_columns_for_tables()</span> → <span class="method">db.sqlite.get_connection()</span>
+ │    └── <span class="method">domain.metadata_model.ColumnMeta/TableMeta</span>
+ └── _assemble_result() → AnalysisResult
+
+<span style="color:#64748b;">metadata_controller（元数据控制器）</span>
+ ├── models.MetadataImportRequest/Response
+ ├── <span class="method">metadata_import_service.preview() / commit()</span>
+ └── <span class="method">repositories.metadata_repository.list_tables() / get_columns()</span>
+
+<span style="color:#64748b;">complex_sql_guard（独立模块，零外部依赖）</span>
+ └── sqlglot (第三方库)
+</pre></div>
+
+<!-- ======================== 九、能力矩阵 ======================== -->
+<h2>九、开发进度与能力矩阵</h2>
+
+<table>
+<tr><th style="width:80px">轮次</th><th>能力</th><th>状态</th><th>核心文件</th></tr>
+<tr><td>C00</td><td>FastAPI 健康检查</td><td class="status-ok">✅ 完成</td><td class="file">health_controller.py</td></tr>
+<tr><td>C01</td><td>Analyze 占位响应</td><td class="status-ok">✅（被后续覆盖）</td><td>—</td></tr>
+<tr><td>C02</td><td>SQLGlot 解析 + 输出字段识别</td><td class="status-ok">✅ 完成</td><td class="file">sql_parse_service.py</td></tr>
+<tr><td>C03</td><td>单表字段血缘</td><td class="status-ok">✅ 完成</td><td class="file">name_resolver.py</td></tr>
+<tr><td>C04</td><td>Join 别名归属</td><td class="status-ok">✅ 完成</td><td class="file">name_resolver.py + table_structure_service.py</td></tr>
+<tr><td>C05</td><td>CTE 子查询结构依赖</td><td class="status-ok">✅ 完成</td><td class="file">cte_structure_service.py</td></tr>
+<tr><td>C06</td><td>元数据 JSON → SQLite</td><td class="status-ok">✅ 完成</td><td class="file">metadata_import_service.py + metadata_repository.py</td></tr>
+<tr><td>C07</td><td>select * 展开 + unknown/ambiguous 诊断</td><td class="status-ok">✅ 完成</td><td class="file">star_expansion_service.py + name_resolver.py</td></tr>
+<tr><td>★</td><td>防御性 SQL 解析引擎</td><td class="status-ok">✅ 完成</td><td class="file">complex_sql_guard/（9 文件）</td></tr>
+<tr><td>C08</td><td>SourceLocation 字段定位</td><td class="status-ok">✅ 已实现</td><td class="file">source_location_service.py</td></tr>
+<tr><td>C09</td><td>表达式依赖 + 口径详情</td><td class="status-pend">⬜ 未开始</td><td>仅有需求文档 + golden SQL</td></tr>
+<tr><td>C10</td><td>Golden Case 回归冻结</td><td class="status-pend">⬜ 部分</td><td class="file">test_analyze_api_c10.py（8个测试）</td></tr>
+</table>
+
+<!-- ======================== 十、测试覆盖 ======================== -->
+<h2>十、测试覆盖（24 个测试文件，126 个用例）</h2>
+
+<div class="grid2">
+<div class="box">
+<div class="box-title">单元测试（13 文件，约 65 用例）</div>
+<table style="font-size:10px;">
+<tr><th>文件</th><th class="col-num">用例</th><th>覆盖</th></tr>
+<tr><td class="file">test_health.py</td><td class="col-num">4</td><td>C00 健康检查</td></tr>
+<tr><td class="file">test_sql_parse_service.py</td><td class="col-num">10</td><td>C02 输出字段</td></tr>
+<tr><td class="file">test_name_resolver.py</td><td class="col-num">13</td><td>C03/C04/C07 字段归属</td></tr>
+<tr><td class="file">test_table_structure_service.py</td><td class="col-num">3</td><td>C04 表结构边</td></tr>
+<tr><td class="file">test_cte_structure_service.py</td><td class="col-num">4</td><td>C05 CTE依赖</td></tr>
+<tr><td class="file">test_metadata_repository.py</td><td class="col-num">6</td><td>C06 CRUD</td></tr>
+<tr><td class="file">test_star_expansion_service.py</td><td class="col-num">8</td><td>C07 星号展开</td></tr>
+<tr><td class="file">test_source_location_service.py</td><td class="col-num">2</td><td>C08 源码定位</td></tr>
+<tr><td class="file">test_complex_sql_analyzer.py</td><td class="col-num">2</td><td>Guard 引擎</td></tr>
+<tr><td class="file">test_complex_sql_segmenter.py</td><td class="col-num">2</td><td>Guard 分句</td></tr>
+<tr><td class="file">test_complex_sql_shields.py</td><td class="col-num">4</td><td>Guard 净化</td></tr>
+<tr><td class="file">test_complex_sql_parser_adapter.py</td><td class="col-num">1</td><td>Guard 解析器</td></tr>
+<tr><td class="file">test_complex_sql_golden_cases.py</td><td class="col-num">5</td><td>Guard golden</td></tr>
+</table>
+</div>
+<div class="box">
+<div class="box-title">集成测试（11 文件，约 61 用例）</div>
+<table style="font-size:10px;">
+<tr><th>文件</th><th class="col-num">用例</th><th>覆盖</th></tr>
+<tr><td class="file">test_analyze_api_c01.py</td><td class="col-num">10</td><td>C01/C02 API</td></tr>
+<tr><td class="file">test_analyze_api_c02.py</td><td class="col-num">9</td><td>C02 Golden</td></tr>
+<tr><td class="file">test_analyze_api_c03.py</td><td class="col-num">6</td><td>C03 单表图</td></tr>
+<tr><td class="file">test_analyze_api_c04.py</td><td class="col-num">5</td><td>C04 Join图</td></tr>
+<tr><td class="file">test_analyze_api_c05.py</td><td class="col-num">3</td><td>C05 CTE图</td></tr>
+<tr><td class="file">test_metadata_api_c06.py</td><td class="col-num">9</td><td>C06 metadata</td></tr>
+<tr><td class="file">test_analyze_api_c07.py</td><td class="col-num">8</td><td>C07 star/diag</td></tr>
+<tr><td class="file">test_analyze_api_c08.py</td><td class="col-num">2</td><td>C08 source_location</td></tr>
+<tr><td class="file">test_analyze_api_complex_sql_guard.py</td><td class="col-num">4</td><td>Guard集成</td></tr>
+<tr><td class="file">test_analyze_api_c10.py</td><td class="col-num">8</td><td>C10 回归(含c09 golden)</td></tr>
+<tr><td class="file">conftest.py</td><td class="col-num">0</td><td>sys.path 注入</td></tr>
+</table>
+</div>
+</div>
+
+<!-- ======================== 十一、关键诊断码 ======================== -->
+<h2>十一、关键诊断码索引</h2>
+
+<table>
+<tr><th>诊断码</th><th>级别</th><th>含义</th><th>触发条件</th></tr>
+<tr>
+  <td class="method">SQL_PARSE_ERROR</td>
+  <td><span class="tag tag-err">error</span></td>
+  <td>SQL 解析失败</td>
+  <td>sqlglot.parse_one() 抛出 ParseError</td>
+</tr>
+<tr>
+  <td class="method">UNKNOWN_COLUMN</td>
+  <td><span class="tag tag-warn">warning</span></td>
+  <td>字段不在元数据中</td>
+  <td>表在 metadata 中，但字段不在其列列表里</td>
+</tr>
+<tr>
+  <td class="method">AMBIGUOUS_COLUMN</td>
+  <td><span class="tag tag-warn">warning</span></td>
+  <td>多表有同名字段</td>
+  <td>未限定的字段出现于 ≥2 张表</td>
+</tr>
+<tr>
+  <td class="method">METADATA_MISSING</td>
+  <td><span class="tag tag-warn">warning</span></td>
+  <td>表不在元数据中</td>
+  <td>SQL 引用的表在 SQLite 元数据中查不到</td>
+</tr>
+<tr>
+  <td class="method">SELECT_STAR_METADATA_REQUIRED</td>
+  <td><span class="tag tag-warn">warning</span></td>
+  <td>select * 需要元数据</td>
+  <td>SQL 中有 *，但元数据不可用</td>
+</tr>
+<tr>
+  <td class="method">UNKNOWN_TABLE_ALIAS</td>
+  <td><span class="tag tag-warn">warning</span></td>
+  <td>表别名无法解析</td>
+  <td>列限定符不在 alias_to_table 映射中</td>
+</tr>
+<tr>
+  <td class="method">UNSUPPORTED_COMPLEX_QUERY</td>
+  <td><span class="tag tag-warn">warning</span></td>
+  <td>复杂表达式暂不支持</td>
+  <td>SELECT 中有非 Column/Alias 的复杂AST节点</td>
+</tr>
+<tr>
+  <td class="method">SOURCE_LOCATION_APPROXIMATE</td>
+  <td><span class="tag tag-ok">info</span></td>
+  <td>位置是近似的</td>
+  <td>select * 展开时所有列共享 * 的位置</td>
+</tr>
+</table>
+
+<!-- ======================== 十二、项目文件数 ======================== -->
+<h2>十二、项目规模统计</h2>
+
+<p style="font-size:11px;color:#64748b;">（基于 CodeGraph 索引统计数据，不含 node_modules/.venv/dist）</p>
+
+<table>
+<tr><th>模块</th><th>文件数</th><th>行数估计</th><th>说明</th></tr>
+<tr><td class="dir">api/</td><td>3</td><td>~500</td><td>Controller 层：健康检查、分析入口、元数据</td></tr>
+<tr><td class="dir">services/</td><td>9</td><td>~1,600</td><td>Service 层：解析、血缘、图表、元数据、源码定位</td></tr>
+<tr><td class="dir">complex_sql_guard/</td><td>9</td><td>~1,500</td><td>防御性 SQL 解析引擎（独立模块）</td></tr>
+<tr><td class="dir">domain/</td><td>4</td><td>~120</td><td>领域模型：血缘、图、元数据、诊断码常量</td></tr>
+<tr><td class="dir">adapters/</td><td>1</td><td>~60</td><td>sqlglot 适配器</td></tr>
+<tr><td class="dir">repositories/</td><td>1</td><td>~130</td><td>SQLite 数据访问层</td></tr>
+<tr><td class="dir">db/</td><td>3</td><td>~50</td><td>数据库连接 + 迁移脚本</td></tr>
+<tr><td class="dir">tests/</td><td>24</td><td>~1,800</td><td>126 个测试用例</td></tr>
+<tr><td class="dir">frontend/</td><td>~40</td><td>~5,000</td><td>React + Monaco Editor 前端</td></tr>
+<tr style="font-weight:700;background:#f0f9ff;"><td colspan="2">总计（后端）</td><td>~5,000</td><td>55+ 文件</td></tr>
+<tr style="font-weight:700;background:#fef3c7;"><td colspan="2">总计（全项目）</td><td>~10,000</td><td>~100 文件，126 测试</td></tr>
+</table>
+
+<p style="text-align:center;color:#64748b;font-size:10px;margin-top:30px;">本报告由 CodeGraph 语义代码智能工具分析生成 · 项目地址: github.com/daybreak98/SQL-lineage-visualizationV1</p>
+
+</body>
+</html>

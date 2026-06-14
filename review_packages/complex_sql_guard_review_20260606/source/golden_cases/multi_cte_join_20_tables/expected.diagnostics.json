@@ -1,0 +1,7 @@
+{
+  "allowed_status": ["success"],
+  "required_diagnostics": [
+    "COMPLEX_SQL_DETECTED"
+  ]
+}
+

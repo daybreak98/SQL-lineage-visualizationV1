@@ -1,0 +1,26 @@
+{
+  "metadata_version": "c10-golden",
+  "tables": [
+    {
+      "catalog": "default",
+      "schema": "default",
+      "table_name": "dwd_order_di",
+      "comment": "order detail table",
+      "columns": [
+        { "name": "order_no", "data_type": "string", "comment": "order number" },
+        { "name": "user_id", "data_type": "string", "comment": "user id" },
+        { "name": "order_amount", "data_type": "double", "comment": "order amount" }
+      ]
+    },
+    {
+      "catalog": "default",
+      "schema": "default",
+      "table_name": "dim_user_df",
+      "comment": "user dimension table",
+      "columns": [
+        { "name": "user_id", "data_type": "string", "comment": "user id" },
+        { "name": "country_name", "data_type": "string", "comment": "country name" }
+      ]
+    }
+  ]
+}

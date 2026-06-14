@@ -1,0 +1,15 @@
+{
+  "expected_status": "success_or_partial",
+  "must_have_nodes": [
+    "table:dwd_search_log_di",
+    "cte:search_result",
+    "output:search_times"
+  ],
+  "must_have_column_dependencies": [
+    ["output:search_times", "dwd_search_log_di.search_request_uid"],
+    ["output:last_search_time", "dwd_search_log_di.search_time"]
+  ],
+  "must_have_transform_types": [
+    "aggregate"
+  ]
+}

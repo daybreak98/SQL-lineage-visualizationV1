@@ -1,0 +1,8 @@
+{
+  "allowed_status": ["partial"],
+  "required_diagnostics": [
+    "SQLGLOT_PARSE_ERROR",
+    "SEGMENT_PARSE_FALLBACK",
+    "PARTIAL_PARSE_RESULT"
+  ]
+}

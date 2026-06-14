@@ -3,6 +3,45 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { SearchBar } from '../SearchBar';
 import type { SearchItem, WorkbenchState } from '../../types/lineage';
 
+const backendSearchItems: SearchItem[] = [
+  {
+    itemId: 'search-output-order-cnt',
+    entityId: 'out:order_cnt',
+    displayName: 'order_cnt',
+    type: 'output',
+    sub: 'count(order_no)',
+    reason: 'backend graph',
+    confidence: 'high',
+  },
+  {
+    itemId: 'search-source-order',
+    entityId: 'physical_table:dwd_order_di',
+    displayName: 'dwd_order_di',
+    type: 'source',
+    sub: 'table',
+    reason: 'backend graph',
+    confidence: 'high',
+  },
+  {
+    itemId: 'search-cte-order-base',
+    entityId: 'cte:order_base',
+    displayName: 'order_base',
+    type: 'subquery',
+    sub: 'cte',
+    reason: 'backend graph',
+    confidence: 'high',
+  },
+  {
+    itemId: 'search-expression-case',
+    entityId: 'expression:valid_order_no',
+    displayName: 'valid_order_no',
+    type: 'expression',
+    sub: 'expression',
+    reason: 'backend graph',
+    confidence: 'medium',
+  },
+];
+
 function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
   return {
     pageMode: 'analyzed',
@@ -22,6 +61,7 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    backendSearchItems,
     ...overrides,
   };
 }
@@ -60,26 +100,13 @@ describe('SearchBar', () => {
     expect(select).toBeDisabled();
   });
 
-  it('shows output capsule with path status', () => {
+  it('does not render the removed choose output capsule', () => {
     const state = baseState();
     const setState = vi.fn();
     render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
 
-    // Output capsule shows idle status when no output selected
-    const capsule = document.querySelector('.output-capsule');
-    expect(capsule).toBeInTheDocument();
-
-    const nameEl = capsule?.querySelector('.name');
-    expect(nameEl?.textContent).toBe('Choose output');
-  });
-
-  it('shows output capsule with selected output name', () => {
-    const state = baseState({ selectedOutput: 'out:order_cnt' });
-    const setState = vi.fn();
-    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
-
-    const nameEl = document.querySelector('.output-capsule .name');
-    expect(nameEl?.textContent).toBe('order_cnt');
+    expect(document.querySelector('.output-capsule')).toBeNull();
+    expect(screen.queryByText('Choose output')).toBeNull();
   });
 
   it('shows stale pill when trustStatus is stale', () => {
@@ -128,6 +155,32 @@ describe('SearchBar', () => {
     expect(onSelect).toHaveBeenCalled();
   });
 
+  it('keeps the selected search term in the input after choosing a result', () => {
+    const state = baseState();
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={vi.fn()} />);
+
+    const input = screen.getByPlaceholderText(/Search field/i);
+    fireEvent.focus(input);
+
+    const resultButtons = document.querySelectorAll('.popover .result');
+    fireEvent.click(resultButtons[0]);
+
+    const nextStates = setState.mock.calls.map(([updater]) => (updater as (s: WorkbenchState) => WorkbenchState)(state));
+    expect(nextStates.some((next) => next.query === 'order_cnt')).toBe(true);
+  });
+
+  it('shows empty state when backend returned no searchable items', () => {
+    const state = baseState({ backendSearchItems: [] });
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
+
+    const input = screen.getByPlaceholderText(/Search field/i);
+    fireEvent.focus(input);
+
+    expect(screen.getByText('No backend search results for the current analysis.')).toBeInTheDocument();
+  });
+
   it('renders scope select with all options', () => {
     const state = baseState();
     const setState = vi.fn();
@@ -143,6 +196,31 @@ describe('SearchBar', () => {
     expect(optionValues).toContain('source');
     expect(optionValues).toContain('cte');
     expect(optionValues).toContain('subquery');
-    expect(optionValues).toContain('expression');
   });
+
+  it('filters search results by selected source scope', () => {
+    const state = baseState({ scope: 'source' });
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
+
+    fireEvent.focus(screen.getByPlaceholderText(/Search field/i));
+
+    expect(screen.getByText('dwd_order_di')).toBeInTheDocument();
+    expect(screen.queryByText('order_cnt')).toBeNull();
+    expect(screen.queryByText('order_base')).toBeNull();
+  });
+
+  it('filters CTE scope by cte entity ids', () => {
+    const state = baseState({ scope: 'cte' });
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
+
+    fireEvent.focus(screen.getByPlaceholderText(/Search field/i));
+
+    expect(screen.getByText('order_base')).toBeInTheDocument();
+    expect(screen.queryByText('dwd_order_di')).toBeNull();
+    expect(screen.queryByText('valid_order_no')).toBeNull();
+  });
+
+  it.skip('filters search results by expression scope (expression scope removed)', () => {});
 });

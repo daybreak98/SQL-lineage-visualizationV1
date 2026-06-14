@@ -1,12 +1,9 @@
-/** Monaco Editor: CompletionProvider + HoverProvider（M21）。
- *
- * 调用后端 /api/editor/completion 和 /api/editor/hover 接口。
- * 后端不可用时静默降级，不报错。
- */
+import { loader } from '@monaco-editor/react';
+import type { editor, languages } from 'monaco-editor';
 
-import type { languages, editor, Position, CancellationToken } from 'monaco-editor';
-
-// ── Types ────────────────────────────────────────────────
+let loaderConfigured = false;
+const registeredMonacoInstances = new WeakSet<object>();
+const dialectResolvers = new Map<string, () => string>();
 
 export interface CompletionCandidate {
   text: string;
@@ -37,11 +34,29 @@ export interface HoverResponse {
   hover?: HoverInfo | null;
 }
 
-// ── API call helpers ─────────────────────────────────────
+export function configureSqlMonacoLoader() {
+  if (loaderConfigured) return;
+  loader.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.50.0/min/vs' } });
+  loaderConfigured = true;
+}
+
+export function bindModelDialect(model: editor.ITextModel | null | undefined, getDialect: () => string) {
+  if (!model) return;
+  dialectResolvers.set(model.uri.toString(), getDialect);
+}
+
+export function unbindModelDialect(model: editor.ITextModel | null | undefined) {
+  if (!model) return;
+  dialectResolvers.delete(model.uri.toString());
+}
+
+function resolveDialect(model: editor.ITextModel): string {
+  return dialectResolvers.get(model.uri.toString())?.() ?? 'spark';
+}
 
 function normalizeDialect(dialect: string): string {
-  const val = dialect.trim().toLowerCase();
-  if (['spark', 'hive', 'mysql', 'starrocks', 'doris'].includes(val)) return val;
+  const value = dialect.trim().toLowerCase();
+  if (['spark', 'hive', 'mysql', 'starrocks', 'doris'].includes(value)) return value;
   return 'spark';
 }
 
@@ -52,7 +67,7 @@ async function fetchCompletion(
   dialect: string,
 ): Promise<CompletionResponse | null> {
   try {
-    const res = await fetch('/api/editor/completion', {
+    const response = await fetch('/api/editor/completion', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -64,8 +79,8 @@ async function fetchCompletion(
       }),
       signal: AbortSignal.timeout(2000),
     });
-    if (!res.ok) return null;
-    return await res.json();
+    if (!response.ok) return null;
+    return await response.json();
   } catch {
     return null;
   }
@@ -78,7 +93,7 @@ async function fetchHover(
   dialect: string,
 ): Promise<HoverResponse | null> {
   try {
-    const res = await fetch('/api/editor/hover', {
+    const response = await fetch('/api/editor/hover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -90,53 +105,46 @@ async function fetchHover(
       }),
       signal: AbortSignal.timeout(2000),
     });
-    if (!res.ok) return null;
-    return await res.json();
+    if (!response.ok) return null;
+    return await response.json();
   } catch {
     return null;
   }
 }
 
-// ── CompletionProvider ───────────────────────────────────
-
-/** 创建 CompletionProvider，绑定到当前 model / dialect 获取方法。
- *  @param getDialect 获取当前方言
- *  @param monacoRef 指向 Monaco 实例的 ref（用于取 CompletionItemKind 枚举）
- */
 export function createCompletionProvider(
-  getDialect: () => string,
+  getDialect: (model: editor.ITextModel) => string,
   itemKinds: CompletionItemKindMap,
 ): languages.CompletionItemProvider {
   return {
     triggerCharacters: ['.', ' '],
-    async provideCompletionItems(model, position, _context, _token) {
+    async provideCompletionItems(model, position) {
       const sql = model.getValue();
-      const line = position.lineNumber;
-      const col = position.column;
-      const dialect = getDialect();
+      if (!sql.trim()) return { suggestions: [] };
 
-      if (!sql.trim() || sql.trim().length < 1) return { suggestions: [] };
-
-      const resp = await fetchCompletion(sql, line, col, dialect);
-      if (!resp?.candidates?.length) return { suggestions: [] };
+      const response = await fetchCompletion(
+        sql,
+        position.lineNumber,
+        position.column,
+        getDialect(model),
+      );
+      if (!response?.candidates?.length) return { suggestions: [] };
 
       const word = model.getWordUntilPosition(position);
-      const suggestions: languages.CompletionItem[] = resp.candidates.map((c) => {
-        return {
-          label: c.text,
-          kind: itemKinds[c.type],
-          detail: c.detail ?? undefined,
-          insertText: c.text,
-          filterText: c.text,
-          sortText: `${completionPriority(c.type)}_${c.text.toLowerCase()}`,
-          range: {
-            startLineNumber: line,
-            startColumn: word.startColumn,
-            endLineNumber: line,
-            endColumn: word.endColumn,
-          },
-        } as languages.CompletionItem;
-      });
+      const suggestions: languages.CompletionItem[] = response.candidates.map((candidate) => ({
+        label: candidate.text,
+        kind: itemKinds[candidate.type],
+        detail: candidate.detail ?? undefined,
+        insertText: candidate.text,
+        filterText: candidate.text,
+        sortText: `${completionPriority(candidate.type)}_${candidate.text.toLowerCase()}`,
+        range: {
+          startLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endLineNumber: position.lineNumber,
+          endColumn: word.endColumn,
+        },
+      }));
 
       return { suggestions };
     },
@@ -158,51 +166,60 @@ function completionPriority(type: CompletionCandidate['type']): string {
   }
 }
 
-// ── HoverProvider ────────────────────────────────────────
-
-/** 创建 HoverProvider，绑定到当前 model / dialect 获取方法。 */
 export function createHoverProvider(
-  getDialect: () => string,
+  getDialect: (model: editor.ITextModel) => string,
 ): languages.HoverProvider {
   return {
-    async provideHover(model, position, _token) {
+    async provideHover(model, position) {
       const sql = model.getValue();
-      const line = position.lineNumber;
-      const col = position.column;
-      const dialect = getDialect();
-
       if (!sql.trim()) return null;
 
-      const resp = await fetchHover(sql, line, col, dialect);
-      if (!resp?.hover) return null;
+      const response = await fetchHover(
+        sql,
+        position.lineNumber,
+        position.column,
+        getDialect(model),
+      );
+      if (!response?.hover) return null;
 
-      const h = resp.hover as HoverInfo;
-      const parts: { value: string }[] = [];
+      const hover = response.hover;
+      const typeLabel = hover.type === 'table' ? 'Table' : hover.type === 'column' ? 'Column' : 'Identifier';
+      const contents = [{ value: `**${typeLabel}**: \`${hover.text ?? ''}\`` }];
 
-      // 类型标签
-      const typeLabel = h.type === 'table' ? '📦 Table' : h.type === 'column' ? '📋 Column' : 'Identifier';
-      const header = `**${typeLabel}**: \`${h.text ?? ''}\``;
-      parts.push({ value: header });
-
-      if (h.data_type) {
-        parts.push({ value: `**Type**: ${h.data_type}` });
+      if (hover.data_type) {
+        contents.push({ value: `**Type**: ${hover.data_type}` });
       }
-      if (h.comment) {
-        parts.push({ value: `**Comment**: ${h.comment}` });
+      if (hover.comment) {
+        contents.push({ value: `**Comment**: ${hover.comment}` });
       }
-      if (h.source) {
-        parts.push({ value: `**Source**: \`${h.source}\`` });
+      if (hover.source) {
+        contents.push({ value: `**Source**: \`${hover.source}\`` });
       }
 
       return {
-        contents: parts,
+        contents,
         range: {
-          startLineNumber: line,
-          startColumn: col,
-          endLineNumber: line,
-          endColumn: col,
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column,
         },
       };
     },
   };
+}
+
+export function registerSqlLanguageProviders(monaco: any) {
+  if (registeredMonacoInstances.has(monaco)) return;
+  registeredMonacoInstances.add(monaco);
+  monaco.languages.registerCompletionItemProvider(
+    'sql',
+    createCompletionProvider(resolveDialect, {
+      keyword: monaco.languages.CompletionItemKind.Keyword,
+      function: monaco.languages.CompletionItemKind.Function,
+      table: monaco.languages.CompletionItemKind.Class,
+      column: monaco.languages.CompletionItemKind.Field,
+    }),
+  );
+  monaco.languages.registerHoverProvider('sql', createHoverProvider(resolveDialect));
 }

@@ -1,0 +1,12 @@
+{
+  "case_id": "complex_regex_json",
+  "dialect": "spark",
+  "difficulty": "S2",
+  "covered_features": [
+    "regexp_extract",
+    "get_json_object",
+    "template_literal",
+    "cte"
+  ]
+}
+

@@ -1,0 +1,14 @@
+{
+  "tables": [
+    {
+      "schema": "default",
+      "table": "ods_order_log",
+      "columns": [
+        {"name": "url", "type": "string"},
+        {"name": "data", "type": "string"},
+        {"name": "order_id", "type": "string"},
+        {"name": "dt", "type": "string", "is_partition": true}
+      ]
+    }
+  ]
+}

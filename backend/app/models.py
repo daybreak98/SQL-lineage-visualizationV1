@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,35 @@ class AnalyzeRequest(BaseModel):
     metadata_version: str = "latest"
     case_sensitive: bool = False
     analysis_options: AnalysisOptions = Field(default_factory=AnalysisOptions)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class FormatSqlRequest(BaseModel):
+    sql: str
+    dialect: str = "spark"
+
+
+class FormatSqlResponse(BaseModel):
+    status: str = "success"
+    dialect: str = "spark"
+    formatted_sql: str | None = None
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
+
+
+class ConvertSqlRequest(BaseModel):
+    sql: str
+    source_dialect: str = "spark"
+    target_dialect: str = "spark"
+    pretty: bool = True
+
+
+class ConvertSqlResponse(BaseModel):
+    status: str = "success"
+    source_dialect: str = "spark"
+    target_dialect: str = "spark"
+    converted_sql: str | None = None
+    elapsed_ms: int = 0
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
 
 
 # ─── 响应体的各个零件 ──────────────────────────────────────────────
@@ -32,6 +61,15 @@ class Diagnostic(BaseModel):
     code: str
     level: str = "info"  # info | warning | error
     message: str
+    severity: str | None = None
+    stage: str | None = None
+    location: dict[str, Any] | None = None
+    confidence: float | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context) -> None:
+        if self.severity is None:
+            self.severity = self.level
 
 
 class DiagnosticsReport(BaseModel):
@@ -45,6 +83,7 @@ class GraphViewModel(BaseModel):
     view_mode: str = "column"
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     edges: list[dict[str, Any]] = Field(default_factory=list)
+    layout_hint: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutputField(BaseModel):
@@ -52,6 +91,23 @@ class OutputField(BaseModel):
     display_name: str
     expression: str
     source_type: str = "unknown"  # unknown | expression | column
+
+
+class MetricSemantics(BaseModel):
+    name: str
+    entity_id: str = ""
+    expression: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    aggregate_functions: list[str] = Field(default_factory=list)
+    operators: list[str] = Field(default_factory=list)
+    function_names: list[str] = Field(default_factory=list)
+    description: str = ""
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    confidence_level: str = "high"
+
+
+class SemanticsReport(BaseModel):
+    metrics: list[MetricSemantics] = Field(default_factory=list)
 
 
 class StageStatus(BaseModel):
@@ -73,14 +129,22 @@ class AnalysisResult(BaseModel):
     elapsed_ms: int = 0
     dialect: str = "spark"
     normalized_sql: str | None = None
+    analysis_sql: str | None = None
     stage_statuses: list[StageStatus] = Field(default_factory=list)
     unsupported_features: list[str] = Field(default_factory=list)
     diagnostics_report: DiagnosticsReport = Field(default_factory=DiagnosticsReport)
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
     graph_view_model: GraphViewModel = Field(default_factory=GraphViewModel)
     output_fields: list[OutputField] = Field(default_factory=list)
     source_locations: dict[str, Any] = Field(default_factory=dict)
     metadata_context: dict[str, Any] = Field(default_factory=dict)
     semantics_report: Any = None
+    sql_text_bundle: dict[str, Any] = Field(default_factory=dict)
+    preflight_report: dict[str, Any] = Field(default_factory=dict)
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    parse_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    confidence: dict[str, Any] = Field(default_factory=dict)
     summary: dict[str, Any] = Field(default_factory=dict)
 
 

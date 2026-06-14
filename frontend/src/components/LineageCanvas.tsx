@@ -1,33 +1,43 @@
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets, visibleGraph } from '../data/selectors';
+import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets } from '../data/selectors';
+import { buildPortIndexes, nodeBox, routeEdgePath, visibleGraph } from '../graphPipeline';
 import type { GraphEdge, GraphNode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
+import {
+  applyDraggedPositions,
+  clearSelectedMapping,
+  selectEdgeMapping,
+  selectNodeEntity,
+} from '../workbench/actions';
 
 interface Props {
   state: WorkbenchState;
   setState: React.Dispatch<React.SetStateAction<WorkbenchState>>;
-  /** Called when a graph node is double-clicked to navigate to SQL. */
   onNodeDoubleClick?: (entityId: string) => void;
-}
-
-function nodeBox(type: GraphNode['type']) {
-  if (type === 'output') return { width: 132, height: 32 };
-  if (type === 'subquery') return { width: 138, height: 32 };
-  if (type === 'cte' || type === 'output_field' || type === 'expression') return { width: 125, height: 30 };
-  if (type === 'column') return { width: 122, height: 29 };
-  return { width: 118, height: 29 };
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
-  if (!bounds || viewport.width === 0 || viewport.height === 0) return 1.25;
+export const LINEAGE_ZOOM_BASELINE = 0.72;
+
+export function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
+  void bounds;
+  void viewport;
+  return LINEAGE_ZOOM_BASELINE;
+}
+
+function fitBoundsZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
+  if (!bounds || viewport.width === 0 || viewport.height === 0) return LINEAGE_ZOOM_BASELINE;
   const xFit = (viewport.width - 96) / bounds.width;
   const yFit = (viewport.height - 104) / bounds.height;
-  return clamp(Math.min(1.15, xFit, yFit), 0.35, 1.15);
+  return clamp(Math.min(xFit, yFit), 0.35, 3);
+}
+
+export function zoomDisplayPercent(zoom: number) {
+  return Math.round((zoom / LINEAGE_ZOOM_BASELINE) * 100);
 }
 
 function centerOffset(
@@ -57,25 +67,79 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const current = useMemo(() => currentEntitySet(state), [state]);
   const highlights = useMemo(() => viewHighlightSets(state), [state]);
   const selectedEdges = useMemo(() => {
-    const eid = state.selectedEntity;
-    if (!eid || eid === 'out:group') return new Set<string>();
+    const entityId = state.selectedEntity;
+    if (!entityId || entityId === 'out:group') return new Set<string>();
     const ids = new Set<string>();
-    graph.edges.forEach(e => {
-      if (e.source === eid || e.target === eid) ids.add(e.id);
+    const reverse = new Map<string, string[]>();
+    const edgeByKey = new Map<string, string>();
+    graph.edges.forEach((edge) => {
+      if (!reverse.has(edge.target)) reverse.set(edge.target, []);
+      reverse.get(edge.target)!.push(edge.source);
+      edgeByKey.set(`${edge.source}->${edge.target}`, edge.id);
     });
+    const visited = new Set<string>([entityId]);
+    const queue = [entityId];
+    while (queue.length > 0) {
+      const currentEntity = queue.shift()!;
+      for (const source of reverse.get(currentEntity) ?? []) {
+        const key = `${source}->${currentEntity}`;
+        const edgeId = edgeByKey.get(key);
+        if (edgeId) ids.add(edgeId);
+        if (!visited.has(source)) {
+          visited.add(source);
+          queue.push(source);
+        }
+      }
+    }
     return ids;
   }, [state.selectedEntity, graph.edges]);
-  // Nodes connected to selected entity (or selected entity itself)
-  const selectedNodeIds = useMemo(() => {
-    const eid = state.selectedEntity;
-    if (!eid || eid === 'out:group') return new Set<string>();
-    const ids = new Set<string>();
-    graph.edges.forEach(e => {
-      if (e.source === eid || e.target === eid) {
-        ids.add(e.source);
-        ids.add(e.target);
-      }
+  const downstreamImpact = useMemo(() => {
+    const entityId = state.selectedEntity;
+    if (!entityId || entityId === 'out:group') return { nodeIds: new Set<string>(), edgeIds: new Set<string>() };
+
+    const outgoing = new Map<string, GraphEdge[]>();
+    graph.edges.forEach((edge) => {
+      if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
+      outgoing.get(edge.source)!.push(edge);
     });
+
+    const nodeIds = new Set<string>();
+    const edgeIds = new Set<string>();
+    const visited = new Set<string>([entityId]);
+    const queue = [entityId];
+    while (queue.length > 0) {
+      const currentEntity = queue.shift()!;
+      for (const edge of outgoing.get(currentEntity) ?? []) {
+        edgeIds.add(edge.id);
+        if (!visited.has(edge.target)) {
+          visited.add(edge.target);
+          nodeIds.add(edge.target);
+          queue.push(edge.target);
+        }
+      }
+    }
+
+    return { nodeIds, edgeIds };
+  }, [state.selectedEntity, graph.edges]);
+  const selectedNodeIds = useMemo(() => {
+    const entityId = state.selectedEntity;
+    if (!entityId || entityId === 'out:group') return new Set<string>();
+    const ids = new Set<string>([entityId]);
+    const reverse = new Map<string, string[]>();
+    graph.edges.forEach((edge) => {
+      if (!reverse.has(edge.target)) reverse.set(edge.target, []);
+      reverse.get(edge.target)!.push(edge.source);
+    });
+    const queue = [entityId];
+    while (queue.length > 0) {
+      const currentEntity = queue.shift()!;
+      for (const source of reverse.get(currentEntity) ?? []) {
+        if (!ids.has(source)) {
+          ids.add(source);
+          queue.push(source);
+        }
+      }
+    }
     return ids;
   }, [state.selectedEntity, graph.edges]);
   const hasActiveSelection = state.selectedEntity && state.selectedEntity !== 'out:group';
@@ -89,11 +153,11 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const panDragRef = useRef(panDrag);
   const draftPositionsRef = useRef(draftPositions);
   const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const pc = buildPathContext(state);
-  const gvm = state.graphViewMode ?? 'table';
-  const byEntity = Object.fromEntries(graph.nodes.map((n) => [n.entityId, n]));
+  const pathContext = buildPathContext(state);
+  const graphViewMode = state.graphViewMode ?? 'table';
+  const byEntity = Object.fromEntries(graph.nodes.map((node) => [node.entityId, node]));
   const positions = useMemo(
-    () => ({ ...Object.fromEntries(graph.nodes.map((n) => [n.id, { x: n.x, y: n.y }])), ...state.positions, ...draftPositions }),
+    () => ({ ...Object.fromEntries(graph.nodes.map((node) => [node.id, { x: node.x, y: node.y }])), ...state.positions, ...draftPositions }),
     [graph.nodes, state.positions, draftPositions],
   );
   const graphBounds = useMemo(() => {
@@ -104,15 +168,16 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     let maxY = -Infinity;
     for (const node of graph.nodes) {
       const box = nodeBox(node.type);
-      minX = Math.min(minX, node.x);
-      minY = Math.min(minY, node.y);
-      maxX = Math.max(maxX, node.x + box.width);
-      maxY = Math.max(maxY, node.y + box.height);
+      minX = Math.min(minX, node.x - box.width / 2);
+      minY = Math.min(minY, node.y - box.height / 2);
+      maxX = Math.max(maxX, node.x + box.width / 2);
+      maxY = Math.max(maxY, node.y + box.height / 2);
     }
     return { minX, minY, width: maxX - minX, height: maxY - minY };
   }, [graph.nodes]);
   const defaultZoom = useMemo(() => fitZoom(graphBounds, viewportSize), [graphBounds, viewportSize]);
   const zoom = zoomOverride ?? defaultZoom;
+  const zoomStep = LINEAGE_ZOOM_BASELINE * 0.25;
   const autoOffset = useMemo(() => centerOffset(graphBounds, viewportSize, zoom), [graphBounds, viewportSize, zoom]);
   const viewOffset = useMemo(() => ({ x: autoOffset.x + manualPan.x, y: autoOffset.y + manualPan.y }), [autoOffset, manualPan]);
 
@@ -138,62 +203,41 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   }, [state.backendGraph, state.graphViewMode]);
 
   useEffect(() => {
+    if (!state.canvasCommand) return;
+    if (state.canvasCommand.type === 'fit') {
+      const nextZoom = fitBoundsZoom(graphBounds, viewportSize);
+      setZoomOverride(nextZoom);
+      setManualPan({ x: 0, y: 0 });
+      setDraftPositions({});
+      return;
+    }
+    if (state.canvasCommand.type === 'center') {
+      setManualPan({ x: 0, y: 0 });
+      setDraftPositions({});
+      return;
+    }
+    if (state.canvasCommand.type === 'reset') {
+      setZoomOverride(null);
+      setManualPan({ x: 0, y: 0 });
+      setDraftPositions({});
+    }
+  }, [state.canvasCommand, graphBounds, viewportSize]);
+
+  useEffect(() => {
     if (!drag && !panDrag) return;
     document.body.style.userSelect = 'none';
-
-    const flushPointer = () => {
-      frameRef.current = null;
-      const point = pendingPointerRef.current;
-      if (!point) return;
-      const clientX = point.x;
-      const clientY = point.y;
-      const activePan = panDragRef.current;
-      if (activePan) {
-        setManualPan({
-          x: activePan.panX + clientX - activePan.x,
-          y: activePan.panY + clientY - activePan.y,
-        });
-        return;
-      }
-
-      const activeDrag = dragRef.current;
-      if (!activeDrag) return;
-      const rect = viewportRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setDraftPositions((prev) => ({
-        ...prev,
-        [activeDrag.id]: {
-          x: (clientX - rect.left - viewOffset.x) / zoom - activeDrag.ox,
-          y: (clientY - rect.top - viewOffset.y) / zoom - activeDrag.oy,
-        },
-      }));
-    };
-
-    const queuePointer = (clientX: number, clientY: number) => {
-      pendingPointerRef.current = { x: clientX, y: clientY };
-      if (frameRef.current != null) return;
-      frameRef.current = window.requestAnimationFrame(flushPointer);
-    };
 
     const finishInteraction = () => {
       if (frameRef.current != null) {
         window.cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
       }
-      if (pendingPointerRef.current) {
-        flushPointer();
-      }
+      if (pendingPointerRef.current) applyPointer(pendingPointerRef.current.x, pendingPointerRef.current.y);
       pendingPointerRef.current = null;
       const activeDrag = dragRef.current;
       if (activeDrag && Object.keys(draftPositionsRef.current).length > 0) {
         const nextPositions = draftPositionsRef.current;
-        setState((s) => ({
-          ...s,
-          positions: {
-            ...s.positions,
-            ...nextPositions,
-          },
-        }));
+        setState((s) => applyDraggedPositions(s, nextPositions));
       }
       setDraftPositions({});
       setDrag(null);
@@ -226,11 +270,11 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     event.preventDefault();
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const p = positions[node.id] ?? { x: node.x, y: node.y };
+    const position = positions[node.id] ?? { x: node.x, y: node.y };
     setDrag({
       id: node.id,
-      ox: (event.clientX - rect.left - viewOffset.x) / zoom - p.x,
-      oy: (event.clientY - rect.top - viewOffset.y) / zoom - p.y,
+      ox: (event.clientX - rect.left - viewOffset.x) / zoom - position.x,
+      oy: (event.clientY - rect.top - viewOffset.y) / zoom - position.y,
     });
   };
 
@@ -240,7 +284,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     if (target.closest('.node, .edge, .edge-hit, button, .stats, .mode-tip, .path-anchor')) return;
     event.preventDefault();
     setPanDrag({ x: event.clientX, y: event.clientY, panX: manualPan.x, panY: manualPan.y });
-    setState((s) => ({ ...s, selectedMapping: null }));
+    setState((s) => clearSelectedMapping(s));
   };
 
   const zoomBy = (nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
@@ -268,85 +312,115 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     zoomBy(zoom * factor, { clientX: event.clientX, clientY: event.clientY });
   };
 
+  const applyPointer = (clientX: number, clientY: number) => {
+    const activePan = panDragRef.current;
+    if (activePan) {
+      setManualPan({
+        x: activePan.panX + clientX - activePan.x,
+        y: activePan.panY + clientY - activePan.y,
+      });
+      return;
+    }
+
+    const activeDrag = dragRef.current;
+    if (!activeDrag) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setDraftPositions((prev) => ({
+      ...prev,
+      [activeDrag.id]: {
+        x: (clientX - rect.left - viewOffset.x) / zoom - activeDrag.ox,
+        y: (clientY - rect.top - viewOffset.y) / zoom - activeDrag.oy,
+      },
+    }));
+  };
+
+  const queuePointer = (clientX: number, clientY: number) => {
+    pendingPointerRef.current = { x: clientX, y: clientY };
+    if (frameRef.current != null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      const point = pendingPointerRef.current;
+      if (!point) return;
+      applyPointer(point.x, point.y);
+    });
+  };
+
   return (
     <div
       ref={viewportRef}
       className={cx('viewport', panDrag && 'panning')}
       onMouseDown={startPan}
+      onMouseMove={(event) => applyPointer(event.clientX, event.clientY)}
       onWheel={handleWheel}
       style={{ position: 'relative' }}
     >
       <div style={{ position: 'absolute', top: 4, right: 4, zIndex: 50, display: 'flex', gap: 4 }}>
-        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom - 0.25)}>-</button>
-        <span className="pill" style={{ minWidth: 48, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
-        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom + 0.25)}>+</button>
+        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom - zoomStep)}>-</button>
+        <span className="pill" style={{ minWidth: 48, textAlign: 'center' }}>{zoomDisplayPercent(zoom)}%</span>
+        <button className="btn h-[24px] px-2 text-[11px]" onClick={() => zoomBy(zoom + zoomStep)}>+</button>
         <button className="btn h-[24px] px-2 text-[11px]" onClick={() => { setZoomOverride(null); setManualPan({ x: 0, y: 0 }); }}>Reset</button>
       </div>
-      {!(state.pageMode === 'analyzed' && state.trustStatus === 'trusted') && <div className="message block">{state.pageMode === 'failed' ? 'Analysis failed · Search disabled · fix SQL and re-analyze.' : state.pageMode === 'empty' ? 'Paste SQL or load example.' : 'Analyze SQL to build subquery dependency view.'}</div>}
+      {!(state.pageMode === 'analyzed' && state.trustStatus === 'trusted') && <div className="message block">{state.pageMode === 'failed' ? 'Analysis failed | Search disabled | fix SQL and re-analyze.' : state.pageMode === 'empty' ? 'Paste SQL or load example.' : 'Analyze SQL to build subquery dependency view.'}</div>}
       <div className={cx('mode-tip', ['subquery_dependency', 'large_graph', 'full_graph_preview', 'focus_field'].includes(state.renderMode) && 'show')}>
-        {state.renderMode === 'subquery_dependency' ? 'Default Subquery Dependency View · field entities preserved, hidden by default' : state.renderMode === 'full_graph_preview' ? 'Full Graph Preview · user-triggered only' : state.renderMode === 'focus_field' ? 'Focus Field Mode · local field expansion' : 'Large Graph Mode · render degradation, not failed'}
+        {state.renderMode === 'subquery_dependency' ? 'Default Subquery Dependency View | field entities preserved, hidden by default' : state.renderMode === 'full_graph_preview' ? 'Full Graph Preview | user-triggered only' : state.renderMode === 'focus_field' ? 'Focus Field Mode | local field expansion' : 'Large Graph Mode | render degradation, not failed'}
       </div>
       <div className={cx('path-anchor', state.renderMode !== 'subquery_dependency' && state.detailMode !== 'expanded' && 'show')}>
-        <div className="path-anchor-title"><span className={cx('dot', pc.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pc.status) && 'warn')} /><span>{state.selectedOutput ? `${pc.display} · ${pc.status}` : 'Choose output'}</span></div>
-        <div className="path-anchor-body">{state.selectedOutput ? `PathContextStore · ${pc.nodes} nodes · ${pc.mappings} mappings · ${pc.warnings} warnings` : 'Default view shows subquery / CTE dependency.'}</div>
+        <div className="path-anchor-title"><span className={cx('dot', pathContext.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pathContext.status) && 'warn')} /><span>{state.selectedOutput ? `${pathContext.display} | ${pathContext.status}` : 'Choose output'}</span></div>
+        <div className="path-anchor-body">{state.selectedOutput ? `PathContextStore | ${pathContext.nodes} nodes | ${pathContext.mappings} mappings | ${pathContext.warnings} warnings` : 'Default view shows subquery / CTE dependency.'}</div>
       </div>
       <div className="canvas-transform" style={{ transform: `translate(${viewOffset.x}px, ${viewOffset.y}px)`, transformOrigin: 'top left' }}>
-      <div className="stage" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left' }} onClick={() => setState((s) => ({ ...s, selectedMapping: null }))}>
-        <svg className="edge-layer">
-          <defs>
-            <marker id="arrowDefault" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#94A3B8" /></marker>
-            <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
-          </defs>
-          {graph.edges.map((edge: GraphEdge) => {
-            const s = byEntity[edge.source];
-            const t = byEntity[edge.target];
-            if (!s || !t) return null;
-            const sp = positions[s.id] ?? { x: s.x, y: s.y };
-            const tp = positions[t.id] ?? { x: t.x, y: t.y };
-            const sourceBox = nodeBox(s.type);
-            const targetBox = nodeBox(t.type);
-            const sx = sp.x + sourceBox.width;
-            const sy = sp.y + sourceBox.height / 2;
-            const tx = tp.x;
-            const ty = tp.y + targetBox.height / 2;
-            const dx = tx - sx;
-            const dy = ty - sy;
-            const shortEdge = Math.abs(dx) < 96 && Math.abs(dy) < 34;
-            const bend = Math.min(72, Math.max(28, Math.abs(dx) * 0.35));
-            const edgePath = shortEdge
-              ? `M ${sx} ${sy} L ${tx} ${ty}`
-              : `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`;
-            const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
-            const isSelectedEdge = selectedEdges.has(edge.id);
-            const isRelated = isSelectedEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
-            const dimmed = hasActiveSelection && !isRelated;
-            const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
-            const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+        <div className="stage" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left' }} onClick={() => setState((s) => clearSelectedMapping(s))}>
+          <svg className="edge-layer">
+            <defs>
+              <marker id="arrowDefault" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#94A3B8" /></marker>
+              <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
+            </defs>
+            {(() => {
+              const ports = buildPortIndexes(graph, positions);
+
+              return graph.edges.map((edge: GraphEdge) => {
+                const sourceNode = byEntity[edge.source];
+                const targetNode = byEntity[edge.target];
+                if (!sourceNode || !targetNode) return null;
+                const sourcePos = positions[sourceNode.id] ?? { x: sourceNode.x, y: sourceNode.y };
+                const targetPos = positions[targetNode.id] ?? { x: targetNode.x, y: targetNode.y };
+                const edgePath = routeEdgePath({ edge, sourceNode, targetNode, sourcePos, targetPos, ports, style: 'smooth' });
+                const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
+                const isSelectedEdge = selectedEdges.has(edge.id);
+                const isDownstreamImpactEdge = downstreamImpact.edgeIds.has(edge.id);
+                const isRelated = isSelectedEdge || isDownstreamImpactEdge || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
+                const dimmed = hasActiveSelection && !isRelated;
+                const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
+                const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+                return (
+                  <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectEdgeMapping(s, edge.target, edge.mapping || null)); }}>
+                    <path className="edge-hit" d={edgePath} />
+                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
+                  </g>
+                );
+              });
+            })()}
+          </svg>
+          {graph.nodes.map((node) => {
+            const position = positions[node.id] ?? { x: node.x, y: node.y };
+            const box = nodeBox(node.type);
+            const selected = state.selectedEntity === node.entityId;
+            const isCurrent = current.has(node.entityId);
+            const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
+            const isDownstreamImpactNode = downstreamImpact.nodeIds.has(node.entityId);
+            const dimmed = hasActiveSelection && !selected && !inSelection && !isDownstreamImpactNode;
+            const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
+            const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
             return (
-              <g key={edge.id} onClick={(event) => { event.stopPropagation(); if (edge.mapping) setState((st) => ({ ...st, selectedMapping: edge.mapping!, selectedEntity: edge.target, detailMode: 'compact', detailTab: 'mapping' })); }}>
-                <path className="edge-hit" d={edgePath} />
-                <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected')} d={edgePath} markerEnd={markerEnd} />
-              </g>
+              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={selected || undefined} data-current={isCurrent || undefined} data-downstream-impact={isDownstreamImpactNode || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
+                <span className="title">{node.label}</span><span className="state-dot" />
+              </div>
             );
           })}
-        </svg>
-        {graph.nodes.map((node) => {
-          const p = positions[node.id] ?? { x: node.x, y: node.y };
-          const selected = state.selectedEntity === node.entityId;
-          const isCurrent = current.has(node.entityId);
-          const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
-          const dimmed = hasActiveSelection && !selected && !inSelection;
-          const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
-          const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
-          return (
-            <div key={node.id} className="node" style={{ left: p.x, top: p.y }} data-type={node.type} data-selected={selected || undefined} data-current={isCurrent || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(e) => startDrag(e, node)} onClick={(e) => { e.stopPropagation(); setState((s) => ({ ...s, selectedEntity: node.entityId, selectedMapping: null, detailMode: 'compact', detailTab: 'summary' })); }} onDoubleClick={(e) => { e.stopPropagation(); onNodeDoubleClick?.(node.entityId); }}>
-              <span className="strip" /><span className="title" title={node.label}>{node.label}</span><span className="state-dot" />
-            </div>
-          );
-        })}
+        </div>
       </div>
-      </div>
-      <div className="stats"><h4>GraphRenderMode</h4><div className="stats-grid"><span>mode</span><b>{state.renderMode.replace('_dependency', '').replace('current_field_', 'field_')}</b><span>view</span><b>{gvm}</b><span>visible</span><b>{graph.nodes.length}/{graph.edges.length}</b><span>layout</span><b>{state.lastTransition?.includes('layout:recompute') ? 'recomputed' : 'stable'}</b><span>labels</span><b>{drag ? 'off' : 'lazy'}</b></div></div>
+      <div className="stats"><h4>GraphRenderMode</h4><div className="stats-grid"><span>mode</span><b>{state.renderMode.replace('_dependency', '').replace('current_field_', 'field_')}</b><span>view</span><b>{graphViewMode}</b><span>visible</span><b>{graph.nodes.length}/{graph.edges.length}</b><span>layout</span><b>{state.lastTransition?.includes('layout:recompute') ? 'recomputed' : 'stable'}</b><span>labels</span><b>{drag ? 'off' : 'lazy'}</b></div></div>
     </div>
   );
 }
