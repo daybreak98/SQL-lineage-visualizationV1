@@ -1,5 +1,6 @@
 import { analysisToGraph } from '../graphPipeline';
 import { transitionRenderMode } from '../data/selectors';
+import { EMPTY_GRAPH_TRANSITION } from '../types/lineage';
 import type { BackendAnalysisResult, BackendDiagnostic, Diagnostic, SearchItem, WorkbenchState } from '../types/lineage';
 
 export const initialWorkbenchState: WorkbenchState = {
@@ -22,6 +23,8 @@ export const initialWorkbenchState: WorkbenchState = {
   positions: {},
   backendStatus: 'checking...',
   metadataStatus: 'checking...',
+  graphTransition: EMPTY_GRAPH_TRANSITION,
+  graphTransitionEnabled: true,
 };
 
 export function normalizeWorkbenchDiagnostic(diagnostic: BackendDiagnostic, index: number): Diagnostic {

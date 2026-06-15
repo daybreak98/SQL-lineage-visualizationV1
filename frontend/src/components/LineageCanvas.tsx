@@ -2,7 +2,9 @@ import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildPathContext, currentEntitySet, diagnosticsForEntity, viewHighlightSets } from '../data/selectors';
 import { buildPortIndexes, nodeBox, routeEdgePath, visibleGraph } from '../graphPipeline';
-import type { GraphEdge, GraphNode, WorkbenchState } from '../types/lineage';
+import { applyFramePositions, graphPositions, nodeKey, shouldAnimateGraph } from '../graphTransition';
+import type { GraphEdge, GraphLike, GraphNode, WorkbenchState } from '../types/lineage';
+import { useGraphTransition } from '../useGraphTransition';
 import { cx } from '../utils/cx';
 import {
   applyDraggedPositions,
@@ -60,10 +62,43 @@ function centerOffset(
   };
 }
 
+function nodeTransitionVisual(
+  entityId: string,
+  progress: number,
+  entering: Set<string>,
+  exiting: Set<string>,
+): { opacity: number; scale: number } {
+  if (entering.has(entityId)) {
+    return { opacity: progress, scale: 0.94 + progress * 0.06 };
+  }
+  if (exiting.has(entityId)) {
+    return { opacity: 1 - progress, scale: 1 - progress * 0.06 };
+  }
+  return { opacity: 1, scale: 1 };
+}
+
 export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
-  const graph = useMemo(() => visibleGraph(state), [state]);
+  const targetGraph = useMemo(() => visibleGraph(state), [state.backendGraph, state.graphViewMode, state.positions]);
+  const previousGraphRef = useRef<GraphLike>(targetGraph);
+
+  const transitionFrame = useGraphTransition({
+    previousGraph: previousGraphRef.current,
+    nextGraph: targetGraph,
+    enabled: state.graphTransitionEnabled && shouldAnimateGraph(targetGraph),
+    durationMs: 260,
+    onFinish: () => {
+      previousGraphRef.current = targetGraph;
+    },
+  });
+
+  const renderGraph = useMemo(
+    () => applyFramePositions(transitionFrame.graph, transitionFrame.positions),
+    [transitionFrame.graph, transitionFrame.positions],
+  );
+
+  const graph = renderGraph;
   const current = useMemo(() => currentEntitySet(state), [state]);
   const highlights = useMemo(() => viewHighlightSets(state), [state]);
   const selectedEdges = useMemo(() => {
@@ -72,7 +107,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     const ids = new Set<string>();
     const reverse = new Map<string, string[]>();
     const edgeByKey = new Map<string, string>();
-    graph.edges.forEach((edge) => {
+    graph.edges.forEach((edge: GraphEdge) => {
       if (!reverse.has(edge.target)) reverse.set(edge.target, []);
       reverse.get(edge.target)!.push(edge.source);
       edgeByKey.set(`${edge.source}->${edge.target}`, edge.id);
@@ -98,7 +133,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     if (!entityId || entityId === 'out:group') return { nodeIds: new Set<string>(), edgeIds: new Set<string>() };
 
     const outgoing = new Map<string, GraphEdge[]>();
-    graph.edges.forEach((edge) => {
+    graph.edges.forEach((edge: GraphEdge) => {
       if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
       outgoing.get(edge.source)!.push(edge);
     });
@@ -126,7 +161,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     if (!entityId || entityId === 'out:group') return new Set<string>();
     const ids = new Set<string>([entityId]);
     const reverse = new Map<string, string[]>();
-    graph.edges.forEach((edge) => {
+    graph.edges.forEach((edge: GraphEdge) => {
       if (!reverse.has(edge.target)) reverse.set(edge.target, []);
       reverse.get(edge.target)!.push(edge.source);
     });
@@ -155,10 +190,10 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
   const pathContext = buildPathContext(state);
   const graphViewMode = state.graphViewMode ?? 'table';
-  const byEntity = Object.fromEntries(graph.nodes.map((node) => [node.entityId, node]));
+  const byEntity = Object.fromEntries(graph.nodes.map((node: GraphNode) => [node.entityId, node]));
   const positions = useMemo(
-    () => ({ ...Object.fromEntries(graph.nodes.map((node) => [node.id, { x: node.x, y: node.y }])), ...state.positions, ...draftPositions }),
-    [graph.nodes, state.positions, draftPositions],
+    () => ({ ...Object.fromEntries(graph.nodes.map((node: GraphNode) => [node.id, { x: node.x, y: node.y }])), ...state.positions, ...draftPositions, ...transitionFrame.positions }),
+    [graph.nodes, state.positions, draftPositions, transitionFrame.positions],
   );
   const graphBounds = useMemo(() => {
     if (!graph.nodes.length) return null;
@@ -393,16 +428,26 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                 const dimmed = hasActiveSelection && !isRelated;
                 const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
                 const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+                
+                const isEnteringEdge = transitionFrame.enteringEntityIds.has(edge.source) || transitionFrame.enteringEntityIds.has(edge.target);
+                const isExitingEdge = transitionFrame.exitingEntityIds.has(edge.source) || transitionFrame.exitingEntityIds.has(edge.target);
+                let edgeOpacity = 1;
+                if (isEnteringEdge) {
+                  edgeOpacity = transitionFrame.progress;
+                } else if (isExitingEdge) {
+                  edgeOpacity = 1 - transitionFrame.progress;
+                }
+                
                 return (
                   <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectEdgeMapping(s, edge.target, edge.mapping || null)); }}>
                     <path className="edge-hit" d={edgePath} />
-                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
+                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} style={{ opacity: edgeOpacity }} />
                   </g>
                 );
               });
             })()}
           </svg>
-          {graph.nodes.map((node) => {
+          {graph.nodes.map((node: GraphNode) => {
             const position = positions[node.id] ?? { x: node.x, y: node.y };
             const box = nodeBox(node.type);
             const selected = state.selectedEntity === node.entityId;
@@ -412,8 +457,16 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             const dimmed = hasActiveSelection && !selected && !inSelection && !isDownstreamImpactNode;
             const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
             const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
+            const visual = nodeTransitionVisual(
+              nodeKey(node),
+              transitionFrame.progress,
+              transitionFrame.enteringEntityIds,
+              transitionFrame.exitingEntityIds,
+            );
+            const isEntering = transitionFrame.enteringEntityIds.has(nodeKey(node));
+            const isExiting = transitionFrame.exitingEntityIds.has(nodeKey(node));
             return (
-              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={selected || undefined} data-current={isCurrent || undefined} data-downstream-impact={isDownstreamImpactNode || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
+              <div key={node.id} className="node" style={{ transform: `translate3d(${position.x - box.width / 2}px, ${position.y - box.height / 2}px, 0) scale(${visual.scale})`, opacity: visual.opacity }} data-type={node.type} data-full-label={node.label} data-selected={selected || undefined} data-current={isCurrent || undefined} data-downstream-impact={isDownstreamImpactNode || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} data-entering={isEntering || undefined} data-exiting={isExiting || undefined} onMouseDown={(event) => { transitionFrame.cancel(); startDrag(event, node); }} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
                 <span className="title">{node.label}</span><span className="state-dot" />
               </div>
             );

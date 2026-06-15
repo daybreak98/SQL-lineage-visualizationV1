@@ -10,6 +10,7 @@ import {
   deriveAttention,
   transitionRenderMode,
 } from '../selectors';
+import { EMPTY_GRAPH_TRANSITION } from '../../types/lineage';
 import type { WorkbenchState } from '../../types/lineage';
 
 function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
@@ -31,6 +32,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    graphTransition: EMPTY_GRAPH_TRANSITION,
+    graphTransitionEnabled: true,
     ...overrides,
   };
 }

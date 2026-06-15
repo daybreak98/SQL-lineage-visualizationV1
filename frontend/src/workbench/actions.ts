@@ -1,4 +1,5 @@
 import type { DetailTab, GraphViewMode, WorkbenchState } from '../types/lineage';
+import { EMPTY_GRAPH_TRANSITION } from '../types/lineage';
 
 let canvasCommandId = 0;
 
@@ -19,7 +20,60 @@ export function setDrawerTab(state: WorkbenchState, drawerTab: string): Workbenc
 }
 
 export function switchGraphViewMode(state: WorkbenchState, graphViewMode: GraphViewMode): WorkbenchState {
-  return { ...state, graphViewMode, positions: {} };
+  if (state.graphViewMode === graphViewMode) {
+    return state;
+  }
+
+  return {
+    ...state,
+    graphViewMode,
+    positions: {},
+    graphTransition: {
+      ...state.graphTransition,
+      phase: 'preparing',
+      fromMode: state.graphViewMode,
+      toMode: graphViewMode,
+      reason: 'view-mode-change',
+    },
+  };
+}
+
+export function requestGraphViewModeChange(
+  state: WorkbenchState,
+  nextMode: GraphViewMode,
+): WorkbenchState {
+  if (state.graphViewMode === nextMode) {
+    return state;
+  }
+
+  return {
+    ...state,
+    graphViewMode: nextMode,
+    graphTransition: {
+      ...state.graphTransition,
+      phase: 'preparing',
+      fromMode: state.graphViewMode,
+      toMode: nextMode,
+      reason: 'view-mode-change',
+    },
+  };
+}
+
+export function finishGraphTransition(state: WorkbenchState): WorkbenchState {
+  return {
+    ...state,
+    graphTransition: EMPTY_GRAPH_TRANSITION,
+  };
+}
+
+export function cancelGraphTransition(state: WorkbenchState): WorkbenchState {
+  return {
+    ...state,
+    graphTransition: {
+      ...EMPTY_GRAPH_TRANSITION,
+      phase: 'idle',
+    },
+  };
 }
 
 export function toggleDetailCollapsed(state: WorkbenchState): WorkbenchState {

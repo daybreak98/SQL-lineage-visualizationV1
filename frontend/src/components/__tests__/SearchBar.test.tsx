@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SearchBar } from '../SearchBar';
+import { EMPTY_GRAPH_TRANSITION } from '../../types/lineage';
 import type { SearchItem, WorkbenchState } from '../../types/lineage';
 
 const backendSearchItems: SearchItem[] = [
@@ -62,6 +63,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     large: false,
     positions: {},
     backendSearchItems,
+    graphTransition: EMPTY_GRAPH_TRANSITION,
+    graphTransitionEnabled: true,
     ...overrides,
   };
 }

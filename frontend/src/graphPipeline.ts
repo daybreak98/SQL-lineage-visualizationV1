@@ -1,4 +1,4 @@
-﻿import type { BackendAnalysisResult, GraphEdge, GraphNode, SearchItem, WorkbenchState } from './types/lineage';
+﻿import type { BackendAnalysisResult, GraphEdge, GraphNode, GraphViewMode, SearchItem, WorkbenchState } from './types/lineage';
 import { getComfortNodeBox, COMFORT_CANVAS } from './nodeVisualTokens';
 import {
   applyManualPositions as applyComfortManualPositions,
@@ -677,4 +677,16 @@ export function visibleGraph(state: WorkbenchState): GraphLike {
 
   // semantics / diagnostics / expression / fallback — apply layout too
   return applyManualPositions(layoutLayeredDag(base), positions);
+}
+
+export function buildTargetVisibleGraph(
+  state: WorkbenchState,
+  mode: GraphViewMode,
+): GraphLike {
+  const nextState = {
+    ...state,
+    graphViewMode: mode,
+  };
+
+  return visibleGraph(nextState);
 }

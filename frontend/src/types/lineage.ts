@@ -79,6 +79,11 @@ export interface GraphEdge {
   targetPortOrder?: number;
 }
 
+export interface GraphLike {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface BackendDiagnostic {
   diagnostic_id?: string;
   code: string;
@@ -237,6 +242,59 @@ export interface PathContext {
   confidence: 'high' | 'medium' | 'unknown';
 }
 
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export type PositionMap = Record<string, Point>;
+
+export type GraphTransitionPhase = 'idle' | 'preparing' | 'running' | 'finishing';
+
+export type GraphTransitionReason =
+  | 'view-mode-change'
+  | 'collapse-change'
+  | 'expand-change'
+  | 'layout-change';
+
+export interface GraphTransitionState {
+  phase: GraphTransitionPhase;
+  fromMode: GraphViewMode | null;
+  toMode: GraphViewMode | null;
+  startedAt: number | null;
+  durationMs: number;
+  fromPositions: PositionMap;
+  toPositions: PositionMap;
+  framePositions: PositionMap;
+  enteringEntityIds: string[];
+  persistingEntityIds: string[];
+  exitingEntityIds: string[];
+  progress: number;
+  reason: GraphTransitionReason | null;
+}
+
+export interface TransitionNodeSets {
+  persisting: string[];
+  entering: string[];
+  exiting: string[];
+}
+
+export const EMPTY_GRAPH_TRANSITION: GraphTransitionState = {
+  phase: 'idle',
+  fromMode: null,
+  toMode: null,
+  startedAt: null,
+  durationMs: 260,
+  fromPositions: {},
+  toPositions: {},
+  framePositions: {},
+  enteringEntityIds: [],
+  persistingEntityIds: [],
+  exitingEntityIds: [],
+  progress: 1,
+  reason: null,
+};
+
 export interface WorkbenchState {
   pageMode: PageMode;
   analysisStatus: AnalysisStatus;
@@ -269,4 +327,6 @@ export interface WorkbenchState {
   backendInvalidEdges?: GraphEdge[];
   lastAnalysisResult?: BackendAnalysisResult;
   lastApiError?: string;
+  graphTransition: GraphTransitionState;
+  graphTransitionEnabled: boolean;
 }

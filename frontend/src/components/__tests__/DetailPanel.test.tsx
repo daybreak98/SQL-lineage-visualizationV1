@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { DetailPanel } from '../DetailPanel';
+import { EMPTY_GRAPH_TRANSITION } from '../../types/lineage';
 import type { WorkbenchState } from '../../types/lineage';
 import { subqueryEdges, subqueryNodes } from '../../data/mockLineage';
 
@@ -24,6 +25,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     large: false,
     positions: {},
     backendGraph: { nodes: subqueryNodes, edges: subqueryEdges },
+    graphTransition: EMPTY_GRAPH_TRANSITION,
+    graphTransitionEnabled: true,
     ...overrides,
   };
 }

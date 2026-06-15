@@ -178,7 +178,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .edge.dimmed { stroke-opacity:.12; }
 .edge.synthetic { stroke-opacity:.3; }
 .edge-hit { fill:none; stroke:transparent; stroke-width:16px; cursor:pointer; }
-.node { position:absolute; display:flex; align-items:center; height:45px; width:138px; border:1.5px solid var(--line-2); border-radius:12px; background:white; padding:0 10px; box-shadow:0 2px 4px rgba(15,23,42,.08); cursor:grab; user-select:none; transition:background .1s,border .1s,box-shadow .1s,opacity .1s; }
+.node { position:absolute; left:0; top:0; display:flex; align-items:center; height:45px; width:138px; border:1.5px solid var(--line-2); border-radius:12px; background:white; padding:0 10px; box-shadow:0 2px 4px rgba(15,23,42,.08); cursor:grab; user-select:none; transform-origin:center center; will-change:transform,opacity; backface-visibility:hidden; transition:background .1s,border .1s,box-shadow .1s; }
 .node:active { cursor:grabbing; }
 .node .strip { display:none; }
 .node .title { font-size:13px; font-weight:700; color:var(--slate-900); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; flex:1; min-width:0; }
@@ -331,3 +331,15 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width:1279px) { .convert-diagnostics { grid-template-columns:1fr; } }
 @media (max-width:1120px) { .convert-toolbar { height:auto; padding:10px 12px; align-items:flex-start; flex-direction:column; } .convert-workspace { flex-direction:column; } .convert-source, .convert-target-panel { width:100%; min-width:0; min-height:280px; } }
 @media (max-width:1023px) { .app::after { content:"Screen too narrow. v1.4 P0-Core standard workbench requires 1366px+ for visual regression."; position:fixed; inset:0; z-index:999; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.82); color:white; text-align:center; padding:24px; font-size:14px; line-height:22px; } }
+
+.node[data-entering="true"] { pointer-events:none; }
+.node[data-exiting="true"] { pointer-events:none; }
+.edge { will-change:opacity; }
+
+@media (prefers-reduced-motion:reduce) {
+  .node,
+  .edge {
+    transition:none !important;
+    animation:none !important;
+  }
+}

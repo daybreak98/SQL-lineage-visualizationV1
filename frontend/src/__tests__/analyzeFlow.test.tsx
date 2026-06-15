@@ -447,7 +447,9 @@ describe('Analyze Flow', () => {
 
     const metricNode = screen.getByText('metric_base', { selector: '.title' }).closest('.node') as HTMLElement;
     const resultNode = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
-    expect(parseFloat(resultNode.style.left)).toBeGreaterThan(parseFloat(metricNode.style.left));
+    const metricX = parseFloat(metricNode.style.transform.match(/translate3d\(([^,]+)/)?.[1] || '0');
+    const resultX = parseFloat(resultNode.style.transform.match(/translate3d\(([^,]+)/)?.[1] || '0');
+    expect(resultX).toBeGreaterThan(metricX);
 
     fireEvent.click(screen.getByText('Table'));
 
@@ -461,7 +463,9 @@ describe('Analyze Flow', () => {
 
     const tableNode = screen.getByText('dwd_order_di', { selector: '.title' }).closest('.node') as HTMLElement;
     const tableResultNode = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
-    expect(parseFloat(tableResultNode.style.left) - parseFloat(tableNode.style.left)).toBeGreaterThan(0);
+    const tableX = parseFloat(tableNode.style.transform.match(/translate3d\(([^,]+)/)?.[1] || '0');
+    const tableResultX = parseFloat(tableResultNode.style.transform.match(/translate3d\(([^,]+)/)?.[1] || '0');
+    expect(tableResultX - tableX).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByText('Column'));
 

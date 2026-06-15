@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { LineageCanvas } from '../LineageCanvas';
+import { EMPTY_GRAPH_TRANSITION } from '../../types/lineage';
 import type { WorkbenchState } from '../../types/lineage';
 import { subqueryEdges, subqueryNodes } from '../../data/mockLineage';
 
@@ -24,6 +25,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     large: false,
     positions: {},
     backendGraph: { nodes: subqueryNodes, edges: subqueryEdges },
+    graphTransition: EMPTY_GRAPH_TRANSITION,
+    graphTransitionEnabled: true,
     ...overrides,
   };
 }
@@ -224,8 +227,8 @@ describe('LineageCanvas', () => {
     const title = screen.getByText('dwd_order_di', { selector: '.title' });
     const node = title.closest('.node') as HTMLElement;
     expect(node).not.toBeNull();
-    expect(Number.isFinite(parseFloat(node.style.left))).toBe(true);
-    expect(Number.isFinite(parseFloat(node.style.top))).toBe(true);
+    expect(node.style.transform).toBeTruthy();
+    expect(node.style.transform).toContain('translate3d');
   });
 
   it('shows output field edges into Query Result with readable spacing in column view', () => {
@@ -251,7 +254,13 @@ describe('LineageCanvas', () => {
     const outputEdge = container.querySelector('path.edge.output');
 
     expect(outputEdge).toBeInTheDocument();
-    expect(parseFloat(queryResult.style.left) - parseFloat(outputField.style.left)).toBeGreaterThan(240);
+    const queryResultTransform = queryResult.style.transform;
+    const outputFieldTransform = outputField.style.transform;
+    expect(queryResultTransform).toContain('translate3d');
+    expect(outputFieldTransform).toContain('translate3d');
+    const queryResultX = parseFloat(queryResultTransform.match(/translate3d\(([^,]+)/)?.[1] || '0');
+    const outputFieldX = parseFloat(outputFieldTransform.match(/translate3d\(([^,]+)/)?.[1] || '0');
+    expect(queryResultX - outputFieldX).toBeGreaterThan(240);
   });
 
   it('collapses upstream physical columns into table nodes in column view', () => {
