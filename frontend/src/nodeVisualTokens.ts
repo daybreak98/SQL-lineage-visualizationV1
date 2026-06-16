@@ -28,6 +28,18 @@ export const COMFORT_NODE_BOX: Record<string, { width: number; height: number; r
   unknown: { width: 138, height: 45, radius: 12 },
 };
 
+export const RELATION_NODE_GEOMETRY = {
+  tableWidth: 236,
+  outputWidth: 236,
+  headerHeight: 48,
+  rowHeight: 26,
+  bodyPaddingTop: 5,
+  bodyPaddingBottom: 5,
+  hiddenBadgeHeight: 24,
+  collapsedHeight: 48,
+  radius: 12,
+};
+
 export const COMFORT_EDGE = {
   strokeWidth: 1.7,
   activeStrokeWidth: 2.8,
@@ -36,7 +48,32 @@ export const COMFORT_EDGE = {
   activeOpacity: 1,
 };
 
-export function getComfortNodeBox(type: string) {
+export function getComfortNodeBox(nodeOrType: string | { type: string; columns?: unknown[]; collapsed?: boolean; hiddenColumnCount?: number }) {
+  const type = typeof nodeOrType === 'string' ? nodeOrType : nodeOrType.type;
+
+  if (typeof nodeOrType !== 'string') {
+    const node = nodeOrType;
+    const isRelationContainer = ['table', 'cte', 'subquery', 'output'].includes(node.type);
+    if (isRelationContainer && node.columns) {
+      const width = node.type === 'output' ? RELATION_NODE_GEOMETRY.outputWidth : RELATION_NODE_GEOMETRY.tableWidth;
+      if (node.collapsed) {
+        return { width, height: RELATION_NODE_GEOMETRY.collapsedHeight, radius: RELATION_NODE_GEOMETRY.radius };
+      }
+
+      const hiddenBadgeHeight = node.hiddenColumnCount ? RELATION_NODE_GEOMETRY.hiddenBadgeHeight : 0;
+      return {
+        width,
+        height:
+          RELATION_NODE_GEOMETRY.headerHeight +
+          RELATION_NODE_GEOMETRY.bodyPaddingTop +
+          node.columns.length * RELATION_NODE_GEOMETRY.rowHeight +
+          RELATION_NODE_GEOMETRY.bodyPaddingBottom +
+          hiddenBadgeHeight,
+        radius: RELATION_NODE_GEOMETRY.radius,
+      };
+    }
+  }
+
   return COMFORT_NODE_BOX[type] ?? COMFORT_NODE_BOX.unknown;
 }
 

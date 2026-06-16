@@ -23,6 +23,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    collapsedRelationIds: {},
+    columnContainerMode: 'relation_rows',
     backendGraph: { nodes: subqueryNodes, edges: subqueryEdges },
     ...overrides,
   };
@@ -228,7 +230,7 @@ describe('LineageCanvas', () => {
     expect(Number.isFinite(parseFloat(node.style.top))).toBe(true);
   });
 
-  it('shows output field edges into Query Result with readable spacing in column view', () => {
+  it('renders column lineage as relation containers with field rows', () => {
     const state = baseState({
       graphViewMode: 'column',
       backendGraph: {
@@ -246,15 +248,19 @@ describe('LineageCanvas', () => {
     const setState = vi.fn();
     const { container } = render(<LineageCanvas state={state} setState={setState} />);
 
-    const outputField = screen.getByText('order_no', { selector: '.title' }).closest('.node') as HTMLElement;
-    const queryResult = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
-    const outputEdge = container.querySelector('path.edge.output');
+    const sourceContainer = screen.getByText('dwd_order_di', { selector: '.relation-node__title' }).closest('.relation-node') as HTMLElement;
+    const queryResult = screen.getByText('Query Result', { selector: '.relation-node__title' }).closest('.relation-node') as HTMLElement;
+    const outputRow = container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_no"] .column-row__label');
+    const projectionEdge = container.querySelector('path.edge.projection');
 
-    expect(outputEdge).toBeInTheDocument();
-    expect(parseFloat(queryResult.style.left) - parseFloat(outputField.style.left)).toBeGreaterThan(240);
+    expect(sourceContainer).toBeInTheDocument();
+    expect(queryResult).toBeInTheDocument();
+    expect(outputRow).toBeInTheDocument();
+    expect(container.querySelector('.node[data-type="output_field"]')).toBeNull();
+    expect(projectionEdge).toBeInTheDocument();
   });
 
-  it('collapses upstream physical columns into table nodes in column view', () => {
+  it('groups upstream physical columns into table containers in column view', () => {
     const state = baseState({
       graphViewMode: 'column',
       backendGraph: {
@@ -277,10 +283,66 @@ describe('LineageCanvas', () => {
     const setState = vi.fn();
     const { container } = render(<LineageCanvas state={state} setState={setState} />);
 
-    expect(screen.getByText('dwd_order_di', { selector: '.title' })).toBeInTheDocument();
+    expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
+    expect(screen.getAllByText('order_no', { selector: '.column-row__label' })).toHaveLength(2);
+    expect(screen.getByText('user_id', { selector: '.column-row__label' })).toBeInTheDocument();
+    expect(screen.getByText('uid', { selector: '.column-row__label' })).toBeInTheDocument();
     expect(screen.queryByText('dwd_order_di.order_no', { selector: '.title' })).not.toBeInTheDocument();
     expect(screen.queryByText('dwd_order_di.user_id', { selector: '.title' })).not.toBeInTheDocument();
     expect(container.querySelectorAll('path.edge.projection')).toHaveLength(2);
+  });
+
+  it('selects a column row without selecting the whole relation', () => {
+    const state = baseState({
+      graphViewMode: 'column',
+      backendGraph: {
+        nodes: [
+          { id: 'physical_table:dwd_order_di', entityId: 'physical_table:dwd_order_di', type: 'table', label: 'dwd_order_di', x: 0, y: 0 },
+          { id: 'physical_column:dwd_order_di.order_no', entityId: 'physical_column:dwd_order_di.order_no', type: 'column', label: 'dwd_order_di.order_no', x: 0, y: 0 },
+          { id: 'output_column:order_no', entityId: 'output_column:order_no', type: 'output_field', label: 'order_no', x: 0, y: 0 },
+          { id: 'query_result:final', entityId: 'query_result:final', type: 'output', label: 'Query Result', x: 0, y: 0 },
+        ],
+        edges: [
+          { id: 'e1', source: 'physical_column:dwd_order_di.order_no', target: 'output_column:order_no', type: 'projection' },
+          { id: 'e2', source: 'output_column:order_no', target: 'query_result:final', type: 'output' },
+        ],
+      },
+    });
+    const setState = vi.fn();
+    const { container } = render(<LineageCanvas state={state} setState={setState} />);
+
+    const sourceRow = container.querySelector('.column-row[data-role="source"][data-entity-id="physical_column\\:dwd_order_di\\.order_no"]') as HTMLElement;
+    fireEvent.click(sourceRow);
+
+    const updater = setState.mock.calls[0][0] as (s: WorkbenchState) => WorkbenchState;
+    expect(updater(state).selectedEntity).toBe('physical_column:dwd_order_di.order_no');
+  });
+
+  it('toggles relation collapse without selecting the relation', () => {
+    const state = baseState({
+      graphViewMode: 'column',
+      backendGraph: {
+        nodes: [
+          { id: 'physical_table:dwd_order_di', entityId: 'physical_table:dwd_order_di', type: 'table', label: 'dwd_order_di', x: 0, y: 0 },
+          { id: 'physical_column:dwd_order_di.order_no', entityId: 'physical_column:dwd_order_di.order_no', type: 'column', label: 'dwd_order_di.order_no', x: 0, y: 0 },
+          { id: 'output_column:order_no', entityId: 'output_column:order_no', type: 'output_field', label: 'order_no', x: 0, y: 0 },
+          { id: 'query_result:final', entityId: 'query_result:final', type: 'output', label: 'Query Result', x: 0, y: 0 },
+        ],
+        edges: [
+          { id: 'e1', source: 'physical_column:dwd_order_di.order_no', target: 'output_column:order_no', type: 'projection' },
+          { id: 'e2', source: 'output_column:order_no', target: 'query_result:final', type: 'output' },
+        ],
+      },
+    });
+    const setState = vi.fn();
+    render(<LineageCanvas state={state} setState={setState} />);
+
+    fireEvent.click(screen.getAllByLabelText('Collapse relation columns')[0]);
+
+    const updater = setState.mock.calls[0][0] as (s: WorkbenchState) => WorkbenchState;
+    const next = updater(state);
+    expect(next.collapsedRelationIds['physical_table:dwd_order_di']).toBe(true);
+    expect(next.selectedEntity).toBe('out:group');
   });
 
   it('displays GraphRenderMode stats section', () => {

@@ -1,5 +1,5 @@
 ﻿import type { GraphEdge, GraphNode } from './types/lineage';
-import { COMFORT_CANVAS, getComfortNodeBox } from './nodeVisualTokens';
+import { COMFORT_CANVAS, RELATION_NODE_GEOMETRY, getComfortNodeBox } from './nodeVisualTokens';
 
 export type ComfortGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 export type ManualPositions = Record<string, { x: number; y: number }>;
@@ -152,13 +152,48 @@ function orderWithinLevelsByBarycenter(
   return groups;
 }
 
+function calculateLevelContentHeight(nodes: GraphNode[], gap: number) {
+  if (!nodes.length) return 0;
+  const nodeHeight = nodes.reduce((sum, node) => sum + getComfortNodeBox(node).height, 0);
+  return nodeHeight + Math.max(0, nodes.length - 1) * gap;
+}
+
+function packVariableHeightNodes(nodes: GraphNode[], startY: number, gap: number) {
+  let cursor = startY;
+  for (const node of nodes) {
+    const box = getComfortNodeBox(node);
+    node.y = cursor + box.height / 2;
+    cursor += box.height + gap;
+  }
+}
+
 function resolveCollisionsByLevel(groups: Map<number, GraphNode[]>, minGap: number) {
   for (const list of groups.values()) {
     list.sort((a, b) => a.y - b.y);
     for (let i = 1; i < list.length; i++) {
-      if (list[i].y - list[i - 1].y < minGap) list[i].y = list[i - 1].y + minGap;
+      const prev = list[i - 1];
+      const current = list[i];
+      const prevBottom = prev.y + getComfortNodeBox(prev).height / 2;
+      const currentTop = current.y - getComfortNodeBox(current).height / 2;
+      if (currentTop - prevBottom < minGap) {
+        current.y += minGap - (currentTop - prevBottom);
+      }
     }
   }
+}
+
+export function getColumnPortOffsetY(node: GraphNode, portEntityId: string): number | null {
+  if (node.collapsed || !node.columns?.length) return null;
+  const index = node.columns.findIndex((column) => column.entityId === portEntityId);
+  if (index < 0) return null;
+  const box = getComfortNodeBox(node);
+  return (
+    -box.height / 2 +
+    RELATION_NODE_GEOMETRY.headerHeight +
+    RELATION_NODE_GEOMETRY.bodyPaddingTop +
+    index * RELATION_NODE_GEOMETRY.rowHeight +
+    RELATION_NODE_GEOMETRY.rowHeight / 2
+  );
 }
 
 
@@ -179,27 +214,26 @@ export function layoutComfortGraph(graph: ComfortGraph, options?: {
   const levels = computeLongestPathLevels(nodes, edges);
   const groups = orderWithinLevelsByBarycenter(nodes, edges, levels);
   const maxLevel = Math.max(1, ...Array.from(groups.keys()));
-  const maxGroupSize = Math.max(1, ...Array.from(groups.values()).map((l) => l.length));
 
-  const widestNode = Math.max(0, ...nodes.map((node) => getComfortNodeBox(node.type).width));
-  const tallestNode = Math.max(0, ...nodes.map((node) => getComfortNodeBox(node.type).height));
+  const maxLevelHeight = Math.max(0, ...Array.from(groups.values()).map((list) => calculateLevelContentHeight(list, cfg.minNodeGap)));
+  const widestNode = Math.max(0, ...nodes.map((node) => getComfortNodeBox(node).width));
   const width = Math.max(
     cfg.marginX * 2 + maxLevel * cfg.minRankGap + widestNode,
     cfg.marginX * 2 + widestNode,
   );
   const height = Math.max(
-    cfg.marginY * 2 + Math.max(0, maxGroupSize - 1) * cfg.minNodeGap + tallestNode,
-    cfg.marginY * 2 + tallestNode,
+    cfg.marginY * 2 + maxLevelHeight,
+    cfg.marginY * 2 + Math.max(0, ...nodes.map((node) => getComfortNodeBox(node).height)),
   );
   const rankGap = cfg.minRankGap;
 
   for (const [level, list] of groups.entries()) {
-    const availableHeight = height - cfg.marginY * 2;
-    const yGap = availableHeight / (list.length + 1);
+    const contentHeight = calculateLevelContentHeight(list, cfg.minNodeGap);
+    const startY = cfg.marginY + (height - cfg.marginY * 2 - contentHeight) / 2;
+    packVariableHeightNodes(list, startY, cfg.minNodeGap);
 
-    list.forEach((node, index) => {
+    list.forEach((node) => {
       node.x = Math.min(width - cfg.marginX, cfg.marginX + level * rankGap);
-      node.y = Math.min(height - cfg.marginY, Math.max(cfg.marginY, cfg.marginY + yGap * (index + 1)));
       (node as any).level = level;
     });
   }
@@ -246,13 +280,34 @@ export function buildComfortPortIndexes(graph: ComfortGraph) {
   const targetPortIndex = new Map<string, number>();
   const targetPortCount = new Map<string, number>();
 
+  const sourceKey = (edge: GraphEdge) => `${edge.source}::${edge.sourcePort ?? '__node__'}`;
+  const targetKey = (edge: GraphEdge) => `${edge.target}::${edge.targetPort ?? '__node__'}`;
+
   for (const [source, list] of outgoing.entries()) {
-    sourcePortCount.set(source, list.length);
-    list.forEach((edge, i) => sourcePortIndex.set(edge.id, i));
+    void source;
+    const groups = new Map<string, GraphEdge[]>();
+    list.forEach((edge) => {
+      const key = sourceKey(edge);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(edge);
+    });
+    for (const [key, edges] of groups.entries()) {
+      sourcePortCount.set(key, edges.length);
+      edges.forEach((edge, i) => sourcePortIndex.set(edge.id, i));
+    }
   }
   for (const [target, list] of incoming.entries()) {
-    targetPortCount.set(target, list.length);
-    list.forEach((edge, i) => targetPortIndex.set(edge.id, i));
+    void target;
+    const groups = new Map<string, GraphEdge[]>();
+    list.forEach((edge) => {
+      const key = targetKey(edge);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(edge);
+    });
+    for (const [key, edges] of groups.entries()) {
+      targetPortCount.set(key, edges.length);
+      edges.forEach((edge, i) => targetPortIndex.set(edge.id, i));
+    }
   }
 
   return { sourcePortIndex, sourcePortCount, targetPortIndex, targetPortCount };
@@ -265,12 +320,14 @@ export function routeComfortEdgePath(params: {
   ports?: ReturnType<typeof buildComfortPortIndexes>;
 }) {
   const { edge, sourceNode, targetNode, ports } = params;
-  const sourceBox = getComfortNodeBox(sourceNode.type);
-  const targetBox = getComfortNodeBox(targetNode.type);
+  const sourceBox = getComfortNodeBox(sourceNode);
+  const targetBox = getComfortNodeBox(targetNode);
 
-  const sourceCount = ports?.sourcePortCount.get(edge.source) ?? 1;
+  const sourcePortKey = `${edge.source}::${edge.sourcePort ?? '__node__'}`;
+  const targetPortKey = `${edge.target}::${edge.targetPort ?? '__node__'}`;
+  const sourceCount = ports?.sourcePortCount.get(sourcePortKey) ?? 1;
   const sourceIndex = ports?.sourcePortIndex.get(edge.id) ?? 0;
-  const targetCount = ports?.targetPortCount.get(edge.target) ?? 1;
+  const targetCount = ports?.targetPortCount.get(targetPortKey) ?? 1;
   const targetIndex = ports?.targetPortIndex.get(edge.id) ?? 0;
 
   const rawSourceOffset = portAnchorOffset(sourceIndex, sourceCount, 8);
@@ -278,8 +335,10 @@ export function routeComfortEdgePath(params: {
 
   const maxSourceY = Math.max(0, sourceBox.height / 2 - 10);
   const maxTargetY = Math.max(0, targetBox.height / 2 - 10);
-  const sourceOffsetY = Math.max(-maxSourceY, Math.min(maxSourceY, rawSourceOffset));
-  const targetOffsetY = Math.max(-maxTargetY, Math.min(maxTargetY, rawTargetOffset));
+  const sourceColumnOffset = edge.sourcePort ? getColumnPortOffsetY(sourceNode, edge.sourcePort) : null;
+  const targetColumnOffset = edge.targetPort ? getColumnPortOffsetY(targetNode, edge.targetPort) : null;
+  const sourceOffsetY = (sourceColumnOffset ?? Math.max(-maxSourceY, Math.min(maxSourceY, rawSourceOffset))) + (sourceColumnOffset == null ? 0 : rawSourceOffset);
+  const targetOffsetY = (targetColumnOffset ?? Math.max(-maxTargetY, Math.min(maxTargetY, rawTargetOffset))) + (targetColumnOffset == null ? 0 : rawTargetOffset);
 
   const isForward = targetNode.x >= sourceNode.x;
 

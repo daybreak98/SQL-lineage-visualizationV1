@@ -356,7 +356,7 @@ describe('Analyze Flow', () => {
   it('renders backend table structure by default and keeps column graph available', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(columnGraphResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.click(screen.getByText('Analyze'));
 
@@ -369,10 +369,10 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('t', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('t', { selector: '.relation-node__title' })).toBeInTheDocument();
       expect(screen.queryByText('t.a', { selector: '.title' })).not.toBeInTheDocument();
-      expect(screen.getByText('a', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('Query Result', { selector: '.title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:a"]')).toBeInTheDocument();
+      expect(screen.getByText('Query Result', { selector: '.relation-node__title' })).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
   });
@@ -380,7 +380,7 @@ describe('Analyze Flow', () => {
   it('stores backend source_locations and shows location in the detail panel', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(columnGraphResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.click(screen.getByText('Analyze'));
 
@@ -391,11 +391,11 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('a', { selector: '.title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:a"]')).toBeInTheDocument();
     });
 
-    const outputTitle = screen.getByText('a', { selector: '.title' });
-    fireEvent.doubleClick(outputTitle.closest('.node') as HTMLElement);
+    const outputRow = container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:a"]') as HTMLElement;
+    fireEvent.doubleClick(outputRow);
 
     await waitFor(() => {
       expect(screen.getByText(/line 1.*exact/)).toBeInTheDocument();
@@ -405,7 +405,7 @@ describe('Analyze Flow', () => {
   it('renders C04 join alias table structure by default and column graph on demand', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(c04JoinColumnGraphResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.click(screen.getByText('Analyze'));
 
@@ -419,13 +419,13 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('dim_user_df', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('dwd_order_di', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('dim_user_df', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
       expect(screen.queryByText('dim_user_df.country_name', { selector: '.title' })).not.toBeInTheDocument();
       expect(screen.queryByText('dwd_order_di.order_no', { selector: '.title' })).not.toBeInTheDocument();
-      expect(screen.getByText('country_name', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('order_no', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('Query Result', { selector: '.title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:country_name"]')).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_no"]')).toBeInTheDocument();
+      expect(screen.getByText('Query Result', { selector: '.relation-node__title' })).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
   });

@@ -52,6 +52,22 @@ export interface SearchItem {
   warning?: boolean;
 }
 
+export type GraphColumnRole = 'source' | 'output' | 'derived' | 'unknown';
+
+export interface GraphColumnRow {
+  entityId: string;
+  label: string;
+  ownerEntityId: string;
+  role: GraphColumnRole;
+  ordinal?: number;
+  dataType?: string;
+  comment?: string;
+  expression?: string;
+  connected?: boolean;
+  warning?: boolean;
+  confidence?: 'high' | 'medium' | 'low' | 'unknown';
+}
+
 export interface GraphNode {
   id: string;
   entityId: string;
@@ -66,12 +82,21 @@ export interface GraphNode {
   lane?: string;
   semanticRole?: string;
   orderInRank?: number;
+  columns?: GraphColumnRow[];
+  collapsed?: boolean;
+  hiddenColumnCount?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface GraphEdge {
   id: string;
   source: string;
   target: string;
+  sourcePort?: string;
+  targetPort?: string;
+  originalSourceEntityId?: string;
+  originalTargetEntityId?: string;
   type: 'table' | 'cte' | 'subq' | 'output' | 'expr' | 'join' | 'projection' | 'alias' | 'unknown';
   mapping?: string;
   synthetic?: boolean;
@@ -257,6 +282,8 @@ export interface WorkbenchState {
   lastTransition?: string;
   canvasCommand?: CanvasCommand;
   positions: Record<string, { x: number; y: number }>;
+  collapsedRelationIds: Record<string, true>;
+  columnContainerMode: 'legacy' | 'relation_rows';
   sourceLocations?: Record<string, SourceLocation>;
   semanticsReport?: SemanticsReport;
   backendGraph?: { nodes: GraphNode[]; edges: GraphEdge[] };

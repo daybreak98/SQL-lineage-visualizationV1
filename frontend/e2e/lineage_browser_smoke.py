@@ -157,7 +157,7 @@ def browser_script(args: argparse.Namespace, sql: str) -> str:
           }});
           const apiData = await apiResponse.json();
 
-          const domNodes = Array.from(document.querySelectorAll('.node .title'))
+          const domNodes = Array.from(document.querySelectorAll('.node .title, .relation-node__title, .column-row__label'))
             .map((element) => (element.textContent || '').trim());
           const domEdges = Array.from(document.querySelectorAll('path.edge'))
             .map((element) => element.getAttribute('class') || '');

@@ -31,6 +31,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    collapsedRelationIds: {},
+    columnContainerMode: 'relation_rows',
     ...overrides,
   };
 }

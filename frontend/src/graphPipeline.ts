@@ -8,6 +8,7 @@ import {
   type ComfortGraph,
   type ManualPositions,
 } from './graphComfortLayout';
+import { buildRelationColumnProjection } from './relationColumnProjection';
 
 
 type RawApiNode = NonNullable<NonNullable<BackendAnalysisResult['graph_view_model']>['nodes']>[number];
@@ -87,8 +88,8 @@ function isStructureNode(node: GraphNode) {
   return node.type === 'table' || node.type === 'cte' || node.type === 'subquery';
 }
 
-export function nodeBox(type: GraphNode['type']) {
-  const box = getComfortNodeBox(type);
+export function nodeBox(nodeOrType: GraphNode | GraphNode['type']) {
+  const box = getComfortNodeBox(nodeOrType);
   return { width: box.width, height: box.height };
 }
 
@@ -580,7 +581,7 @@ function layoutColumnLineage(graph: GraphLike): GraphLike {
   return { nodes, edges };
 }
 
-function visibleColumnGraph(base: GraphLike, positions: PositionMap): GraphLike {
+function visibleLegacyColumnGraph(base: GraphLike, positions: PositionMap): GraphLike {
   const hasOutputFields = base.nodes.some((n) => n.type === 'output_field');
   if (!hasOutputFields) return { nodes: [], edges: [] };
 
@@ -663,6 +664,16 @@ function visibleColumnGraph(base: GraphLike, positions: PositionMap): GraphLike 
   return applyManualPositions(layouted, positions);
 }
 
+function visibleRelationColumnGraph(state: WorkbenchState, base: GraphLike, positions: PositionMap): GraphLike {
+  const projected = buildRelationColumnProjection(base, {
+    collapsedRelationIds: state.collapsedRelationIds ?? {},
+    selectedEntityId: state.selectedEntity,
+    searchTerm: state.query,
+  });
+  const layouted = layoutLayeredDag(projected);
+  return applyManualPositions(layouted, positions);
+}
+
 
 export function visibleGraph(state: WorkbenchState): GraphLike {
   const base = state.backendGraph;
@@ -673,7 +684,10 @@ export function visibleGraph(state: WorkbenchState): GraphLike {
 
   if (mode === 'table') return visibleTableGraph(base, positions);
   if (mode === 'subquery') return visibleSubqueryGraph(base, positions);
-  if (mode === 'column') return visibleColumnGraph(base, positions);
+  if (mode === 'column') {
+    if (state.columnContainerMode === 'legacy') return visibleLegacyColumnGraph(base, positions);
+    return visibleRelationColumnGraph(state, base, positions);
+  }
 
   // semantics / diagnostics / expression / fallback — apply layout too
   return applyManualPositions(layoutLayeredDag(base), positions);

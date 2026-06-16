@@ -20,6 +20,8 @@ export const initialWorkbenchState: WorkbenchState = {
   scope: 'all',
   large: false,
   positions: {},
+  collapsedRelationIds: {},
+  columnContainerMode: 'relation_rows',
   backendStatus: 'checking...',
   metadataStatus: 'checking...',
 };
@@ -96,6 +98,7 @@ export function buildAnalyzeSuccessState(state: WorkbenchState, result: BackendA
     lastAnalysisResult: result,
     lastApiError: undefined,
     positions: {},
+    collapsedRelationIds: {},
   };
 }
 

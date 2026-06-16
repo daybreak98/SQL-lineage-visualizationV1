@@ -253,6 +253,47 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .node[data-view-highlight="true"][data-type="expression"] .strip { background:var(--purple); }
 .node[data-downstream-impact="true"] { background:#FFFBEB; border-color:#FCD34D !important; box-shadow:0 0 0 2px rgba(245,158,11,.12), 0 8px 18px rgba(245,158,11,.08); z-index:20; }
 .node[data-downstream-impact="true"] .title { color:#92400E; }
+
+.relation-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1.5px solid #CBD5E1;
+  border-radius: 12px;
+  background: #FFF;
+  box-shadow: 0 3px 10px rgba(15,23,42,.10);
+  transform-origin: center center;
+  will-change: transform, opacity;
+  color: var(--slate-700);
+  font-size: 12px;
+}
+.relation-node[data-type="output"] { border:2px solid var(--blue); background:#F8FBFF; }
+.relation-node[data-relation-selected="true"] { border-color:var(--blue); box-shadow:0 0 0 3px rgba(37,99,235,.18), 0 10px 28px rgba(37,99,235,.14); }
+.relation-node[data-selected="true"]:not([data-relation-selected="true"]) { border-color:#93C5FD; box-shadow:0 0 0 2px rgba(147,197,253,.22), 0 4px 14px rgba(15,23,42,.10); }
+.relation-node[data-current="true"] { background:#F8FBFF; }
+.relation-node[data-dimmed="true"] { opacity:.28; filter:grayscale(.35); }
+.relation-node[data-warning="true"] { border-color:#F59E0B; }
+.relation-node[data-downstream-impact="true"] { border-color:#F59E0B; background:#FFFBEB; box-shadow:0 0 0 3px rgba(245,158,11,.16), 0 10px 28px rgba(245,158,11,.16); }
+.relation-node[data-dragging="true"] { cursor:grabbing; box-shadow:0 16px 32px rgba(15,23,42,.18); }
+.relation-node__header { height:48px; min-height:48px; display:flex; align-items:center; gap:8px; padding:0 10px; border-bottom:1px solid #E2E8F0; background:rgba(255,255,255,.92); cursor:grab; }
+.relation-node[data-collapsed="true"] .relation-node__header { border-bottom:0; }
+.relation-node__collapse { width:24px; height:24px; border:0; border-radius:6px; background:transparent; color:#64748B; font-size:15px; line-height:24px; padding:0; }
+.relation-node__collapse:hover { background:#EFF6FF; color:var(--blue); }
+.relation-node__identity { min-width:0; display:flex; align-items:center; gap:7px; flex:1; }
+.relation-node__kind { flex:none; border:1px solid var(--line); border-radius:5px; padding:1px 5px; color:var(--slate-500); background:#F8FAFC; font-size:10px; font-weight:800; }
+.relation-node__title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--slate-900); font-weight:800; }
+.relation-node__columns { padding:5px 8px; animation:column-rows-enter 180ms ease-out; }
+.column-row { position:relative; width:100%; height:26px; display:flex; align-items:center; border:0; border-radius:6px; background:transparent; color:#475569; font-size:12px; text-align:left; cursor:pointer; padding:0; }
+.column-row:hover { background:#F1F5F9; }
+.column-row[data-selected="true"] { background:#DBEAFE; color:#1D4ED8; font-weight:750; }
+.column-row.dimmed { opacity:.42; }
+.column-row__label { min-width:0; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; padding:0 8px; }
+.column-row__target-port, .column-row__source-port { width:6px; height:6px; border-radius:50%; background:#94A3B8; opacity:.65; flex:none; }
+.column-row[data-role="output"] .column-row__target-port { background:var(--blue); opacity:.85; }
+.column-row[data-role="source"] .column-row__source-port { background:var(--blue); opacity:.85; }
+.relation-node__hidden { height:24px; display:flex; align-items:center; justify-content:center; border-top:1px solid #E2E8F0; color:#64748B; font-size:11px; }
+@keyframes column-rows-enter { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
 .stats { position:absolute; left:8px; bottom:8px; z-index:10; min-width:160px; background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:9px; padding:8px; box-shadow:0 1px 2px rgba(15,23,42,.06); }
 .stats h4 { margin:0 0 5px; font-size:10px; color:var(--slate-500); }
 .stats-grid { display:grid; grid-template-columns:auto auto; gap:3px 12px; font-size:10px; color:var(--slate-500); }

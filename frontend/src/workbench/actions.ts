@@ -106,3 +106,18 @@ export function selectNodeEntity(state: WorkbenchState, entityId: string): Workb
     detailTab: 'summary',
   };
 }
+
+export function toggleRelationCollapsed(state: WorkbenchState, entityId: string): WorkbenchState {
+  const collapsedRelationIds = { ...state.collapsedRelationIds };
+  if (collapsedRelationIds[entityId]) {
+    delete collapsedRelationIds[entityId];
+  } else {
+    collapsedRelationIds[entityId] = true;
+  }
+
+  return {
+    ...state,
+    collapsedRelationIds,
+    lastTransition: `${state.graphViewMode} -> ${state.graphViewMode} | viewport:preserve | layout:recompute | reason:collapse-change`,
+  };
+}
