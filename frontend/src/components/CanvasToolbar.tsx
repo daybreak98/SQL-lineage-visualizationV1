@@ -48,7 +48,7 @@ export function CanvasToolbar({ state, setState, onTransition }: Props) {
           <span className="badge">{state.renderMode}</span>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="tool-right">
         <div className="view-toggle">
           {VIEW_MODES.map(({ mode, label, title }) => (
             <button

@@ -21,6 +21,11 @@ function relation(id: string, columnCount: number, collapsed = false): GraphNode
   };
 }
 
+function pathEndY(path: string) {
+  const values = path.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  return values[values.length - 1];
+}
+
 describe('column port routing', () => {
   it('computes first, middle and last column row offsets', () => {
     const node = relation('physical_table:t', 3);
@@ -56,6 +61,25 @@ describe('column port routing', () => {
     expect(path).not.toContain('undefined');
     expect(path).toContain(`${source.x + getComfortNodeBox(source).width / 2}`);
     expect(path).toContain(`${target.x - getComfortNodeBox(target).width / 2}`);
+  });
+
+  it('keeps multiple edges to the same column port anchored on the field row', () => {
+    const sourceA = { ...relation('physical_table:a', 1), x: 90, y: 80 };
+    const sourceB = { ...relation('physical_table:b', 1), x: 90, y: 220 };
+    const target = { ...relation('query_result:final', 2), x: 360, y: 150 };
+    const targetPort = 'query_result:final:c1';
+    const edges: GraphEdge[] = [
+      { id: 'e1', source: sourceA.entityId, target: target.entityId, sourcePort: 'physical_table:a:c0', targetPort, type: 'projection' },
+      { id: 'e2', source: sourceB.entityId, target: target.entityId, sourcePort: 'physical_table:b:c0', targetPort, type: 'projection' },
+    ];
+    const ports = buildComfortPortIndexes({ nodes: [sourceA, sourceB, target], edges });
+    const expectedTargetY = target.y + getColumnPortOffsetY(target, targetPort)!;
+
+    for (const edge of edges) {
+      const source = edge.source === sourceA.entityId ? sourceA : sourceB;
+      const path = routeComfortEdgePath({ edge, sourceNode: source, targetNode: target, ports });
+      expect(pathEndY(path)).toBe(expectedTargetY);
+    }
   });
 
   it('packs variable-height nodes in the same level without overlap', () => {

@@ -15,6 +15,7 @@ from app.services.expression_dependency_extractor import (
     ExpressionDependencyExtractor, build_scope_from_cte_body,
 )
 from app.services.name_resolver import resolve_column_lineage_names
+from app.services.sqlglot_compat import get_from_expression, get_with_expression
 
 
 @dataclass
@@ -35,7 +36,7 @@ class BuildDerivedSchemasResult:
 
 def extract_cte_select_nodes(tree: Any) -> List[DerivedSelectNode]:
     nodes: List[DerivedSelectNode] = []
-    with_expr = tree.args.get("with_") or tree.args.get("with")
+    with_expr = get_with_expression(tree)
     if with_expr is None:
         return nodes
     for cte_expr in getattr(with_expr, "expressions", []):
@@ -115,7 +116,7 @@ def _extract_from_subqueries(
 ) -> List[tuple]:
     """Extract (inner_select, alias) pairs from FROM/JOIN subqueries."""
     pairs: List[tuple] = []
-    from_expr = select_node.args.get("from_") or select_node.args.get("from")
+    from_expr = get_from_expression(select_node)
     if from_expr is not None and isinstance(from_expr.this, exp.Subquery):
         alias = from_expr.this.alias or from_expr.alias
         inner = from_expr.this.this  # Subquery.this → Select
@@ -154,16 +155,25 @@ def _build_single_schema(
         "", "spark", tree=select_node, is_cte_context=False)
 
     resolved_columns: Set[str] = set()
+    grouped_inputs: Dict[str, List[ColumnRef]] = {}
+    output_names: Dict[str, str] = {}
     for lineage in inner_result.lineages:
+        output_key = lineage.output_column.lower().strip("`")
         src = lineage.source_table.lower().strip("`")
         source_kind = "cte" if src in cte_names else "table"
+        grouped_inputs.setdefault(output_key, []).append(
+            ColumnRef(lineage.source_table, lineage.source_column, source_kind)
+        )
+        output_names[output_key] = lineage.output_column
+
+    for output_key, inputs in grouped_inputs.items():
         dep = ColumnDependency(
-            output=ColumnRef(relation_name, lineage.output_column, relation_kind),
-            inputs=[ColumnRef(lineage.source_table, lineage.source_column, source_kind)],
+            output=ColumnRef(relation_name, output_names[output_key], relation_kind),
+            inputs=_dedupe_column_refs(inputs),
             transform_type="projection",
         )
         schema.add_dependency(dep)
-        resolved_columns.add(lineage.output_column.lower().strip("`"))
+        resolved_columns.add(output_key)
 
     # Path B: ExpressionDependencyExtractor for complex expressions
     _extract_complex_dependencies(select_node, relation_name, relation_kind,
@@ -209,6 +219,18 @@ def _extract_complex_dependencies(
                 schema.add_dependency(dep)
     except Exception:
         pass
+
+
+def _dedupe_column_refs(inputs: List[ColumnRef]) -> List[ColumnRef]:
+    seen = set()
+    result: List[ColumnRef] = []
+    for ref in inputs:
+        key = ref.lookup_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(ref)
+    return result
 
 
 def _extract_lateral_view_dependencies(

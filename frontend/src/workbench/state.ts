@@ -81,11 +81,7 @@ export function buildAnalyzeSuccessState(state: WorkbenchState, result: BackendA
     drawerOpen: state.drawerOpen,
     drawerTab: state.drawerTab,
     renderMode: transition.mode,
-    graphViewMode: result.graph_view_model?.view_mode === 'column'
-      ? 'column'
-      : result.graph_view_model?.view_mode === 'subquery_dependency'
-        ? 'subquery'
-        : 'table',
+    graphViewMode: state.graphViewMode,
     lastTransition: transition.description,
     backendGraph: graph,
     backendSearchItems: searchItems,

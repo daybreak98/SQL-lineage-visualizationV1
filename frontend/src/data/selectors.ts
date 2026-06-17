@@ -186,8 +186,14 @@ export function currentEntitySet(state: WorkbenchState) {
 }
 
 export function transitionRenderMode(mode: GraphRenderMode, event: string): { mode: GraphRenderMode; description: string } {
+  if (event === 'ANALYZE_SUCCESS') {
+    return {
+      mode,
+      description: `${mode} -> ${mode} 路 viewport:reset 路 layout:recompute 路 reason:analyze-success-preserve-view`,
+    };
+  }
+
   const rules: Record<string, [GraphRenderMode, boolean, boolean]> = {
-    ANALYZE_SUCCESS: ['subquery_dependency', false, true],
     SELECT_OUTPUT_FIELD: ['current_field_path', false, false],
     FOCUS_FIELD: ['focus_field', true, false],
     OPEN_SEMANTIC_MODE: ['semantic_mode', true, false],

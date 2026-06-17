@@ -58,8 +58,8 @@ def build_scope_from_cte_body(
 def _add_source_to_scope(
     source: Any, scope: ResolveScope, cte_names: Set[str],
 ) -> None:
-    alias = getattr(source, "alias", None) or ""
     this = getattr(source, "this", None)
+    alias = getattr(source, "alias", None) or getattr(this, "alias", None) or ""
 
     if isinstance(this, exp.Table):
         name = _table_name(this)

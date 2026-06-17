@@ -282,9 +282,10 @@ describe('selectors', () => {
   });
 
   describe('transitionRenderMode', () => {
-    it('transitions to subquery_dependency on ANALYZE_SUCCESS', () => {
-      const result = transitionRenderMode('subquery_dependency', 'ANALYZE_SUCCESS');
-      expect(result.mode).toBe('subquery_dependency');
+    it('preserves current render mode on ANALYZE_SUCCESS', () => {
+      const result = transitionRenderMode('full_graph_preview', 'ANALYZE_SUCCESS');
+      expect(result.mode).toBe('full_graph_preview');
+      expect(result.description).toContain('analyze-success-preserve-view');
     });
 
     it('transitions to current_field_path on SELECT_OUTPUT_FIELD', () => {

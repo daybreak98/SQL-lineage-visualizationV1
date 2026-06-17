@@ -58,6 +58,7 @@ describe('relation column projection', () => {
       originalTargetEntityId: 'output_column:uid',
       mapping: 'm1',
     });
+    expect(projected.edges.some((item) => item.source === 'query_result:final' && item.target === 'query_result:final')).toBe(false);
   });
 
   it('creates a compatible table container when the physical table node is missing', () => {
@@ -70,6 +71,30 @@ describe('relation column projection', () => {
     }, { collapsedRelationIds: {} });
 
     expect(projected.nodes.find((node) => node.entityId === 'physical_table:db.missing')?.columns?.[0].label).toBe('amount');
+  });
+
+  it('drops output-field ownership edges instead of rendering them as self dependencies', () => {
+    const projected = buildRelationColumnProjection({
+      nodes: [
+        table('physical_table:t'),
+        column('physical_column:t.a'),
+        output(),
+        outputField('output_column:a', 'a'),
+      ],
+      edges: [
+        { id: 'lineage', source: 'physical_column:t.a', target: 'output_column:a', type: 'projection' },
+        { id: 'ownership', source: 'output_column:a', target: 'query_result:final', type: 'output' },
+      ],
+    }, { collapsedRelationIds: {} });
+
+    expect(projected.nodes.find((node) => node.entityId === 'query_result:final')?.columns?.[0].entityId).toBe('output_column:a');
+    expect(projected.edges).toHaveLength(1);
+    expect(projected.edges[0]).toMatchObject({
+      source: 'physical_table:t',
+      target: 'query_result:final',
+      sourcePort: 'physical_column:t.a',
+      targetPort: 'output_column:a',
+    });
   });
 
   it('degrades and deduplicates field edges when a relation is collapsed', () => {

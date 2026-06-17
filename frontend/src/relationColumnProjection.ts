@@ -125,6 +125,7 @@ function projectEdge(edge: GraphEdge, columnOwnerById: Map<string, string>, cont
   const targetIsColumn = columnOwnerById.has(edge.target);
 
   if (!containerById.has(sourceOwner) && !containerById.has(targetOwner)) return null;
+  if (sourceIsColumn && sourceOwner === targetOwner && edge.type === 'output') return null;
 
   return {
     ...edge,

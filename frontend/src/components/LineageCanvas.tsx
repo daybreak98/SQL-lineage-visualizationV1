@@ -40,6 +40,24 @@ function visibleOwnerEntityId(nodes: GraphNode[], entityId: string) {
   return entityId;
 }
 
+function isColumnEntitySelection(nodes: GraphNode[], entityId?: string | null) {
+  if (!entityId || entityId === 'out:group') return false;
+  if (entityId.startsWith('physical_column:') || entityId.startsWith('output_column:')) return true;
+  return nodes.some((node) => node.columns?.some((column) => column.entityId === entityId));
+}
+
+function hasRealEntitySelection(state: WorkbenchState) {
+  if (!state.selectedEntity) return false;
+  return state.selectedEntity !== 'out:group' || state.detailMode !== 'collapsed';
+}
+
+function edgeEndpointEntityIds(edge: GraphEdge) {
+  return [
+    edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source,
+    edge.originalTargetEntityId ?? edge.targetPort ?? edge.target,
+  ];
+}
+
 export const LINEAGE_ZOOM_BASELINE = 0.72;
 
 export function fitZoom(bounds: { width: number; height: number } | null, viewport: { width: number; height: number }) {
@@ -87,7 +105,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const highlights = useMemo(() => viewHighlightSets(state), [state]);
   const selectedEdges = useMemo(() => {
     const entityId = state.selectedEntity;
-    if (!entityId || entityId === 'out:group') return new Set<string>();
+    if (!hasRealEntitySelection(state)) return new Set<string>();
     const ids = new Set<string>();
     const reverse = new Map<string, Array<{ previous: string; edgeId: string }>>();
     graph.edges.forEach((edge) => {
@@ -109,10 +127,10 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
       }
     }
     return ids;
-  }, [state.selectedEntity, graph.edges]);
+  }, [state, graph.edges]);
   const downstreamImpact = useMemo(() => {
     const entityId = state.selectedEntity;
-    if (!entityId || entityId === 'out:group') return { nodeIds: new Set<string>(), edgeIds: new Set<string>() };
+    if (!hasRealEntitySelection(state)) return { nodeIds: new Set<string>(), edgeIds: new Set<string>() };
 
     const outgoing = new Map<string, Array<{ next: string; edge: GraphEdge }>>();
     graph.edges.forEach((edge) => {
@@ -139,10 +157,10 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     }
 
     return { nodeIds, edgeIds };
-  }, [state.selectedEntity, graph.edges]);
+  }, [state, graph.edges, graph.nodes]);
   const selectedNodeIds = useMemo(() => {
     const entityId = state.selectedEntity;
-    if (!entityId || entityId === 'out:group') return new Set<string>();
+    if (!hasRealEntitySelection(state)) return new Set<string>();
     const ids = new Set<string>([entityId, visibleOwnerEntityId(graph.nodes, entityId)]);
     const reverse = new Map<string, string[]>();
     graph.edges.forEach((edge) => {
@@ -163,8 +181,21 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
       }
     }
     return ids;
-  }, [state.selectedEntity, graph.edges]);
-  const hasActiveSelection = Boolean(state.selectedEntity && state.selectedEntity !== 'out:group');
+  }, [state, graph.edges, graph.nodes]);
+  const columnPathEntityIds = useMemo(() => {
+    if (!isColumnEntitySelection(graph.nodes, state.selectedEntity)) return current;
+    const ids = new Set<string>();
+    if (state.selectedEntity) ids.add(state.selectedEntity);
+    for (const edge of graph.edges) {
+      if (!selectedEdges.has(edge.id) && !downstreamImpact.edgeIds.has(edge.id)) continue;
+      const [source, target] = edgeEndpointEntityIds(edge);
+      ids.add(source);
+      ids.add(target);
+    }
+    return ids;
+  }, [current, downstreamImpact.edgeIds, graph.edges, graph.nodes, selectedEdges, state.selectedEntity]);
+  const hasActiveSelection = hasRealEntitySelection(state);
+  const columnSelectionActive = isColumnEntitySelection(graph.nodes, state.selectedEntity);
   const [drag, setDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [draftPositions, setDraftPositions] = useState<Record<string, { x: number; y: number }>>({});
@@ -177,6 +208,54 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
   const pathContext = buildPathContext(state);
   const graphViewMode = state.graphViewMode ?? 'table';
+  const upstreamNodeIds = useMemo(() => {
+    const entityId = state.selectedEntity;
+    if (!hasRealEntitySelection(state) || graphViewMode !== 'table') return new Set<string>();
+    const ids = new Set<string>();
+    const reverse = new Map<string, string[]>();
+    graph.edges.forEach((edge) => {
+      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
+      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
+      if (!reverse.has(target)) reverse.set(target, []);
+      reverse.get(target)!.push(source);
+    });
+    const queue = [entityId];
+    while (queue.length > 0) {
+      const currentEntity = queue.shift()!;
+      for (const source of reverse.get(currentEntity) ?? []) {
+        if (!ids.has(source)) {
+          ids.add(source);
+          queue.push(source);
+        }
+      }
+    }
+    return ids;
+  }, [state, graph.edges, graphViewMode]);
+  const upstreamEdgeIds = useMemo(() => {
+    const entityId = state.selectedEntity;
+    if (!hasRealEntitySelection(state) || graphViewMode !== 'table') return new Set<string>();
+    const ids = new Set<string>();
+    const reverse = new Map<string, Array<{ previous: string; edgeId: string }>>();
+    graph.edges.forEach((edge) => {
+      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
+      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
+      if (!reverse.has(target)) reverse.set(target, []);
+      reverse.get(target)!.push({ previous: source, edgeId: edge.id });
+    });
+    const visited = new Set<string>([entityId]);
+    const queue = [entityId];
+    while (queue.length > 0) {
+      const currentEntity = queue.shift()!;
+      for (const item of reverse.get(currentEntity) ?? []) {
+        ids.add(item.edgeId);
+        if (!visited.has(item.previous)) {
+          visited.add(item.previous);
+          queue.push(item.previous);
+        }
+      }
+    }
+    return ids;
+  }, [state, graph.edges, graphViewMode]);
   const byEntity = Object.fromEntries(graph.nodes.map((node) => [node.entityId, node]));
   const positions = useMemo(
     () => ({ ...Object.fromEntries(graph.nodes.map((node) => [node.id, { x: node.x, y: node.y }])), ...state.positions, ...draftPositions }),
@@ -410,11 +489,12 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                 const edgePath = routeEdgePath({ edge, sourceNode, targetNode, sourcePos, targetPos, ports, style: 'smooth' });
                 const isCurrent = (current.has(edge.source) && current.has(edge.target)) || state.selectedMapping === edge.mapping;
                 const isSelectedEdge = selectedEdges.has(edge.id);
+                const isUpstreamEdge = upstreamEdgeIds.has(edge.id);
                 const isDownstreamImpactEdge = downstreamImpact.edgeIds.has(edge.id);
-                const isRelated = isSelectedEdge || isDownstreamImpactEdge || edgeTouchesEntity(edge, state.selectedEntity) || (selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
+                const isRelated = isSelectedEdge || isUpstreamEdge || isDownstreamImpactEdge || edgeTouchesEntity(edge, state.selectedEntity) || (!columnSelectionActive && selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
                 const dimmed = hasActiveSelection && !isRelated;
                 const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
-                const markerEnd = (isCurrent || isSelectedEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+                const markerEnd = (isCurrent || isSelectedEdge || isUpstreamEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
                 return (
                   <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => {
                     event.stopPropagation();
@@ -422,7 +502,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                     setState((s) => selectEdgeMapping(s, targetEntity, edge.mapping || null));
                   }}>
                     <path className="edge-hit" d={edgePath} />
-                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', isSelectedEdge && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
+                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', (isSelectedEdge || isUpstreamEdge) && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
                   </g>
                 );
               });
@@ -435,8 +515,9 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             const relationSelected = state.selectedEntity === node.entityId;
             const isCurrent = current.has(node.entityId) || Boolean(node.columns?.some((column) => current.has(column.entityId)));
             const inSelection = hasActiveSelection && selectedNodeIds.has(node.entityId);
+            const isUpstreamNode = upstreamNodeIds.has(node.entityId);
             const isDownstreamImpactNode = downstreamImpact.nodeIds.has(node.entityId);
-            const dimmed = hasActiveSelection && !selected && !inSelection && !isDownstreamImpactNode;
+            const dimmed = hasActiveSelection && !selected && !inSelection && !isUpstreamNode && !isDownstreamImpactNode;
             const warning = diagnosticsForEntity(state, node.entityId).length > 0 || node.type === 'unknown';
             const isViewHighlighted = highlights.highlightedEntityIds.has(node.entityId);
             if (node.columns) {
@@ -447,6 +528,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                     box={box}
                     selectedEntityId={state.selectedEntity}
                     currentEntityIds={current}
+                    activeColumnEntityIds={columnPathEntityIds}
                     dimmed={dimmed}
                     warning={warning}
                     dragging={drag?.id === node.id}
@@ -466,7 +548,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
               );
             }
             return (
-              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={relationSelected || undefined} data-current={isCurrent || undefined} data-downstream-impact={isDownstreamImpactNode || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
+              <div key={node.id} className="node" style={{ left: position.x - box.width / 2, top: position.y - box.height / 2 }} data-type={node.type} data-full-label={node.label} data-selected={relationSelected || undefined} data-current={isCurrent || undefined} data-upstream={isUpstreamNode || undefined} data-downstream-impact={isDownstreamImpactNode || undefined} data-warning={warning || undefined} data-stale={state.trustStatus === 'stale' || undefined} data-dimmed={dimmed || undefined} data-dragging={drag?.id === node.id || undefined} data-view-highlight={isViewHighlighted || undefined} onMouseDown={(event) => startDrag(event, node)} onDoubleClick={(event) => { event.stopPropagation(); setState((s) => selectNodeEntity(s, node.entityId)); if (state.selectedEntity !== node.entityId) onNodeDoubleClick?.(node.entityId); }}>
                 <span className="title">{node.label}</span><span className="state-dot" />
               </div>
             );

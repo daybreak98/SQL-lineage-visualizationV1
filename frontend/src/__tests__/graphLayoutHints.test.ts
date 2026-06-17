@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildComfortPortIndexes, layoutComfortGraph } from '../graphComfortLayout';
+import { nodeBox, visibleGraph } from '../graphPipeline';
 import type { GraphEdge, GraphNode } from '../types/lineage';
 
 function node(id: string, rank: number, orderInRank: number): GraphNode {
@@ -101,5 +102,36 @@ describe('graph layout hints', () => {
 
     expect(ports.sourcePortIndex.get('edge-b')).toBe(0);
     expect(ports.sourcePortIndex.get('edge-a')).toBe(1);
+  });
+
+  it('uses wider rank spacing for relation column containers', () => {
+    const state = {
+      graphViewMode: 'column',
+      columnContainerMode: 'relation_rows',
+      collapsedRelationIds: {},
+      selectedEntity: 'out:group',
+      query: '',
+      positions: {},
+      backendGraph: {
+        nodes: [
+          { id: 'physical_table:dwd_order_di', entityId: 'physical_table:dwd_order_di', type: 'table', label: 'dwd_order_di', x: 0, y: 0 },
+          { id: 'physical_column:dwd_order_di.order_no', entityId: 'physical_column:dwd_order_di.order_no', type: 'column', label: 'dwd_order_di.order_no', x: 0, y: 0 },
+          { id: 'output_column:order_cnt', entityId: 'output_column:order_cnt', type: 'output_field', label: 'order_cnt', x: 0, y: 0 },
+          { id: 'query_result:final', entityId: 'query_result:final', type: 'output', label: 'Query Result', x: 0, y: 0 },
+        ],
+        edges: [
+          { id: 'e1', source: 'physical_column:dwd_order_di.order_no', target: 'output_column:order_cnt', type: 'projection' },
+          { id: 'e2', source: 'output_column:order_cnt', target: 'query_result:final', type: 'output' },
+        ] as GraphEdge[],
+      },
+    };
+
+    const graph = visibleGraph(state as any);
+    const source = graph.nodes.find((item) => item.entityId === 'physical_table:dwd_order_di')!;
+    const target = graph.nodes.find((item) => item.entityId === 'query_result:final')!;
+    const horizontalGap = target.x - nodeBox(target).width / 2 - (source.x + nodeBox(source).width / 2);
+
+    expect(target.x - source.x).toBeGreaterThanOrEqual(340);
+    expect(horizontalGap).toBeGreaterThanOrEqual(100);
   });
 });

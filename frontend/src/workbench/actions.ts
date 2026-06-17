@@ -97,7 +97,7 @@ export function selectEdgeMapping(
 }
 
 export function selectNodeEntity(state: WorkbenchState, entityId: string): WorkbenchState {
-  const alreadySelected = state.selectedEntity === entityId;
+  const alreadySelected = state.selectedEntity === entityId && !(entityId === 'out:group' && state.detailMode === 'collapsed');
   return {
     ...state,
     selectedEntity: alreadySelected ? 'out:group' : entityId,

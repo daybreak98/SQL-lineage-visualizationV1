@@ -8,6 +8,7 @@ interface RelationNodeCardProps {
   box: { width: number; height: number };
   selectedEntityId: string;
   currentEntityIds: Set<string>;
+  activeColumnEntityIds: Set<string>;
   dimmed: boolean;
   warning: boolean;
   dragging: boolean;
@@ -26,6 +27,7 @@ export function RelationNodeCard({
   box,
   selectedEntityId,
   currentEntityIds,
+  activeColumnEntityIds,
   dimmed,
   warning,
   dragging,
@@ -46,7 +48,8 @@ export function RelationNodeCard({
       className="relation-node"
       style={{ width: box.width, height: box.height }}
       data-type={node.type}
-      data-selected={relationSelected || columnSelected || undefined}
+      data-selected={relationSelected || undefined}
+      data-column-selected={columnSelected || undefined}
       data-relation-selected={relationSelected || undefined}
       data-current={currentEntityIds.has(node.entityId) || undefined}
       data-collapsed={node.collapsed || undefined}
@@ -94,7 +97,7 @@ export function RelationNodeCard({
               key={column.entityId}
               column={column}
               selected={selectedEntityId === column.entityId}
-              dimmed={dimmed || Boolean(selectedEntityId && selectedEntityId !== 'out:group' && selectedEntityId !== column.entityId && !currentEntityIds.has(column.entityId))}
+              dimmed={dimmed || Boolean(selectedEntityId && selectedEntityId !== 'out:group' && selectedEntityId !== column.entityId && !activeColumnEntityIds.has(column.entityId))}
               onSelect={onSelectColumn}
               onDoubleClick={onDoubleClickEntity}
             />

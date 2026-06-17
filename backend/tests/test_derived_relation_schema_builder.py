@@ -48,3 +48,29 @@ def test_builds_top_level_inline_subquery_schemas():
     } == {
         ("device_id", (("ods_abtest_sdk_log_endtime_hotel", "clientcode"),)),
     }
+
+
+def test_cte_case_expression_resolves_all_alias_columns():
+    tree = sqlglot.parse_one(
+        """
+        with order_base as (
+          select
+            case when o.is_valid = 1 then o.order_no end as valid_order_no
+          from dwd_order_di o
+        )
+        select valid_order_no from order_base
+        """,
+        dialect="hive",
+    )
+
+    result = build_derived_relation_schemas(tree, dialect="hive")
+    dep = result.schemas["order_base"].get_dependency("valid_order_no")
+
+    assert dep is not None
+    assert {
+        (source.relation_name, source.column_name)
+        for source in dep.inputs
+    } == {
+        ("dwd_order_di", "is_valid"),
+        ("dwd_order_di", "order_no"),
+    }

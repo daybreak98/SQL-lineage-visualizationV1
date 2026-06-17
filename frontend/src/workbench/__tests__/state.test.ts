@@ -8,6 +8,7 @@ import {
   buildAnalyzeSuccessState,
   initialWorkbenchState,
 } from '../state';
+import { selectNodeEntity } from '../actions';
 
 describe('workbench state helpers', () => {
   it('keeps the bottom detail panel closed by default', () => {
@@ -77,10 +78,35 @@ describe('workbench state helpers', () => {
     expect(next.detailMode).toBe('collapsed');
     expect(next.lastAnalysisResult).toBe(result);
     expect(next.lastApiError).toBeUndefined();
-    expect(next.graphViewMode).toBe('subquery');
+    expect(next.graphViewMode).toBe('table');
     expect(next.backendGraph?.nodes).toHaveLength(3);
     expect(next.backendSearchItems?.length).toBeGreaterThan(0);
     expect(next.backendMessage).toContain('analysis:test');
+  });
+
+  it('keeps the selected graph level after analyze success', () => {
+    const result: BackendAnalysisResult = {
+      analysis_id: 'analysis:keep-view',
+      status: 'success',
+      graph_view_model: {
+        view_mode: 'subquery_dependency',
+        nodes: [
+          { id: 'physical_table:t', node_type: 'table', label: 't' },
+          { id: 'query_result:final', node_type: 'output', label: 'Query Result' },
+        ],
+        edges: [{ id: 'edge:t-out', source: 'physical_table:t', target: 'query_result:final', edge_type: 'table_to_result' }],
+      },
+      diagnostics_report: { diagnostics: [] },
+      summary: { table_count: 2 },
+    };
+
+    const next = buildAnalyzeSuccessState(
+      { ...initialWorkbenchState, graphViewMode: 'column', renderMode: 'full_graph_preview' },
+      result,
+    );
+
+    expect(next.graphViewMode).toBe('column');
+    expect(next.renderMode).toBe('full_graph_preview');
   });
 
   it('builds analyze failure state with frontend diagnostic', () => {
@@ -127,5 +153,16 @@ describe('workbench state helpers', () => {
     expect(next.query).toBe('order_cnt');
     expect(next.detailMode).toBe('compact');
     expect(next.renderMode).toBe('current_field_path');
+  });
+
+  it('allows the output group node to be selected before toggling it off', () => {
+    const selected = selectNodeEntity(initialWorkbenchState, 'out:group');
+
+    expect(selected.selectedEntity).toBe('out:group');
+    expect(selected.detailMode).toBe('compact');
+
+    const cleared = selectNodeEntity(selected, 'out:group');
+    expect(cleared.selectedEntity).toBe('out:group');
+    expect(cleared.detailMode).toBe('collapsed');
   });
 });

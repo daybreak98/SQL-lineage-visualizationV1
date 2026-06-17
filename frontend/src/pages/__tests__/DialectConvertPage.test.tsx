@@ -116,15 +116,20 @@ describe('DialectConvertPage', () => {
     render(<DialectConvertPage />);
 
     expect(screen.getByText('Convert')).toBeInTheDocument();
-    expect(screen.getByText('Compare')).toBeInTheDocument();
-    expect(screen.getByText('Edit Target')).toBeInTheDocument();
+    expect(screen.getByText('Show Diff')).toBeInTheDocument();
   });
 
-  it('uses one two-pane diff editor in compare mode', () => {
+  it('uses two standalone editors by default with diff overlay toggle', () => {
     render(<DialectConvertPage />);
 
-    expect(screen.getAllByTestId('monaco-diff-editor')).toHaveLength(1);
-    expect(screen.queryByTestId('monaco-editor')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('monaco-editor')).toHaveLength(2);
+    expect(screen.queryByTestId('monaco-diff-editor')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Show Diff'));
+    expect(screen.getByTestId('monaco-diff-editor')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Hide Diff'));
+    expect(screen.queryByTestId('monaco-diff-editor')).not.toBeInTheDocument();
   });
 
   it('calls convert api and renders target sql', async () => {
@@ -161,8 +166,6 @@ describe('DialectConvertPage', () => {
     await waitFor(() => {
       expect(mockFormatSql).toHaveBeenCalledWith(expect.any(String), 'hive');
     });
-
-    fireEvent.click(screen.getByText('Edit Target'));
 
     expect((screen.getAllByTestId('monaco-textarea')[0] as HTMLTextAreaElement).value).toBe(
       'select\n  user_id\nfrom dwd_order_di',
@@ -209,7 +212,7 @@ describe('DialectConvertPage', () => {
     expect((screen.getAllByRole('combobox')[1] as HTMLSelectElement).value).toBe('hive');
   });
 
-  it('switches to editable target view', async () => {
+  it('edits the target sql directly and shows diff overlay', async () => {
     mockConvertSql.mockResolvedValueOnce({
       status: 'success',
       source_dialect: 'hive',
@@ -226,15 +229,15 @@ describe('DialectConvertPage', () => {
       expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('Edit Target'));
-    fireEvent.change(screen.getByDisplayValue('SELECT 1'), { target: { value: 'SELECT 2' } });
+    fireEvent.change(screen.getAllByTestId('monaco-textarea')[1], { target: { value: 'SELECT 2' } });
 
     expect(screen.getByDisplayValue('SELECT 2')).toBeInTheDocument();
-    expect(screen.queryByTestId('monaco-diff-editor')).not.toBeInTheDocument();
-    expect(screen.getAllByTestId('monaco-editor')).toHaveLength(2);
+
+    fireEvent.click(screen.getByText('Show Diff'));
+    expect(screen.getByTestId('monaco-diff-editor')).toBeInTheDocument();
   });
 
-  it('edits the target sql directly in compare mode', async () => {
+  it('edits the target sql in diff overlay and syncs to standalone editor', async () => {
     mockConvertSql.mockResolvedValueOnce({
       status: 'success',
       source_dialect: 'hive',
@@ -251,20 +254,19 @@ describe('DialectConvertPage', () => {
       expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
     });
 
+    fireEvent.click(screen.getByText('Show Diff'));
     fireEvent.change(screen.getByTestId('monaco-diff-modified'), { target: { value: 'SELECT 2' } });
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('SELECT 2')).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue('SELECT 2')).toHaveLength(2);
     });
 
-    fireEvent.click(screen.getByText('Edit Target'));
+    fireEvent.click(screen.getByText('Hide Diff'));
     expect(screen.getByDisplayValue('SELECT 2')).toBeInTheDocument();
   });
 
   it('defaults edit target columns to equal width and supports resizing', () => {
     const { container } = render(<DialectConvertPage />);
-
-    fireEvent.click(screen.getByText('Edit Target'));
 
     const workspace = container.querySelector('.convert-workspace') as HTMLElement;
     expect(workspace.style.getPropertyValue('--convert-split')).toBe('50%');
@@ -278,8 +280,6 @@ describe('DialectConvertPage', () => {
   it('resizes edit target columns by dragging the splitter', () => {
     const { container } = render(<DialectConvertPage />);
 
-    fireEvent.click(screen.getByText('Edit Target'));
-
     const workspace = container.querySelector('.convert-workspace') as HTMLElement;
     Object.defineProperty(workspace, 'getBoundingClientRect', {
       value: () => ({ width: 1000, height: 600, top: 0, left: 0, right: 1000, bottom: 600, x: 0, y: 0, toJSON: () => ({}) }),
@@ -291,5 +291,34 @@ describe('DialectConvertPage', () => {
     fireEvent.mouseUp(window);
 
     expect(workspace.style.getPropertyValue('--convert-split')).toBe('60%');
+  });
+
+  it('shows Copy Target button as clean after conversion and dirty after editing', async () => {
+    mockConvertSql.mockResolvedValueOnce({
+      status: 'success',
+      source_dialect: 'hive',
+      target_dialect: 'spark',
+      converted_sql: 'SELECT 1',
+      elapsed_ms: 6,
+      diagnostics: [],
+    });
+
+    render(<DialectConvertPage />);
+    const copyButton = screen.getByText('Copy Target');
+    expect(copyButton.className).not.toContain('btn-copy-clean');
+
+    fireEvent.click(screen.getByText('Convert'));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
+    });
+
+    expect(copyButton.className).toContain('btn-copy-clean');
+
+    fireEvent.change(screen.getAllByTestId('monaco-textarea')[1], { target: { value: 'SELECT 2' } });
+
+    await waitFor(() => {
+      expect(copyButton.className).not.toContain('btn-copy-clean');
+    });
   });
 });

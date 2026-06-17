@@ -14,7 +14,6 @@ configureSqlMonacoLoader();
 
 type Dialect = 'hive' | 'spark' | 'starrocks';
 type ConvertStatus = 'idle' | 'running' | 'success' | 'partial' | 'failed';
-type DiffMode = 'split' | 'target_only';
 
 const exampleSqlByDialect: Record<Dialect, string> = {
   hive: [
@@ -64,7 +63,7 @@ export function DialectConvertPage() {
   const [sourceSql, setSourceSql] = useState(exampleSqlByDialect.hive);
   const [targetSql, setTargetSql] = useState('');
   const [convertStatus, setConvertStatus] = useState<ConvertStatus>('idle');
-  const [diffMode, setDiffMode] = useState<DiffMode>('split');
+  const [showDiff, setShowDiff] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Array<{
     id: string;
     code: string;
@@ -268,10 +267,9 @@ export function DialectConvertPage() {
           <button className="btn" onClick={onSwap}>Swap</button>
         </div>
         <div className="convert-group">
-          <div className="view-toggle">
-            <button className={`view-btn ${diffMode === 'split' ? 'active' : ''}`} onClick={() => setDiffMode('split')}>Compare</button>
-            <button className={`view-btn ${diffMode === 'target_only' ? 'active' : ''}`} onClick={() => setDiffMode('target_only')}>Edit Target</button>
-          </div>
+          <button className={`tool-btn ${showDiff ? 'active' : ''}`} onClick={() => setShowDiff((value) => !value)}>
+            {showDiff ? 'Hide Diff' : 'Show Diff'}
+          </button>
           <button className="tool-btn" onClick={onLoadExample}>Example</button>
           <button className="tool-btn" onClick={onFormatSource} disabled={!sourceSql.trim()}>Format Source</button>
           <button className="tool-btn" onClick={onClear}>Clear</button>
@@ -284,19 +282,102 @@ export function DialectConvertPage() {
       <div
         ref={workspaceRef}
         className="convert-workspace"
-        style={{ ['--convert-split' as string]: `${editSplit}%` }}
+        style={{ ['--convert-split' as string]: `${editSplit}%`, position: 'relative' }}
       >
-        {diffMode === 'split' ? (
-          <section className="convert-compare-panel">
-            <div className="panel-head">
+        <section className="editor convert-source">
+          <div className="panel-head">
+            <div><b>Source SQL</b><span className="badge">{sourceDialect}</span></div>
+            <button className="tool-btn" onClick={onFormatSource}>Format</button>
+          </div>
+          <div className="editor-body">
+            <Editor
+              height="100%"
+              language="sql"
+              theme="vs"
+              value={sourceSql}
+              onChange={(value) => setSourceSql(value || '')}
+              onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => sourceDialectRef.current)}
+              options={editorOptions}
+            />
+          </div>
+          <div className="editor-foot">
+            <span>{sourceDialect} source editor</span>
+            <span>{sourceSql.split('\n').length} lines</span>
+          </div>
+        </section>
+
+        <div className={`convert-splitter-zone ${showDiff ? 'hidden' : ''}`}>
+          {splitDragging && <div className="overlay show" />}
+          <button
+            className={`splitter ${splitDragging ? 'dragging' : ''}`}
+            aria-label="Resize source and target SQL editors"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              setSplitStart({ x: event.clientX, split: editSplit });
+              setSplitDragging(true);
+            }}
+            onDoubleClick={() => setEditSplit(50)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft') setEditSplit((value) => Math.max(30, value - 2));
+              if (event.key === 'ArrowRight') setEditSplit((value) => Math.min(70, value + 2));
+            }}
+          >
+            <span className="splitter-line" />
+          </button>
+          <div className={`split-tooltip ${splitDragging ? 'show' : ''}`}>
+            Source {Math.round(editSplit)}% / Target {Math.round(100 - editSplit)}%
+          </div>
+        </div>
+
+        <section className="convert-target-panel">
+          <div className="panel-head">
+            <div>
+              <b>Target SQL</b>
+              <span className="badge">{targetDialect}</span>
+              {isTargetDirty && <span className="badge">modified</span>}
+            </div>
+            <div className="convert-head-actions">
+              <button
+                className={`btn-copy ${!isTargetDirty && targetSql.trim() ? 'btn-copy-clean' : ''}`}
+                onClick={onCopyTarget}
+                disabled={!targetSql.trim()}
+              >
+                Copy Target
+              </button>
+              <button className="tool-btn" onClick={onFormatTarget} disabled={!targetSql.trim()}>Format</button>
+            </div>
+          </div>
+          <div className="editor-body">
+            <Editor
+              height="100%"
+              language="sql"
+              theme="vs"
+              value={targetSql}
+              onChange={(value) => {
+                setTargetSql(value || '');
+                setIsTargetDirty(true);
+              }}
+              onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => targetDialectRef.current)}
+              options={editorOptions}
+            />
+          </div>
+          <div className="editor-foot">
+            <span>{targetDialect} target editor</span>
+            <span>{targetSql.split('\n').length} lines</span>
+          </div>
+        </section>
+
+        {showDiff && (
+          <div className="diff-overlay">
+            <div className="diff-overlay-head">
               <div>
                 <b>Diff Preview</b>
                 <span className="badge">{sourceDialect}</span>
                 <span className="badge">{targetDialect}</span>
               </div>
-              <button className="btn-primary secondary" onClick={onCopyTarget} disabled={!targetSql.trim()}>Copy Target</button>
+              <button className="btn" onClick={() => setShowDiff(false)}>Close Diff</button>
             </div>
-            <div className="editor-body">
+            <div className="diff-overlay-body">
               <DiffEditor
                 height="100%"
                 language="sql"
@@ -319,90 +400,7 @@ export function DialectConvertPage() {
                 }}
               />
             </div>
-            <div className="editor-foot">
-              <span>Compare view</span>
-              <span>{sourceSql.split('\n').length} source lines / {targetSql.split('\n').length} target lines</span>
-            </div>
-          </section>
-        ) : (
-          <>
-            <section className="editor convert-source">
-              <div className="panel-head">
-                <div><b>Source SQL</b><span className="badge">{sourceDialect}</span></div>
-                <button className="tool-btn" onClick={onFormatSource}>Format</button>
-              </div>
-              <div className="editor-body">
-                <Editor
-                  height="100%"
-                  language="sql"
-                  theme="vs"
-                  value={sourceSql}
-                  onChange={(value) => setSourceSql(value || '')}
-                  onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => sourceDialectRef.current)}
-                  options={editorOptions}
-                />
-              </div>
-              <div className="editor-foot">
-                <span>{sourceDialect} source editor</span>
-                <span>{sourceSql.split('\n').length} lines</span>
-              </div>
-            </section>
-
-            <div className="convert-splitter-zone">
-              {splitDragging && <div className="overlay show" />}
-              <button
-                className={`splitter ${splitDragging ? 'dragging' : ''}`}
-                aria-label="Resize source and target SQL editors"
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  setSplitStart({ x: event.clientX, split: editSplit });
-                  setSplitDragging(true);
-                }}
-                onDoubleClick={() => setEditSplit(50)}
-                onKeyDown={(event) => {
-                  if (event.key === 'ArrowLeft') setEditSplit((value) => Math.max(30, value - 2));
-                  if (event.key === 'ArrowRight') setEditSplit((value) => Math.min(70, value + 2));
-                }}
-              >
-                <span className="splitter-line" />
-              </button>
-              <div className={`split-tooltip ${splitDragging ? 'show' : ''}`}>
-                Source {Math.round(editSplit)}% / Target {Math.round(100 - editSplit)}%
-              </div>
-            </div>
-
-            <section className="convert-target-panel">
-              <div className="panel-head">
-                <div>
-                  <b>Target SQL</b>
-                  <span className="badge">{targetDialect}</span>
-                  {isTargetDirty && <span className="badge">modified</span>}
-                </div>
-                <div className="convert-head-actions">
-                  <button className="btn-primary secondary" onClick={onCopyTarget} disabled={!targetSql.trim()}>Copy Target</button>
-                  <button className="tool-btn" onClick={onFormatTarget} disabled={!targetSql.trim()}>Format</button>
-                </div>
-              </div>
-              <div className="editor-body">
-                <Editor
-                  height="100%"
-                  language="sql"
-                  theme="vs"
-                  value={targetSql}
-                  onChange={(value) => {
-                    setTargetSql(value || '');
-                    setIsTargetDirty(true);
-                  }}
-                  onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => targetDialectRef.current)}
-                  options={editorOptions}
-                />
-              </div>
-              <div className="editor-foot">
-                <span>Edit target view</span>
-                <span>{targetSql.split('\n').length} lines</span>
-              </div>
-            </section>
-          </>
+          </div>
         )}
       </div>
 

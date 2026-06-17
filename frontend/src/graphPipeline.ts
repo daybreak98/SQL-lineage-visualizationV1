@@ -28,6 +28,15 @@ const LAYOUT = {
   tableGroupThreshold: 8,
 };
 
+const RELATION_COLUMN_LAYOUT = {
+  minWidth: 1680,
+  minHeight: 760,
+  marginX: 140,
+  marginY: 86,
+  minRankGap: 360,
+  minNodeGap: 124,
+};
+
 
 function rawNodeType(node: RawApiNode): string {
   return node.node_type || node.type || '';
@@ -670,7 +679,7 @@ function visibleRelationColumnGraph(state: WorkbenchState, base: GraphLike, posi
     selectedEntityId: state.selectedEntity,
     searchTerm: state.query,
   });
-  const layouted = layoutLayeredDag(projected);
+  const layouted = layoutComfortGraph(projected, RELATION_COLUMN_LAYOUT);
   return applyManualPositions(layouted, positions);
 }
 

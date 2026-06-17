@@ -198,6 +198,12 @@ const c05CteStructureResult = {
       { id: 'cte:order_base', node_type: 'cte', label: 'order_base' },
       { id: 'cte:metric_base', node_type: 'cte', label: 'metric_base' },
       { id: 'query_result:final', node_type: 'output', label: 'Query Result' },
+      { id: 'physical_column:dwd_order_di.user_id', node_type: 'physical_column', label: 'dwd_order_di.user_id' },
+      { id: 'physical_column:dwd_order_di.order_no', node_type: 'physical_column', label: 'dwd_order_di.order_no' },
+      { id: 'physical_column:dwd_order_di.order_amount', node_type: 'physical_column', label: 'dwd_order_di.order_amount' },
+      { id: 'output_column:user_id', node_type: 'output_column', label: 'user_id' },
+      { id: 'output_column:order_cnt', node_type: 'output_column', label: 'order_cnt' },
+      { id: 'output_column:gmv', node_type: 'output_column', label: 'gmv' },
     ],
     edges: [
       {
@@ -218,6 +224,42 @@ const c05CteStructureResult = {
         target: 'query_result:final',
         edge_type: 'cte_to_result',
       },
+      {
+        id: 'edge:physical_column:dwd_order_di.user_id->output_column:user_id',
+        source: 'physical_column:dwd_order_di.user_id',
+        target: 'output_column:user_id',
+        edge_type: 'column_lineage',
+      },
+      {
+        id: 'edge:physical_column:dwd_order_di.order_no->output_column:order_cnt',
+        source: 'physical_column:dwd_order_di.order_no',
+        target: 'output_column:order_cnt',
+        edge_type: 'column_lineage',
+      },
+      {
+        id: 'edge:physical_column:dwd_order_di.order_amount->output_column:gmv',
+        source: 'physical_column:dwd_order_di.order_amount',
+        target: 'output_column:gmv',
+        edge_type: 'column_lineage',
+      },
+      {
+        id: 'edge:output_column:user_id->query_result:final',
+        source: 'output_column:user_id',
+        target: 'query_result:final',
+        edge_type: 'output_column_to_result',
+      },
+      {
+        id: 'edge:output_column:order_cnt->query_result:final',
+        source: 'output_column:order_cnt',
+        target: 'query_result:final',
+        edge_type: 'output_column_to_result',
+      },
+      {
+        id: 'edge:output_column:gmv->query_result:final',
+        source: 'output_column:gmv',
+        target: 'query_result:final',
+        edge_type: 'output_column_to_result',
+      },
     ],
   },
   output_fields: [
@@ -226,7 +268,7 @@ const c05CteStructureResult = {
     { name: 'gmv', display_name: 'gmv', expression: 'gmv', source_type: 'unknown' },
   ],
   diagnostics_report: { diagnostics: [] },
-  summary: { node_count: 4, edge_count: 3, output_field_count: 3 },
+  summary: { node_count: 10, edge_count: 9, output_field_count: 3 },
 };
 
 const failedResult = {
@@ -285,7 +327,7 @@ describe('Analyze Flow', () => {
   // ── Initial render ─────────────────────────────────────────
 
   it('renders the app shell without crashing', () => {
-    render(<App />);
+    const { container } = render(<App />);
     expect(screen.getByText('SQL Lineage')).toBeInTheDocument();
   });
 
@@ -430,11 +472,12 @@ describe('Analyze Flow', () => {
     });
   });
 
-  it('renders C05 CTE structure graph as the default subquery dependency view', async () => {
+  it('renders C05 CTE structure graph when subquery is the selected view', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(c05CteStructureResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
+    fireEvent.click(screen.getByText('Subquery', { selector: 'button' }));
     fireEvent.click(screen.getByText('Analyze'));
 
     await waitFor(() => {
@@ -463,18 +506,36 @@ describe('Analyze Flow', () => {
     const tableResultNode = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
     expect(parseFloat(tableResultNode.style.left) - parseFloat(tableNode.style.left)).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByText('Column'));
+    fireEvent.click(screen.getByText('Column', { selector: 'button' }));
 
     await waitFor(() => {
       expect(screen.queryByText('order_base', { selector: '.title' })).not.toBeInTheDocument();
       expect(screen.queryByText('metric_base', { selector: '.title' })).not.toBeInTheDocument();
-      expect(screen.queryByText('dwd_order_di', { selector: '.title' })).not.toBeInTheDocument();
-      expect(screen.queryByText('Query Result', { selector: '.title' })).not.toBeInTheDocument();
+      expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(screen.getByText('Query Result', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="source"][data-entity-id="physical_column\\:dwd_order_di\\.order_no"]')).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_cnt"]')).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:gmv"]')).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
   });
 
   // ── Analyze failure ────────────────────────────────────────
+
+  it('keeps the selected graph level when analyze completes', async () => {
+    mockAnalyzeSql.mockResolvedValueOnce(c05CteStructureResult);
+
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByText('Column'));
+    fireEvent.click(screen.getByText('Analyze'));
+
+    await waitFor(() => {
+      expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_cnt"]')).toBeInTheDocument();
+      expect(screen.getByText('view: column')).toBeInTheDocument();
+    });
+  });
 
   it('shows error state on analyze failure (backend returns failed)', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(failedResult);

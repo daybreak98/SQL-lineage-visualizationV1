@@ -1,5 +1,7 @@
 from app.domain import diagnostics_model as diag_codes
 from app.services.name_resolver import resolve_column_lineage_names
+from app.services.name_resolver import _table_references_from_final_select
+import sqlglot
 
 
 def test_join_aliases_resolve_to_physical_tables():
@@ -72,6 +74,19 @@ def test_cte_remains_out_of_scope_for_c04():
     assert result.lineages == []
     assert result.diagnostics[0].code == diag_codes.UNSUPPORTED_COMPLEX_QUERY
     assert "cte" in result.unsupported_features
+
+
+def test_final_select_source_reader_handles_sqlglot_from_key_in_with_query():
+    tree = sqlglot.parse_one(
+        "with metric_base as (select a from t) select a from metric_base",
+        dialect="hive",
+    )
+
+    tables = _table_references_from_final_select(tree, "hive", {"metric_base"})
+
+    assert [(table.table_name, table.alias) for table in tables] == [
+        ("metric_base", "metric_base")
+    ]
 
 
 # -- migrated from test_simple_lineage_service --

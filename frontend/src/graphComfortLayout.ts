@@ -337,8 +337,8 @@ export function routeComfortEdgePath(params: {
   const maxTargetY = Math.max(0, targetBox.height / 2 - 10);
   const sourceColumnOffset = edge.sourcePort ? getColumnPortOffsetY(sourceNode, edge.sourcePort) : null;
   const targetColumnOffset = edge.targetPort ? getColumnPortOffsetY(targetNode, edge.targetPort) : null;
-  const sourceOffsetY = (sourceColumnOffset ?? Math.max(-maxSourceY, Math.min(maxSourceY, rawSourceOffset))) + (sourceColumnOffset == null ? 0 : rawSourceOffset);
-  const targetOffsetY = (targetColumnOffset ?? Math.max(-maxTargetY, Math.min(maxTargetY, rawTargetOffset))) + (targetColumnOffset == null ? 0 : rawTargetOffset);
+  const sourceOffsetY = sourceColumnOffset ?? Math.max(-maxSourceY, Math.min(maxSourceY, rawSourceOffset));
+  const targetOffsetY = targetColumnOffset ?? Math.max(-maxTargetY, Math.min(maxTargetY, rawTargetOffset));
 
   const isForward = targetNode.x >= sourceNode.x;
 

@@ -12,6 +12,7 @@ from app.domain.lineage_context import LineageResolveContext
 from app.models import Diagnostic
 from app.domain.lineage_model import SimpleColumnLineage
 from app.services.star_expansion_service import _detect_star, expand_star_items
+from app.services.sqlglot_compat import get_from_expression, get_with_expression
 
 
 @dataclass(frozen=True)
@@ -320,7 +321,7 @@ def _table_references_from_final_select(tree: exp.Expression, dialect: str,
                                          cte_names: set[str] | None = None) -> list[TableReference]:
     cte_names = cte_names or set()
     tables: list[TableReference] = []
-    from_expr = tree.args.get("from_")
+    from_expr = get_from_expression(tree)
     _extract_table_or_subquery(from_expr, tables, dialect, cte_names)
     for join in tree.args.get("joins") or []:
         _extract_table_or_subquery(join, tables, dialect, cte_names)
@@ -355,7 +356,7 @@ def _resolve_subquery_lineages_to_physical(
         return lineages
     subq_map: dict[str, str] = {}
     for join in tree.args.get("joins") or []:
-        from_expr = tree.args.get("from_")
+        from_expr = get_from_expression(tree)
         for expr in ([from_expr] if from_expr else []) + list(tree.args.get("joins") or []):
             if expr is None:
                 continue
@@ -550,7 +551,7 @@ def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False,
     skip_subq_check = is_cte_context or (context is not None and context.allow_subquery)
 
     if not skip_cte_check:
-        if tree.args.get("with_") is not None:
+        if get_with_expression(tree) is not None:
             return (
                 diag_codes.UNSUPPORTED_COMPLEX_QUERY,
                 "CTE lineage is not supported in C04.",

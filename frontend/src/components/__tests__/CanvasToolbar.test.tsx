@@ -61,4 +61,12 @@ describe('CanvasToolbar', () => {
 
     expect(screen.getByText('Clear')).not.toBeDisabled();
   });
+
+  it('uses owned toolbar layout classes for the path summary and view controls', () => {
+    const { container } = render(<CanvasToolbar state={baseState()} setState={vi.fn()} onTransition={vi.fn()} />);
+
+    expect(container.querySelector('.path-inline')).toBeInTheDocument();
+    expect(container.querySelector('.tool-right .view-toggle')).toBeInTheDocument();
+    expect(container.querySelector('.flex.items-center.gap-2')).not.toBeInTheDocument();
+  });
 });

@@ -8,6 +8,8 @@ from typing import Any, List, Optional, Set
 
 from sqlglot import exp
 
+from app.services.sqlglot_compat import get_from_expression
+
 
 @dataclass
 class QueryStructureResult:
@@ -67,7 +69,7 @@ def extract_final_select_source_names(tree: Any) -> Set[str]:
     sel = _outer_select(tree)
     if sel is None:
         return names
-    from_expr = sel.args.get("from_") or sel.args.get("from")
+    from_expr = get_from_expression(sel)
     if from_expr is not None:
         names.update(_direct_table_names(from_expr))
     for join in sel.args.get("joins") or []:

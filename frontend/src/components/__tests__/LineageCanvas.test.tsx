@@ -128,6 +128,14 @@ describe('LineageCanvas', () => {
     expect(container.querySelectorAll('path.edge.downstream-impact')).toHaveLength(4);
   });
 
+  it('highlights compressed upstream table edges when output is selected in table view', () => {
+    const state = baseState({ graphViewMode: 'table', selectedEntity: 'out:group' });
+    const setState = vi.fn();
+    const { container } = render(<LineageCanvas state={state} setState={setState} />);
+
+    expect(container.querySelectorAll('path.edge.edge-selected')).toHaveLength(2);
+  });
+
   it('shows no message when fully analyzed and trusted', () => {
     const state = baseState({ pageMode: 'analyzed', trustStatus: 'trusted' });
     const setState = vi.fn();
@@ -316,6 +324,45 @@ describe('LineageCanvas', () => {
 
     const updater = setState.mock.calls[0][0] as (s: WorkbenchState) => WorkbenchState;
     expect(updater(state).selectedEntity).toBe('physical_column:dwd_order_di.order_no');
+  });
+
+  it('highlights only the selected column lineage instead of every field in the same relation', () => {
+    const state = baseState({
+      graphViewMode: 'column',
+      selectedEntity: 'output_column:order_no',
+      backendGraph: {
+        nodes: [
+          { id: 'physical_table:dwd_order_di', entityId: 'physical_table:dwd_order_di', type: 'table', label: 'dwd_order_di', x: 0, y: 0 },
+          { id: 'physical_column:dwd_order_di.order_no', entityId: 'physical_column:dwd_order_di.order_no', type: 'column', label: 'dwd_order_di.order_no', x: 0, y: 0 },
+          { id: 'physical_column:dwd_order_di.user_id', entityId: 'physical_column:dwd_order_di.user_id', type: 'column', label: 'dwd_order_di.user_id', x: 0, y: 0 },
+          { id: 'output_column:order_no', entityId: 'output_column:order_no', type: 'output_field', label: 'order_no', x: 0, y: 0 },
+          { id: 'output_column:uid', entityId: 'output_column:uid', type: 'output_field', label: 'uid', x: 0, y: 0 },
+          { id: 'query_result:final', entityId: 'query_result:final', type: 'output', label: 'Query Result', x: 0, y: 0 },
+        ],
+        edges: [
+          { id: 'e1', source: 'physical_column:dwd_order_di.order_no', target: 'output_column:order_no', type: 'projection' },
+          { id: 'e2', source: 'physical_column:dwd_order_di.user_id', target: 'output_column:uid', type: 'projection' },
+          { id: 'e3', source: 'output_column:order_no', target: 'query_result:final', type: 'output' },
+          { id: 'e4', source: 'output_column:uid', target: 'query_result:final', type: 'output' },
+        ],
+      },
+    });
+
+    const { container } = render(<LineageCanvas state={state} setState={vi.fn()} />);
+    const selectedSource = container.querySelector('.column-row[data-entity-id="physical_column\\:dwd_order_di\\.order_no"]') as HTMLElement;
+    const siblingSource = container.querySelector('.column-row[data-entity-id="physical_column\\:dwd_order_di\\.user_id"]') as HTMLElement;
+    const selectedOutput = container.querySelector('.column-row[data-entity-id="output_column\\:order_no"]') as HTMLElement;
+    const siblingOutput = container.querySelector('.column-row[data-entity-id="output_column\\:uid"]') as HTMLElement;
+    const selectedEdge = container.querySelector('path.edge.edge-selected') as SVGPathElement;
+    const siblingEdge = Array.from(container.querySelectorAll('path.edge.projection')).find((edge) => edge !== selectedEdge) as SVGPathElement;
+
+    expect(selectedSource).not.toHaveClass('dimmed');
+    expect(selectedOutput).not.toHaveClass('dimmed');
+    expect(siblingSource).toHaveClass('dimmed');
+    expect(siblingOutput).toHaveClass('dimmed');
+    expect(selectedEdge).toBeInTheDocument();
+    expect(siblingEdge).toHaveClass('dimmed');
+    expect(container.querySelector('.relation-node[data-column-selected="true"][data-selected="true"]')).not.toBeInTheDocument();
   });
 
   it('toggles relation collapse without selecting the relation', () => {
