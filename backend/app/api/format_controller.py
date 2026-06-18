@@ -88,6 +88,64 @@ def _join_transpiled_sql(statements: list[str]) -> str:
     return ";\n\n".join(cleaned)
 
 
+def _lowercase_sql_words(sql: str) -> str:
+    pattern = re.compile(
+        r"\b(" + "|".join(re.escape(word) for word in sorted(CASE_PRESERVED_WORDS, key=len, reverse=True)) + r")\b",
+        flags=re.IGNORECASE,
+    )
+    result: list[str] = []
+    index = 0
+    sql_len = len(sql)
+
+    while index < sql_len:
+        char = sql[index]
+        next_two = sql[index:index + 2]
+
+        if next_two == "--":
+            end = sql.find("\n", index)
+            if end == -1:
+                result.append(sql[index:])
+                break
+            result.append(sql[index:end])
+            index = end
+            continue
+
+        if next_two == "/*":
+            end = sql.find("*/", index + 2)
+            if end == -1:
+                result.append(sql[index:])
+                break
+            end += 2
+            result.append(sql[index:end])
+            index = end
+            continue
+
+        if char in ("'", '"', "`"):
+            end = index + 1
+            while end < sql_len:
+                if sql[end] == char:
+                    if char == "'" and end + 1 < sql_len and sql[end + 1] == "'":
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+            result.append(sql[index:end])
+            index = end
+            continue
+
+        match = pattern.match(sql, index)
+        if match:
+            result.append(match.group(0).lower())
+            index = match.end()
+            continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
 @router.post("/sql/format", response_model=FormatSqlResponse)
 async def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
     import sqlglot
@@ -110,6 +168,7 @@ async def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
                 pretty=True,
             )
         )
+        formatted = _lowercase_sql_words(formatted)
         return FormatSqlResponse(
             status="success",
             dialect=dialect.normalized,
@@ -167,6 +226,7 @@ async def convert_sql(request: ConvertSqlRequest) -> ConvertSqlResponse:
             converted,
             keep_original_if_noop=not request.pretty,
         )
+        converted = _lowercase_sql_words(converted)
         diagnostics = _conversion_diagnostics(
             sqlglot=sqlglot,
             source_sql=request.sql,

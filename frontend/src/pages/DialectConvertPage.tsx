@@ -77,12 +77,28 @@ export function DialectConvertPage() {
   const [isTargetDirty, setIsTargetDirty] = useState(false);
   const [editSplit, setEditSplit] = useState(50);
   const [splitDragging, setSplitDragging] = useState(false);
-  const [splitStart, setSplitStart] = useState({ x: 0, split: 50 });
   const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const splitDragRef = useRef({ pointerId: -1, x: 0, split: 50 });
+  const splitDraggingRef = useRef(false);
   const sourceDialectRef = useRef(sourceDialect);
   const targetDialectRef = useRef(targetDialect);
   sourceDialectRef.current = sourceDialect;
   targetDialectRef.current = targetDialect;
+
+  const clampEditSplit = (value: number) => Math.max(30, Math.min(70, value));
+
+  const updateEditSplitFromPointer = (clientX: number) => {
+    const bounds = workspaceRef.current?.getBoundingClientRect();
+    const width = Math.max(bounds?.width ?? window.innerWidth, 1);
+    const next = splitDragRef.current.split + ((clientX - splitDragRef.current.x) / width) * 100;
+    setEditSplit(clampEditSplit(next));
+  };
+
+  const stopSplitDrag = () => {
+    splitDragRef.current.pointerId = -1;
+    splitDraggingRef.current = false;
+    setSplitDragging(false);
+  };
 
   const statusBadgeClass = useMemo(() => {
     if (convertStatus === 'success') return 'trusted';
@@ -106,21 +122,34 @@ export function DialectConvertPage() {
     return `Unsupported or uncertain function conversion: ${items.join('; ')}`;
   }, [diagnostics]);
 
+  const showDiagnosticsPanel = diagnostics.length > 0;
+  const statusMessage = conversionRiskSummary
+    || (showDiagnosticsPanel
+      ? backendMessage
+      : `${backendMessage} No diagnostics. Convert the SQL to inspect compatibility notes and errors.`);
+
   useEffect(() => {
-    const onMove = (event: MouseEvent) => {
-      if (!splitDragging) return;
-      const width = workspaceRef.current?.getBoundingClientRect().width || window.innerWidth;
-      const next = splitStart.split + ((event.clientX - splitStart.x) / width) * 100;
-      setEditSplit(Math.max(30, Math.min(70, next)));
+    const onMove = (event: PointerEvent) => {
+      if (!splitDraggingRef.current) return;
+      if (splitDragRef.current.pointerId !== -1 && event.pointerId !== splitDragRef.current.pointerId) return;
+      updateEditSplitFromPointer(event.clientX);
     };
-    const onUp = () => setSplitDragging(false);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+
+    const onUp = (event: PointerEvent) => {
+      if (!splitDraggingRef.current) return;
+      if (splitDragRef.current.pointerId !== -1 && event.pointerId !== splitDragRef.current.pointerId) return;
+      stopSplitDrag();
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
     return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
     };
-  }, [splitDragging, splitStart]);
+  }, []);
 
   const onConvert = async () => {
     if (!sourceSql.trim()) return;
@@ -281,7 +310,7 @@ export function DialectConvertPage() {
 
       <div
         ref={workspaceRef}
-        className="convert-workspace"
+        className={`convert-workspace ${showDiff ? 'diff-active' : ''}`}
         style={{ ['--convert-split' as string]: `${editSplit}%`, position: 'relative' }}
       >
         <section className="editor convert-source">
@@ -309,17 +338,40 @@ export function DialectConvertPage() {
         <div className={`convert-splitter-zone ${showDiff ? 'hidden' : ''}`}>
           {splitDragging && <div className="overlay show" />}
           <button
+            type="button"
             className={`splitter ${splitDragging ? 'dragging' : ''}`}
             aria-label="Resize source and target SQL editors"
-            onMouseDown={(event) => {
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
               event.preventDefault();
-              setSplitStart({ x: event.clientX, split: editSplit });
+              if (typeof event.currentTarget.setPointerCapture === 'function') {
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }
+              splitDragRef.current = { pointerId: event.pointerId, x: event.clientX, split: editSplit };
+              splitDraggingRef.current = true;
               setSplitDragging(true);
             }}
+            onPointerUp={(event) => {
+              if (typeof event.currentTarget.hasPointerCapture === 'function'
+                && typeof event.currentTarget.releasePointerCapture === 'function'
+                && event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              stopSplitDrag();
+            }}
+            onPointerCancel={(event) => {
+              if (typeof event.currentTarget.hasPointerCapture === 'function'
+                && typeof event.currentTarget.releasePointerCapture === 'function'
+                && event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              stopSplitDrag();
+            }}
+            onLostPointerCapture={stopSplitDrag}
             onDoubleClick={() => setEditSplit(50)}
             onKeyDown={(event) => {
-              if (event.key === 'ArrowLeft') setEditSplit((value) => Math.max(30, value - 2));
-              if (event.key === 'ArrowRight') setEditSplit((value) => Math.min(70, value + 2));
+              if (event.key === 'ArrowLeft') setEditSplit((value) => clampEditSplit(value - 2));
+              if (event.key === 'ArrowRight') setEditSplit((value) => clampEditSplit(value + 2));
             }}
           >
             <span className="splitter-line" />
@@ -404,26 +456,24 @@ export function DialectConvertPage() {
         )}
       </div>
 
-      <section className="convert-status-panel">
+      <section className={`convert-status-panel ${showDiagnosticsPanel ? '' : 'compact'}`}>
         <div className="convert-status-bar">
           <span className={`pill ${statusBadgeClass}`}>{convertStatus}</span>
           <span className={`truncate ${conversionRiskSummary ? 'convert-risk-message' : ''}`}>
-            {conversionRiskSummary || backendMessage}
+            {statusMessage}
           </span>
           <span>{elapsedMs !== null ? `${elapsedMs} ms` : 'No run yet'}</span>
         </div>
-        <div className="convert-diagnostics">
-          {diagnostics.length === 0 ? (
-            <div className="card">No diagnostics. Convert the SQL to inspect compatibility notes and errors.</div>
-          ) : (
-            diagnostics.map((diagnostic) => (
+        {showDiagnosticsPanel && (
+          <div className="convert-diagnostics">
+            {diagnostics.map((diagnostic) => (
               <div key={diagnostic.id} className={`card diag ${diagnostic.level}`}>
                 <div className="card-title">{diagnostic.code}</div>
                 <div>{diagnostic.message}</div>
               </div>
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
     </section>
   );

@@ -119,6 +119,16 @@ describe('DialectConvertPage', () => {
     expect(screen.getByText('Show Diff')).toBeInTheDocument();
   });
 
+  it('compresses the empty status area into a single line', () => {
+    const { container } = render(<DialectConvertPage />);
+
+    expect(screen.getByText(/Ready to convert SQL between Hive, Spark, and StarRocks\./)).toBeInTheDocument();
+    expect(screen.getByText(/No diagnostics\. Convert the SQL to inspect compatibility notes and errors\./)).toBeInTheDocument();
+    expect(screen.getByText('No run yet')).toBeInTheDocument();
+    expect(container.querySelector('.convert-status-panel.compact')).not.toBeNull();
+    expect(container.querySelector('.convert-diagnostics')).toBeNull();
+  });
+
   it('uses two standalone editors by default with diff overlay toggle', () => {
     render(<DialectConvertPage />);
 
@@ -286,9 +296,9 @@ describe('DialectConvertPage', () => {
     });
 
     const resizeButton = screen.getByLabelText('Resize source and target SQL editors');
-    fireEvent.mouseDown(resizeButton, { clientX: 500 });
-    fireEvent.mouseMove(window, { clientX: 600 });
-    fireEvent.mouseUp(window);
+    fireEvent.pointerDown(resizeButton, { button: 0, pointerId: 1, clientX: 500 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 600 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 600 });
 
     expect(workspace.style.getPropertyValue('--convert-split')).toBe('60%');
   });
