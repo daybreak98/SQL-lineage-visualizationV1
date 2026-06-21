@@ -9,6 +9,8 @@ interface RelationNodeCardProps {
   selectedEntityId: string;
   currentEntityIds: Set<string>;
   activeColumnEntityIds: Set<string>;
+  upstreamColumnEntityIds: Set<string>;
+  downstreamColumnEntityIds: Set<string>;
   dimmed: boolean;
   warning: boolean;
   dragging: boolean;
@@ -28,6 +30,8 @@ export function RelationNodeCard({
   selectedEntityId,
   currentEntityIds,
   activeColumnEntityIds,
+  upstreamColumnEntityIds,
+  downstreamColumnEntityIds,
   dimmed,
   warning,
   dragging,
@@ -42,6 +46,15 @@ export function RelationNodeCard({
 }: RelationNodeCardProps) {
   const relationSelected = selectedEntityId === node.entityId;
   const columnSelected = node.columns?.some((column) => column.entityId === selectedEntityId) ?? false;
+  const hasDownstreamColumn = node.columns?.some((column) => downstreamColumnEntityIds.has(column.entityId)) ?? false;
+  const hasUpstreamColumn = node.columns?.some((column) => upstreamColumnEntityIds.has(column.entityId)) ?? false;
+  const columnPathRole = columnSelected
+    ? 'selected'
+    : hasDownstreamColumn
+      ? 'downstream'
+      : hasUpstreamColumn
+        ? 'upstream'
+        : undefined;
 
   return (
     <div
@@ -50,6 +63,7 @@ export function RelationNodeCard({
       data-type={node.type}
       data-selected={relationSelected || undefined}
       data-column-selected={columnSelected || undefined}
+      data-column-path-role={columnPathRole}
       data-relation-selected={relationSelected || undefined}
       data-current={currentEntityIds.has(node.entityId) || undefined}
       data-collapsed={node.collapsed || undefined}
@@ -97,6 +111,15 @@ export function RelationNodeCard({
               key={column.entityId}
               column={column}
               selected={selectedEntityId === column.entityId}
+              lineageActive={
+                selectedEntityId === column.entityId
+                  ? 'selected'
+                  : downstreamColumnEntityIds.has(column.entityId)
+                    ? 'downstream'
+                    : upstreamColumnEntityIds.has(column.entityId)
+                      ? 'upstream'
+                      : undefined
+              }
               dimmed={dimmed || Boolean(selectedEntityId && selectedEntityId !== 'out:group' && selectedEntityId !== column.entityId && !activeColumnEntityIds.has(column.entityId))}
               onSelect={onSelectColumn}
               onDoubleClick={onDoubleClickEntity}

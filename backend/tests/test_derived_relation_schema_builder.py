@@ -74,3 +74,31 @@ def test_cte_case_expression_resolves_all_alias_columns():
         ("dwd_order_di", "is_valid"),
         ("dwd_order_di", "order_no"),
     }
+
+
+def test_cte_lateral_view_output_resolves_explode_input_column():
+    tree = sqlglot.parse_one(
+        """
+        with exploded as (
+          select
+            b.order_id,
+            amount_item
+          from ods_order_log b
+          lateral view explode(split(b.refund_amount, ',')) e as amount_item
+        )
+        select amount_item from exploded
+        """,
+        dialect="spark",
+    )
+
+    result = build_derived_relation_schemas(tree, dialect="spark")
+    dep = result.schemas["exploded"].get_dependency("amount_item")
+
+    assert dep is not None
+    assert dep.transform_type == "lateral_view"
+    assert {
+        (source.relation_name, source.column_name)
+        for source in dep.inputs
+    } == {
+        ("ods_order_log", "refund_amount"),
+    }

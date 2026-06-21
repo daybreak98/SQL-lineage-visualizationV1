@@ -1,7 +1,6 @@
-import { loader } from '@monaco-editor/react';
 import type { editor, languages } from 'monaco-editor';
+import { configureLocalMonaco } from './localMonaco';
 
-let loaderConfigured = false;
 const registeredMonacoInstances = new WeakSet<object>();
 const dialectResolvers = new Map<string, () => string>();
 
@@ -35,9 +34,7 @@ export interface HoverResponse {
 }
 
 export function configureSqlMonacoLoader() {
-  if (loaderConfigured) return;
-  loader.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.50.0/min/vs' } });
-  loaderConfigured = true;
+  configureLocalMonaco();
 }
 
 export function bindModelDialect(model: editor.ITextModel | null | undefined, getDialect: () => string) {

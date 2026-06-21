@@ -5,12 +5,13 @@ import { cx } from '../../utils/cx';
 interface ColumnRowProps {
   column: GraphColumnRow;
   selected: boolean;
+  lineageActive?: 'selected' | 'upstream' | 'downstream';
   dimmed?: boolean;
   onSelect: (entityId: string) => void;
   onDoubleClick: (entityId: string) => void;
 }
 
-export function ColumnRow({ column, selected, dimmed, onSelect, onDoubleClick }: ColumnRowProps) {
+export function ColumnRow({ column, selected, lineageActive, dimmed, onSelect, onDoubleClick }: ColumnRowProps) {
   const handleMouseDown = (event: React.MouseEvent) => {
     event.stopPropagation();
   };
@@ -20,6 +21,7 @@ export function ColumnRow({ column, selected, dimmed, onSelect, onDoubleClick }:
       type="button"
       className={cx('column-row', dimmed && 'dimmed')}
       data-selected={selected || undefined}
+      data-lineage-active={lineageActive}
       data-role={column.role}
       data-entity-id={column.entityId}
       onMouseDown={handleMouseDown}

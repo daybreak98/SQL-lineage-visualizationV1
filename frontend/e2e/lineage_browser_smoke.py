@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Backend edge expected as source->target. Can be repeated.",
     )
-    parser.add_argument("--expect-dom-edges", type=int, default=4, help="Expected visible SVG edge count.")
+    parser.add_argument("--expect-dom-edges", type=int, default=3, help="Expected visible SVG edge count.")
     parser.add_argument("--screenshot", help="Optional screenshot output path.")
     return parser.parse_args()
 
@@ -112,11 +112,12 @@ def browser_script(args: argparse.Namespace, sql: str) -> str:
           const buttonIncludes = (text) => Array.from(document.querySelectorAll('button'))
             .find((button) => (button.textContent || '').includes(text));
 
-          if (!window.monaco || !window.monaco.editor?.getModels?.().length) {{
+          const monaco = window.__SQL_LINEAGE_MONACO__;
+          if (!monaco || !monaco.editor?.getModels?.().length) {{
             throw new Error('Monaco editor model is not available');
           }}
 
-          window.monaco.editor.getModels()[0].setValue(payload.sql);
+          monaco.editor.getModels()[0].setValue(payload.sql);
           await sleep(100);
 
           const analyzeButton = buttonIncludes('Re-analyze') || buttonIncludes('Analyze');

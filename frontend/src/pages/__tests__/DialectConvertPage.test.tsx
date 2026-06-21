@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DialectConvertPage } from '../DialectConvertPage';
 
@@ -22,35 +22,6 @@ function createMonacoStub() {
 }
 
 vi.mock('@monaco-editor/react', () => ({
-  default: ({
-    value,
-    onChange,
-    onMount,
-  }: {
-    value?: string;
-    onChange?: (value: string) => void;
-    onMount?: (editor: {
-      getModel: () => { uri: { toString: () => string } };
-      onDidDispose: (handler: () => void) => { dispose: () => void };
-    }, monaco: ReturnType<typeof createMonacoStub>) => void;
-  }) => {
-    useEffect(() => {
-      onMount?.({
-        getModel: () => ({ uri: { toString: () => 'inmemory://editor/standalone.sql' } }),
-        onDidDispose: () => ({ dispose: vi.fn() }),
-      }, createMonacoStub());
-    }, [onMount]);
-
-    return (
-      <div data-testid="monaco-editor">
-        <textarea
-          data-testid="monaco-textarea"
-          value={value ?? ''}
-          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange?.(e.target.value)}
-        />
-      </div>
-    );
-  },
   DiffEditor: ({
     original,
     modified,
@@ -61,6 +32,8 @@ vi.mock('@monaco-editor/react', () => ({
     onMount?: (editor: {
       getOriginalEditor: () => {
         getModel: () => { uri: { toString: () => string } };
+        getValue: () => string;
+        onDidChangeModelContent: (handler: () => void) => { dispose: () => void };
       };
       getModifiedEditor: () => {
         getModel: () => { uri: { toString: () => string } };
@@ -70,13 +43,20 @@ vi.mock('@monaco-editor/react', () => ({
       onDidDispose: (handler: () => void) => { dispose: () => void };
     }, monaco: ReturnType<typeof createMonacoStub>) => void;
   }) => {
-    let modifiedValue = modified ?? '';
+    let originalValue = (original ?? '').replace(/\r\n/g, '\n');
+    let modifiedValue = (modified ?? '').replace(/\r\n/g, '\n');
+    let originalChangeHandler: (() => void) | null = null;
     let changeHandler: (() => void) | null = null;
 
     useEffect(() => {
       onMount?.({
         getOriginalEditor: () => ({
           getModel: () => ({ uri: { toString: () => 'inmemory://diff/original.sql' } }),
+          getValue: () => originalValue,
+          onDidChangeModelContent: (handler: () => void) => {
+            originalChangeHandler = handler;
+            return { dispose: vi.fn() };
+          },
         }),
         getModifiedEditor: () => ({
           getModel: () => ({ uri: { toString: () => 'inmemory://diff/modified.sql' } }),
@@ -88,11 +68,20 @@ vi.mock('@monaco-editor/react', () => ({
         }),
         onDidDispose: () => ({ dispose: vi.fn() }),
       }, createMonacoStub());
+      originalChangeHandler?.();
+      changeHandler?.();
     }, [onMount]);
 
     return (
       <div data-testid="monaco-diff-editor">
-        <textarea data-testid="monaco-diff-original" value={original ?? ''} readOnly />
+        <textarea
+          data-testid="monaco-diff-original"
+          value={original ?? ''}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+            originalValue = e.target.value;
+            originalChangeHandler?.();
+          }}
+        />
         <textarea
           data-testid="monaco-diff-modified"
           value={modified ?? ''}
@@ -112,11 +101,23 @@ describe('DialectConvertPage', () => {
     vi.clearAllMocks();
   });
 
-  it('renders convert toolbar and diff toggle', () => {
+  it('renders a single editable diff workspace without a view toggle', () => {
     render(<DialectConvertPage />);
 
     expect(screen.getByText('Convert')).toBeInTheDocument();
-    expect(screen.getByText('Show Diff')).toBeInTheDocument();
+    expect(screen.getByTestId('monaco-diff-editor')).toBeInTheDocument();
+    expect(screen.queryByText('Show Diff')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hide Diff')).not.toBeInTheDocument();
+  });
+
+  it('defaults to Spark source and StarRocks target', () => {
+    render(<DialectConvertPage />);
+
+    const selects = screen.getAllByRole('combobox');
+    expect((selects[0] as HTMLSelectElement).value).toBe('spark');
+    expect((selects[1] as HTMLSelectElement).value).toBe('starrocks');
+    expect((screen.getByTestId('monaco-diff-original') as HTMLTextAreaElement).value)
+      .toContain('with base as');
   });
 
   it('compresses the empty status area into a single line', () => {
@@ -129,24 +130,11 @@ describe('DialectConvertPage', () => {
     expect(container.querySelector('.convert-diagnostics')).toBeNull();
   });
 
-  it('uses two standalone editors by default with diff overlay toggle', () => {
-    render(<DialectConvertPage />);
-
-    expect(screen.getAllByTestId('monaco-editor')).toHaveLength(2);
-    expect(screen.queryByTestId('monaco-diff-editor')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByText('Show Diff'));
-    expect(screen.getByTestId('monaco-diff-editor')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText('Hide Diff'));
-    expect(screen.queryByTestId('monaco-diff-editor')).not.toBeInTheDocument();
-  });
-
   it('calls convert api and renders target sql', async () => {
     mockConvertSql.mockResolvedValueOnce({
       status: 'success',
-      source_dialect: 'hive',
-      target_dialect: 'spark',
+      source_dialect: 'spark',
+      target_dialect: 'starrocks',
       converted_sql: 'SELECT 1',
       elapsed_ms: 6,
       diagnostics: [],
@@ -159,25 +147,26 @@ describe('DialectConvertPage', () => {
       expect(mockConvertSql).toHaveBeenCalled();
     });
 
-    expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
+    expect(screen.getByTestId('monaco-diff-modified')).toHaveValue('SELECT 1');
   });
 
-  it('formats source sql from the toolbar before conversion', async () => {
+  it('formats source sql from the source editor header before conversion', async () => {
     mockFormatSql.mockResolvedValueOnce({
       status: 'success',
-      dialect: 'hive',
+      dialect: 'spark',
       formatted_sql: 'select\n  user_id\nfrom dwd_order_di',
       diagnostics: [],
     });
 
     render(<DialectConvertPage />);
-    fireEvent.click(screen.getByText('Format Source'));
+    const sourceHeader = screen.getByText('Source SQL').closest('.convert-diff-head-side') as HTMLElement;
+    fireEvent.click(within(sourceHeader).getByText('Format'));
 
     await waitFor(() => {
-      expect(mockFormatSql).toHaveBeenCalledWith(expect.any(String), 'hive');
+      expect(mockFormatSql).toHaveBeenCalledWith(expect.any(String), 'spark');
     });
 
-    expect((screen.getAllByTestId('monaco-textarea')[0] as HTMLTextAreaElement).value).toBe(
+    expect(screen.getByTestId('monaco-diff-original')).toHaveValue(
       'select\n  user_id\nfrom dwd_order_di',
     );
   });
@@ -185,8 +174,8 @@ describe('DialectConvertPage', () => {
   it('shows unsupported function line hints in the bottom status bar', async () => {
     mockConvertSql.mockResolvedValueOnce({
       status: 'partial',
-      source_dialect: 'starrocks',
-      target_dialect: 'hive',
+      source_dialect: 'spark',
+      target_dialect: 'starrocks',
       converted_sql: 'select\n  bitmap_count(to_bitmap(user_id)) as uv\nfrom dwd_order_di',
       elapsed_ms: 7,
       diagnostics: [
@@ -195,7 +184,7 @@ describe('DialectConvertPage', () => {
           level: 'warning',
           message: 'Line 3: function bitmap_count is not guaranteed to convert correctly.',
           location: { line: 3, col: 3 },
-          extra: { function: 'bitmap_count', target_dialect: 'hive' },
+          extra: { function: 'bitmap_count', target_dialect: 'starrocks' },
         },
       ],
     });
@@ -213,20 +202,39 @@ describe('DialectConvertPage', () => {
     render(<DialectConvertPage />);
 
     const selects = screen.getAllByRole('combobox');
-    expect((selects[0] as HTMLSelectElement).value).toBe('hive');
-    expect((selects[1] as HTMLSelectElement).value).toBe('spark');
+    expect((selects[0] as HTMLSelectElement).value).toBe('spark');
+    expect((selects[1] as HTMLSelectElement).value).toBe('starrocks');
 
     fireEvent.click(screen.getByText('Swap'));
 
-    expect((screen.getAllByRole('combobox')[0] as HTMLSelectElement).value).toBe('spark');
-    expect((screen.getAllByRole('combobox')[1] as HTMLSelectElement).value).toBe('hive');
+    expect((screen.getAllByRole('combobox')[0] as HTMLSelectElement).value).toBe('starrocks');
+    expect((screen.getAllByRole('combobox')[1] as HTMLSelectElement).value).toBe('spark');
   });
 
-  it('edits the target sql directly and shows diff overlay', async () => {
+  it('uses source edits from the unified diff editor for conversion', async () => {
+    mockConvertSql.mockResolvedValue({
+      status: 'success',
+      source_dialect: 'spark',
+      target_dialect: 'starrocks',
+      converted_sql: 'SELECT 1',
+      elapsed_ms: 6,
+      diagnostics: [],
+    });
+
+    render(<DialectConvertPage />);
+    fireEvent.change(screen.getByTestId('monaco-diff-original'), { target: { value: 'SELECT 42' } });
+    fireEvent.click(screen.getByText('Convert'));
+
+    await waitFor(() => {
+      expect(mockConvertSql).toHaveBeenCalledWith('SELECT 42', 'spark', 'starrocks');
+    });
+  });
+
+  it('edits the target sql directly in the unified diff editor', async () => {
     mockConvertSql.mockResolvedValueOnce({
       status: 'success',
-      source_dialect: 'hive',
-      target_dialect: 'spark',
+      source_dialect: 'spark',
+      target_dialect: 'starrocks',
       converted_sql: 'SELECT 1',
       elapsed_ms: 6,
       diagnostics: [],
@@ -236,99 +244,48 @@ describe('DialectConvertPage', () => {
     fireEvent.click(screen.getByText('Convert'));
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
+      expect(screen.getByTestId('monaco-diff-modified')).toHaveValue('SELECT 1');
     });
 
-    fireEvent.change(screen.getAllByTestId('monaco-textarea')[1], { target: { value: 'SELECT 2' } });
-
-    expect(screen.getByDisplayValue('SELECT 2')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText('Show Diff'));
-    expect(screen.getByTestId('monaco-diff-editor')).toBeInTheDocument();
-  });
-
-  it('edits the target sql in diff overlay and syncs to standalone editor', async () => {
-    mockConvertSql.mockResolvedValueOnce({
-      status: 'success',
-      source_dialect: 'hive',
-      target_dialect: 'spark',
-      converted_sql: 'SELECT 1',
-      elapsed_ms: 6,
-      diagnostics: [],
-    });
-
-    render(<DialectConvertPage />);
-    fireEvent.click(screen.getByText('Convert'));
-
-    await waitFor(() => {
-      expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText('Show Diff'));
     fireEvent.change(screen.getByTestId('monaco-diff-modified'), { target: { value: 'SELECT 2' } });
 
     await waitFor(() => {
-      expect(screen.getAllByDisplayValue('SELECT 2')).toHaveLength(2);
+      expect(screen.getByTestId('monaco-diff-modified')).toHaveValue('SELECT 2');
     });
-
-    fireEvent.click(screen.getByText('Hide Diff'));
-    expect(screen.getByDisplayValue('SELECT 2')).toBeInTheDocument();
   });
 
-  it('defaults edit target columns to equal width and supports resizing', () => {
-    const { container } = render(<DialectConvertPage />);
-
-    const workspace = container.querySelector('.convert-workspace') as HTMLElement;
-    expect(workspace.style.getPropertyValue('--convert-split')).toBe('50%');
-
-    const resizeButton = screen.getByLabelText('Resize source and target SQL editors');
-    fireEvent.keyDown(resizeButton, { key: 'ArrowRight' });
-
-    expect(workspace.style.getPropertyValue('--convert-split')).toBe('52%');
-  });
-
-  it('resizes edit target columns by dragging the splitter', () => {
-    const { container } = render(<DialectConvertPage />);
-
-    const workspace = container.querySelector('.convert-workspace') as HTMLElement;
-    Object.defineProperty(workspace, 'getBoundingClientRect', {
-      value: () => ({ width: 1000, height: 600, top: 0, left: 0, right: 1000, bottom: 600, x: 0, y: 0, toJSON: () => ({}) }),
-    });
-
-    const resizeButton = screen.getByLabelText('Resize source and target SQL editors');
-    fireEvent.pointerDown(resizeButton, { button: 0, pointerId: 1, clientX: 500 });
-    fireEvent.pointerMove(window, { pointerId: 1, clientX: 600 });
-    fireEvent.pointerUp(window, { pointerId: 1, clientX: 600 });
-
-    expect(workspace.style.getPropertyValue('--convert-split')).toBe('60%');
-  });
-
-  it('shows Copy Target button as clean after conversion and dirty after editing', async () => {
-    mockConvertSql.mockResolvedValueOnce({
+  it('shows Copy Target as ready after conversion and stale after either editor changes', async () => {
+    mockConvertSql.mockResolvedValue({
       status: 'success',
-      source_dialect: 'hive',
-      target_dialect: 'spark',
-      converted_sql: 'SELECT 1',
+      source_dialect: 'spark',
+      target_dialect: 'starrocks',
+      converted_sql: 'SELECT 1\r\nFROM target_table',
       elapsed_ms: 6,
       diagnostics: [],
     });
 
     render(<DialectConvertPage />);
     const copyButton = screen.getByText('Copy Target');
-    expect(copyButton.className).not.toContain('btn-copy-clean');
+    expect(copyButton.className).not.toContain('btn-copy-ready');
 
     fireEvent.click(screen.getByText('Convert'));
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('SELECT 1')).toBeInTheDocument();
+      expect(screen.getByTestId('monaco-diff-modified')).toHaveValue('SELECT 1\nFROM target_table');
     });
 
-    expect(copyButton.className).toContain('btn-copy-clean');
+    expect(copyButton.className).toContain('btn-copy-ready');
 
-    fireEvent.change(screen.getAllByTestId('monaco-textarea')[1], { target: { value: 'SELECT 2' } });
+    fireEvent.change(screen.getByTestId('monaco-diff-original'), { target: { value: 'SELECT 2' } });
 
     await waitFor(() => {
-      expect(copyButton.className).not.toContain('btn-copy-clean');
+      expect(copyButton.className).not.toContain('btn-copy-ready');
     });
+
+    fireEvent.click(screen.getByText('Convert'));
+    await waitFor(() => expect(copyButton.className).toContain('btn-copy-ready'));
+
+    fireEvent.change(screen.getByTestId('monaco-diff-modified'), { target: { value: 'SELECT 3' } });
+    await waitFor(() => expect(copyButton.className).not.toContain('btn-copy-ready'));
   });
 });

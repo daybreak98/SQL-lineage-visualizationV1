@@ -1,81 +1,201 @@
-# 架构债清单 — 孤立模块
+# 架构债与优化优先级
 
-> 来源：codegraph v1.0.1 索引（275 文件 / 3,203 节点 / 8,232 边）+ `codegraph callers` + grep import 双重验证。
-> 范围：主代码 `backend/app/`。
-> 日期：2026-06-18。
+> 范围：主代码 `backend/app/` 与 `frontend/src/`。
+> 初次审查：2026-06-18。P0 收口：2026-06-20。
 
-## 概述
+## 优先级定义
 
-在构建整体架构图（见 `docs/ARCHITECTURE.md`）时，通过 `codegraph callers <symbol>` 与 `grep "from app.services.<module> import"` 交叉验证，发现 `backend/app/services/` 下有 **3 个模块未接入运行时管线**。它们或是 placeholder、或是被内联重写后遗留、或是待接入未接入，均会增加新读者理解成本与误改风险。
-
-`backend/app/services/__init__.py` 为空文件（0 行），无 re-export，因此下表"被引用"情况反映的是真实显式 import。
-
-## 债项清单
-
-### 1. `lineage_rollup_service.py` — 显式 placeholder（低风险）
-
-| 项 | 内容 |
+| 优先级 | 判定标准 |
 |---|---|
-| 路径 | `backend/app/services/lineage_rollup_service.py` |
-| 规模 | 12 行，仅 1 个函数 `rollup_structure_edges` |
-| 孤立证据 | `grep "lineage_rollup_service" backend/` → **0 匹配**（无任何文件 import 此模块） |
-| 自述 | docstring 原文：*"Placeholder hook for later column-to-structure rollups. C05 only needs already-extracted structure edges. Keeping this tiny function makes the C05 file list explicit without pretending we have full rollup logic."* |
-| 性质 | **显式占位钩子**，C05 阶段故意留的文件占位，真正的 rollup 逻辑未实现 |
-| 实际替代 | CTE 列血缘 rollup 由 `cte_column_rollup_service.CteColumnRollupService` 承担（见 `analyze_controller.py:212`） |
-| 建议 | **删除或明确标注**。既然 rollup 已由 `cte_column_rollup_service` 实现，此 placeholder 已无对应"待实现"语义。若保留作历史标记，应在文件头加 `# DEPRECATED: superseded by cte_column_rollup_service` 并从 `services/` 移至 `docs/历史/` 或直接删除。优先级：低（不影响运行，仅是认知负担）。 |
+| P0 | 会产生错误血缘、错误契约或明显不一致的生产行为 |
+| P1 | 容易造成后续行为分叉、误改或较高维护成本 |
+| P2 | 主要影响认知成本、构建治理或长期可维护性 |
 
-### 2. `lateral_view_dependency_extractor.py` — 重复实现 + 孤立（中风险）
+## P0：已完成
 
-| 项 | 内容 |
-|---|---|
-| 路径 | `backend/app/services/lateral_view_dependency_extractor.py` |
-| 规模 | 76 行，2 个函数：`extract_lateral_view_dependencies`（AST 路径）+ `extract_lateral_view_dependencies_heuristic`（正则兜底） |
-| 孤立证据 | `grep "lateral_view_dependency_extractor" .`（全项目）→ **0 匹配**；`codegraph callers extract_lateral_view_dependencies` → 无调用者 |
-| 性质 | **完全孤立的独立模块，功能被内联重写** |
-| 实际替代 | `derived_relation_schema_builder.py:236` 自定义了 `_extract_lateral_view_dependencies`，并在 Line 270 用 `transform_type="lateral_view"` 标记，覆盖了同功能。`name_resolver.py:574` 把 `"lateral_view"` 列为 unsupported_feature。 |
-| 风险 | 同一 lateral view 提取逻辑存在两份实现，后续修 bug 或扩方言时容易只改一份，造成行为不一致。 |
-| 建议 | **二选一收口**。对比 `lateral_view_dependency_extractor.extract_lateral_view_dependencies` 与 `derived_relation_schema_builder._extract_lateral_view_dependencies` 的覆盖度与测试覆盖，保留更完整的一版，另一版删除或改为被调用方。若 `derived_relation_schema_builder` 的内联版已满足生产，则直接删除此孤立模块 + 其测试（若有）。优先级：中（重复实现是行为分叉的高发源头）。 |
+### Lateral View 列依赖收口
 
-### 3. `graph_port_order_optimizer.py` — 待接入未接入（中风险）
+**原问题**
 
-| 项 | 内容 |
-|---|---|
-| 路径 | `backend/app/services/graph_port_order_optimizer.py` |
-| 规模 | 41 行，`PortOrderOptimizer` 类，含 `optimize` + `optimize_from_edges` 两个方法 |
-| 孤立证据 | `grep "graph_port_order_optimizer" backend/` → **仅 1 匹配**：`backend/tests/test_graph_port_order_optimizer.py:2`；`backend/app/` 内零 import；`codegraph callers graph_port_order_optimizer` → 仅测试文件 |
-| 性质 | **有完整实现且单测覆盖，但未接入主管线** |
-| 实际替代 | `graph_layout_planner.GraphLayoutPlanner` 内部用私有方法 `_assign_port_orders` 处理端口顺序（`graph_layout_planner.py` 未 import `PortOrderOptimizer`） |
-| 风险 | 一个带单测的优化器躺在 services 里却不被用，新读者会以为端口顺序走的是这个优化器，误改 `_assign_port_orders` 时不知道还有个"正牌"实现；或反过来，误以为 `PortOrderOptimizer` 在生效而放松对 `_assign_port_orders` 的测试。 |
-| 建议 | **确认是否应接入**。对比 `PortOrderOptimizer.optimize_from_edges` 与 `graph_layout_planner._assign_port_orders` 的算法差异与效果。若 `PortOrderOptimizer` 更优，应接入 `graph_layout_planner` 并删除 `_assign_port_orders`；若 `_assign_port_orders` 已够用，则删除 `graph_port_order_optimizer.py` 及其测试，避免"双实现"困惑。优先级：中（带测试的死代码比无测试的死代码更误导）。 |
+- `lateral_view_dependency_extractor.py` 未被生产代码调用。
+- `derived_relation_schema_builder.py` 内存在两套私有处理逻辑。
+- `amount_item` 会被错误解析成 `ods_order_log.amount_item`，而不是
+  `ods_order_log.refund_amount`。
 
-## 验证命令（可复现）
+**处理结果**
 
-```powershell
-# 在项目根目录执行
+- `lateral_view_dependency_extractor.extract_lateral_view_dependencies` 成为唯一
+  AST 提取入口。
+- 提取器读取 SQLGlot `Lateral.alias.columns`，建立输出列到行展开表达式输入列的映射。
+- `derived_relation_schema_builder` 使用现有 scope 将表别名解析成真实关系名，并以
+  Lateral View 映射覆盖通用解析器产生的错误同名投影。
+- `TransformType` 增加 `lateral_view`。
+- 保留复杂 SQL 守卫的 defensive diagnostics、`unsupported_features` 和既有状态判定
+  策略；当前修复不代表所有 Lateral View 方言和函数均已完全支持。
 
-# 1. lineage_rollup_service — 期望 0 匹配
-Get-ChildItem -Path backend -Recurse -Filter *.py | Select-String -Pattern "lineage_rollup_service" -SimpleMatch
+**回归契约**
 
-# 2. lateral_view_dependency_extractor — 期望仅自身文件 + 0 import
-Get-ChildItem -Path . -Recurse -Filter *.py | Select-String -Pattern "lateral_view_dependency_extractor" -SimpleMatch
+```text
+LATERAL VIEW explode(split(b.refund_amount, ',')) e AS amount_item
 
-# 3. graph_port_order_optimizer — 期望仅测试文件
-Get-ChildItem -Path backend -Recurse -Filter *.py | Select-String -Pattern "graph_port_order_optimizer" -SimpleMatch
-
-# 用 codegraph callers（需先 codegraph init）
-codegraph callers graph_port_order_optimizer
-codegraph callers extract_lateral_view_dependencies
-codegraph callers rollup_structure_edges
+amount_item -> ods_order_log.refund_amount
 ```
 
-## 处理优先级
+测试：
 
-| 顺序 | 债项 | 优先级 | 理由 |
-|---|---|---|---|
-| 1 | `lateral_view_dependency_extractor` | 中 | 重复实现，行为分叉风险最高 |
-| 2 | `graph_port_order_optimizer` | 中 | 带测试的死代码，误导性最强 |
-| 3 | `lineage_rollup_service` | 低 | 显式 placeholder，风险最低但认知负担明显 |
+- `backend/tests/test_lateral_view_dependency_extractor.py`
+- `backend/tests/test_derived_relation_schema_builder.py`
+- `backend/tests/integration/test_analyze_api_complex_sql_guard.py`
 
-## 关联文档
+### 删除失效的 rollup placeholder
 
-- `docs/ARCHITECTURE.md` — 整体架构图，§6 模块清单已标注这 3 个模块的孤立状态
+`backend/app/services/lineage_rollup_service.py` 无运行时或测试调用者，且真实 CTE
+列血缘展开已由 `cte_column_rollup_service.CteColumnRollupService` 承担。该文件已删除。
+
+## P1：待处理
+
+### 方言转换尽量保持源 SQL 结构
+
+**现状**
+
+`POST /api/sql/convert` 使用：
+
+```python
+sqlglot.transpile(
+    source_sql,
+    read=source_dialect,
+    write=target_dialect,
+    pretty=True,
+)
+```
+
+SQLGlot 会先将 SQL 解析为 AST，再按目标方言重新生成完整 SQL。这样可以保证目标语法
+正确，但会统一重排缩进、换行、CTE、投影字段和各个子句。即使真正变化的只有一个函数，
+Diff 也可能显示大量纯格式差异。
+
+`pretty=False` 不能解决问题，因为目标 SQL 会被压缩成单行。
+
+当前已有 `_minimize_diff_noise` 和 `_restore_source_word_case`，能够处理无语义变化时保留
+原文以及部分关键字大小写恢复，但不能恢复整体结构。
+
+**目标**
+
+在继续由 SQLGlot 负责目标方言语义正确性的前提下，让转换结果尽量沿用源 SQL 的：
+
+- 关键字大小写。
+- 缩进宽度。
+- SELECT 字段换行方式。
+- 逗号前置或后置风格。
+- `WHERE`、`GROUP BY`、`ORDER BY` 的换行方式。
+- CTE 括号、空行和分号习惯。
+
+用户查看 Diff 时，应优先看到函数、类型和语法结构的真实转换，而不是格式化噪音。
+
+**推荐实施方案：源格式驱动的目标渲染**
+
+1. 从源 SQL 提取 `SqlFormatProfile`：
+   - 关键字大小写风格。
+   - 缩进字符和宽度。
+   - SELECT 投影是否逐行。
+   - 逗号位置。
+   - 子句与条件的换行策略。
+   - CTE 和多语句分隔策略。
+2. 使用 SQLGlot 完成源方言到目标方言的 AST 转换。
+3. 按 SELECT、CTE、投影字段和主要子句对源/目标 AST 节点进行结构配对。
+4. 使用目标 AST 的语义内容和源 SQL 的格式配置重新生成目标 SQL。
+5. 无法可靠配对时回退到 SQLGlot `pretty=True`，并返回格式保持等级。
+
+建议后端响应增加：
+
+```text
+format_preservation: high | medium | low
+structural_changes: string[]
+```
+
+**分阶段实施**
+
+| 阶段 | 内容 | 预期效果 |
+|---|---|---|
+| 1 | 格式特征提取和恢复 | 保留约 80% 的缩进、字段换行、子句布局与大小写 |
+| 2 | 源/目标 AST 节点结构对齐 | 转换后的表达式保持在原字段和原子句位置 |
+| 3 | 基于源码区间的局部补丁 | 仅替换发生变化的源码片段，其他字符保持不变 |
+
+阶段 1 为当前推荐范围。阶段 3 虽然视觉效果最好，但注释、模板变量、嵌套函数和一对多
+语法转换会显著增加错误风险，暂不建议实施。
+
+**前端配合**
+
+- 保留左右两侧独立的 Format 按钮。
+- 默认转换采用“保持源结构”策略。
+- DiffEditor 可启用忽略纯空白差异作为额外降噪，但不能替代后端结构保持。
+- 格式保持等级较低时，在状态栏提示用户目标 SQL 已进行结构重排。
+
+**验收标准**
+
+- 仅发生函数替换时，未变化的 SELECT 字段和主要子句保持原行位置。
+- `WHERE`、`GROUP BY`、`ORDER BY` 不因转换被无意义拆行。
+- CTE 数量和顺序不变时，保持原 CTE 布局。
+- 转换结果仍能被目标方言重新解析。
+- 格式恢复失败时必须安全回退，不能影响 SQL 转换正确性。
+- 建立 Spark → StarRocks、Hive → Spark 的格式保持 golden cases。
+
+### 字段级端口排序的数据契约未接通
+
+`graph_port_order_optimizer.PortOrderOptimizer` 与
+`graph_layout_planner._assign_port_orders` 并非重复实现：
+
+- `PortOrderOptimizer` 排列 `LayoutNode.field_order`，目标是节点内部字段顺序。
+- `_assign_port_orders` 排列边的 `source_port_order` / `target_port_order`。
+
+当前真正问题是主管线没有向 `LayoutNode.fields` 和 `LayoutEdge.data[source_field]`
+传入字段信息，因此 `PortOrderOptimizer` 无法有效接入。
+
+建议：
+
+1. 先定义后端图布局字段端口契约。
+2. 让 column lineage edge 携带 `source_field` / `target_field`。
+3. 接入字段排序并增加交叉线数量回归测试。
+4. 若后端布局最终不负责字段行排序，则删除该优化器及其独立测试。
+
+### Lateral View 支持范围扩展
+
+当前仅保证 SQLGlot 能正常解析的 AST 路径，并继续返回 defensive diagnostics。
+后续需要针对以下形式分别增加 golden cases：
+
+- `posexplode` 多输出列。
+- `inline` 多字段输出。
+- 多级 Lateral View 链。
+- 输入表达式引用多个字段。
+- 无表限定符字段与多表歧义。
+
+## P2：待处理
+
+### 大文件职责拆分
+
+| 文件 | 当前规模 | 建议边界 |
+|---|---:|---|
+| `backend/app/api/analyze_controller.py` | 约 537 行 | API handler、分析编排、结果装配 |
+| `frontend/src/components/LineageCanvas.tsx` | 约 561 行 | 路径选择、视口交互、SVG 渲染 |
+| `frontend/src/graphPipeline.ts` | 约 703 行 | 后端归一化、视图投影、布局适配 |
+| `frontend/src/pages/DialectConvertPage.tsx` | 约 480 行 | 页面状态、编辑器、转换结果展示 |
+
+拆分应以新增行为或回归修复为契机，不做无测试保护的大规模机械移动。
+
+### 工程配置治理
+
+- `frontend/package.json` 中 `test` 与 `test:watch` 重复定义。
+- 多个核心依赖使用 `latest`，构建结果不可稳定复现。
+- 后端 CORS 使用 `allow_origins=["*"]`，需要按开发/生产环境配置。
+
+## 可复现检查
+
+```powershell
+# 确认旧 placeholder 已删除且无引用
+rg "lineage_rollup_service|rollup_structure_edges" backend
+
+# 确认 Lateral View 仅保留一个 AST 提取入口
+rg "def .*lateral|extract_lateral_view_dependencies" backend/app/services
+
+# 确认字段端口优化器仍仅由测试直接引用
+rg "PortOrderOptimizer|graph_port_order_optimizer" backend
+```

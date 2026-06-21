@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import Editor, { DiffEditor } from '@monaco-editor/react';
+import { useMemo, useRef, useState } from 'react';
+import { DiffEditor } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import { convertSql, formatSql } from '../api/client';
 import type { BackendDiagnostic } from '../types/lineage';
@@ -57,13 +57,16 @@ function normalizeDiagnostics(diagnostics: BackendDiagnostic[]) {
   }));
 }
 
+function editorTextMatches(left: string, right: string) {
+  return left.replace(/\r\n?/g, '\n') === right.replace(/\r\n?/g, '\n');
+}
+
 export function DialectConvertPage() {
-  const [sourceDialect, setSourceDialect] = useState<Dialect>('hive');
-  const [targetDialect, setTargetDialect] = useState<Dialect>('spark');
-  const [sourceSql, setSourceSql] = useState(exampleSqlByDialect.hive);
+  const [sourceDialect, setSourceDialect] = useState<Dialect>('spark');
+  const [targetDialect, setTargetDialect] = useState<Dialect>('starrocks');
+  const [sourceSql, setSourceSql] = useState(exampleSqlByDialect.spark);
   const [targetSql, setTargetSql] = useState('');
   const [convertStatus, setConvertStatus] = useState<ConvertStatus>('idle');
-  const [showDiff, setShowDiff] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Array<{
     id: string;
     code: string;
@@ -74,30 +77,24 @@ export function DialectConvertPage() {
   }>>([]);
   const [backendMessage, setBackendMessage] = useState('Ready to convert SQL between Hive, Spark, and StarRocks.');
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
-  const [isTargetDirty, setIsTargetDirty] = useState(false);
-  const [editSplit, setEditSplit] = useState(50);
-  const [splitDragging, setSplitDragging] = useState(false);
-  const workspaceRef = useRef<HTMLDivElement | null>(null);
-  const splitDragRef = useRef({ pointerId: -1, x: 0, split: 50 });
-  const splitDraggingRef = useRef(false);
+  const [conversionFresh, setConversionFresh] = useState(false);
+  const sourceSqlRef = useRef(sourceSql);
+  const targetSqlRef = useRef(targetSql);
   const sourceDialectRef = useRef(sourceDialect);
   const targetDialectRef = useRef(targetDialect);
   sourceDialectRef.current = sourceDialect;
   targetDialectRef.current = targetDialect;
 
-  const clampEditSplit = (value: number) => Math.max(30, Math.min(70, value));
-
-  const updateEditSplitFromPointer = (clientX: number) => {
-    const bounds = workspaceRef.current?.getBoundingClientRect();
-    const width = Math.max(bounds?.width ?? window.innerWidth, 1);
-    const next = splitDragRef.current.split + ((clientX - splitDragRef.current.x) / width) * 100;
-    setEditSplit(clampEditSplit(next));
+  const updateSourceSql = (value: string, markStale = true) => {
+    sourceSqlRef.current = value;
+    setSourceSql(value);
+    if (markStale) setConversionFresh(false);
   };
 
-  const stopSplitDrag = () => {
-    splitDragRef.current.pointerId = -1;
-    splitDraggingRef.current = false;
-    setSplitDragging(false);
+  const updateTargetSql = (value: string, markStale = true) => {
+    targetSqlRef.current = value;
+    setTargetSql(value);
+    if (markStale) setConversionFresh(false);
   };
 
   const statusBadgeClass = useMemo(() => {
@@ -128,46 +125,24 @@ export function DialectConvertPage() {
       ? backendMessage
       : `${backendMessage} No diagnostics. Convert the SQL to inspect compatibility notes and errors.`);
 
-  useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      if (!splitDraggingRef.current) return;
-      if (splitDragRef.current.pointerId !== -1 && event.pointerId !== splitDragRef.current.pointerId) return;
-      updateEditSplitFromPointer(event.clientX);
-    };
-
-    const onUp = (event: PointerEvent) => {
-      if (!splitDraggingRef.current) return;
-      if (splitDragRef.current.pointerId !== -1 && event.pointerId !== splitDragRef.current.pointerId) return;
-      stopSplitDrag();
-    };
-
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-    };
-  }, []);
-
   const onConvert = async () => {
     if (!sourceSql.trim()) return;
     setConvertStatus('running');
     setBackendMessage(`Converting ${sourceDialect} -> ${targetDialect}...`);
     try {
       const response = await convertSql(sourceSql, sourceDialect, targetDialect);
-      setTargetSql(response.converted_sql || '');
+      updateTargetSql(response.converted_sql || '', false);
       setConvertStatus(response.status);
       setDiagnostics(normalizeDiagnostics(response.diagnostics));
       setElapsedMs(response.elapsed_ms);
-      setIsTargetDirty(false);
+      setConversionFresh(Boolean(response.converted_sql?.trim()));
       setBackendMessage(`${response.source_dialect} -> ${response.target_dialect} conversion completed.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Convert request failed';
       setConvertStatus('failed');
       setDiagnostics([{ id: 'convert-error', code: 'CONVERT_API_ERROR', level: 'error', message }]);
       setElapsedMs(null);
+      setConversionFresh(false);
       setBackendMessage(message);
     }
   };
@@ -177,7 +152,7 @@ export function DialectConvertPage() {
     try {
       const response = await formatSql(sourceSql, sourceDialect);
       if (response.formatted_sql) {
-        setSourceSql(response.formatted_sql);
+        updateSourceSql(response.formatted_sql);
         setBackendMessage(`Formatted source SQL as ${response.dialect}.`);
       }
     } catch (error) {
@@ -191,8 +166,7 @@ export function DialectConvertPage() {
     try {
       const response = await formatSql(targetSql, targetDialect);
       if (response.formatted_sql) {
-        setTargetSql(response.formatted_sql);
-        setIsTargetDirty(true);
+        updateTargetSql(response.formatted_sql);
         setBackendMessage(`Formatted target SQL as ${response.dialect}.`);
       }
     } catch (error) {
@@ -202,11 +176,12 @@ export function DialectConvertPage() {
   };
 
   const onSwap = () => {
+    const nextSourceSql = targetSql || exampleSqlByDialect[targetDialect];
+    const nextTargetSql = sourceSql;
     setSourceDialect(targetDialect);
     setTargetDialect(sourceDialect);
-    setSourceSql(targetSql || exampleSqlByDialect[targetDialect]);
-    setTargetSql(sourceSql);
-    setIsTargetDirty(false);
+    updateSourceSql(nextSourceSql);
+    updateTargetSql(nextTargetSql);
     setDiagnostics([]);
     setConvertStatus('idle');
     setElapsedMs(null);
@@ -224,22 +199,20 @@ export function DialectConvertPage() {
   };
 
   const onLoadExample = () => {
-    setSourceSql(exampleSqlByDialect[sourceDialect]);
-    setTargetSql('');
+    updateSourceSql(exampleSqlByDialect[sourceDialect]);
+    updateTargetSql('');
     setDiagnostics([]);
     setConvertStatus('idle');
     setElapsedMs(null);
-    setIsTargetDirty(false);
     setBackendMessage(`Loaded ${sourceDialect} example SQL.`);
   };
 
   const onClear = () => {
-    setSourceSql('');
-    setTargetSql('');
+    updateSourceSql('');
+    updateTargetSql('');
     setDiagnostics([]);
     setConvertStatus('idle');
     setElapsedMs(null);
-    setIsTargetDirty(false);
     setBackendMessage('Cleared both editors.');
   };
 
@@ -254,20 +227,27 @@ export function DialectConvertPage() {
     suggest: { showKeywords: true, showSnippets: false },
   };
 
-  const bindStandaloneEditor = (editor: MonacoEditor.IStandaloneCodeEditor, monaco: any, getDialect: () => string) => {
-    registerSqlLanguageProviders(monaco);
-    const model = editor.getModel();
-    bindModelDialect(model, getDialect);
-    editor.onDidDispose(() => unbindModelDialect(model));
-  };
-
   const bindDiffEditors = (editor: MonacoEditor.IStandaloneDiffEditor, monaco: any) => {
     registerSqlLanguageProviders(monaco);
     const originalModel = editor.getOriginalEditor().getModel();
     const modifiedModel = editor.getModifiedEditor().getModel();
     bindModelDialect(originalModel, () => sourceDialectRef.current);
     bindModelDialect(modifiedModel, () => targetDialectRef.current);
+    const originalEditor = editor.getOriginalEditor();
+    const modifiedEditor = editor.getModifiedEditor();
+    const originalChange = originalEditor.onDidChangeModelContent(() => {
+      const value = originalEditor.getValue();
+      if (editorTextMatches(value, sourceSqlRef.current)) return;
+      updateSourceSql(value);
+    });
+    const modifiedChange = modifiedEditor.onDidChangeModelContent(() => {
+      const value = modifiedEditor.getValue();
+      if (editorTextMatches(value, targetSqlRef.current)) return;
+      updateTargetSql(value);
+    });
     editor.onDidDispose(() => {
+      originalChange.dispose();
+      modifiedChange.dispose();
       unbindModelDialect(originalModel);
       unbindModelDialect(modifiedModel);
     });
@@ -279,7 +259,10 @@ export function DialectConvertPage() {
         <div className="convert-group">
           <label className="convert-label">
             <span>Source</span>
-            <select className="select" value={sourceDialect} onChange={(event) => setSourceDialect(event.target.value as Dialect)}>
+            <select className="select" value={sourceDialect} onChange={(event) => {
+              setSourceDialect(event.target.value as Dialect);
+              setConversionFresh(false);
+            }}>
               <option value="hive">Hive</option>
               <option value="spark">Spark</option>
               <option value="starrocks">StarRocks</option>
@@ -287,7 +270,10 @@ export function DialectConvertPage() {
           </label>
           <label className="convert-label">
             <span>Target</span>
-            <select className="select" value={targetDialect} onChange={(event) => setTargetDialect(event.target.value as Dialect)}>
+            <select className="select" value={targetDialect} onChange={(event) => {
+              setTargetDialect(event.target.value as Dialect);
+              setConversionFresh(false);
+            }}>
               <option value="hive">Hive</option>
               <option value="spark">Spark</option>
               <option value="starrocks">StarRocks</option>
@@ -296,11 +282,7 @@ export function DialectConvertPage() {
           <button className="btn" onClick={onSwap}>Swap</button>
         </div>
         <div className="convert-group">
-          <button className={`tool-btn ${showDiff ? 'active' : ''}`} onClick={() => setShowDiff((value) => !value)}>
-            {showDiff ? 'Hide Diff' : 'Show Diff'}
-          </button>
           <button className="tool-btn" onClick={onLoadExample}>Example</button>
-          <button className="tool-btn" onClick={onFormatSource} disabled={!sourceSql.trim()}>Format Source</button>
           <button className="tool-btn" onClick={onClear}>Clear</button>
           <button className="btn-primary" onClick={onConvert} disabled={!sourceSql.trim() || convertStatus === 'running'}>
             {convertStatus === 'running' ? 'Converting...' : 'Convert'}
@@ -308,152 +290,54 @@ export function DialectConvertPage() {
         </div>
       </div>
 
-      <div
-        ref={workspaceRef}
-        className={`convert-workspace ${showDiff ? 'diff-active' : ''}`}
-        style={{ ['--convert-split' as string]: `${editSplit}%`, position: 'relative' }}
-      >
-        <section className="editor convert-source">
-          <div className="panel-head">
-            <div><b>Source SQL</b><span className="badge">{sourceDialect}</span></div>
-            <button className="tool-btn" onClick={onFormatSource}>Format</button>
-          </div>
-          <div className="editor-body">
-            <Editor
-              height="100%"
-              language="sql"
-              theme="vs"
-              value={sourceSql}
-              onChange={(value) => setSourceSql(value || '')}
-              onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => sourceDialectRef.current)}
-              options={editorOptions}
-            />
-          </div>
-          <div className="editor-foot">
-            <span>{sourceDialect} source editor</span>
-            <span>{sourceSql.split('\n').length} lines</span>
-          </div>
-        </section>
-
-        <div className={`convert-splitter-zone ${showDiff ? 'hidden' : ''}`}>
-          {splitDragging && <div className="overlay show" />}
-          <button
-            type="button"
-            className={`splitter ${splitDragging ? 'dragging' : ''}`}
-            aria-label="Resize source and target SQL editors"
-            onPointerDown={(event) => {
-              if (event.button !== 0) return;
-              event.preventDefault();
-              if (typeof event.currentTarget.setPointerCapture === 'function') {
-                event.currentTarget.setPointerCapture(event.pointerId);
-              }
-              splitDragRef.current = { pointerId: event.pointerId, x: event.clientX, split: editSplit };
-              splitDraggingRef.current = true;
-              setSplitDragging(true);
-            }}
-            onPointerUp={(event) => {
-              if (typeof event.currentTarget.hasPointerCapture === 'function'
-                && typeof event.currentTarget.releasePointerCapture === 'function'
-                && event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-              stopSplitDrag();
-            }}
-            onPointerCancel={(event) => {
-              if (typeof event.currentTarget.hasPointerCapture === 'function'
-                && typeof event.currentTarget.releasePointerCapture === 'function'
-                && event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-              stopSplitDrag();
-            }}
-            onLostPointerCapture={stopSplitDrag}
-            onDoubleClick={() => setEditSplit(50)}
-            onKeyDown={(event) => {
-              if (event.key === 'ArrowLeft') setEditSplit((value) => clampEditSplit(value - 2));
-              if (event.key === 'ArrowRight') setEditSplit((value) => clampEditSplit(value + 2));
-            }}
-          >
-            <span className="splitter-line" />
-          </button>
-          <div className={`split-tooltip ${splitDragging ? 'show' : ''}`}>
-            Source {Math.round(editSplit)}% / Target {Math.round(100 - editSplit)}%
-          </div>
-        </div>
-
-        <section className="convert-target-panel">
-          <div className="panel-head">
-            <div>
-              <b>Target SQL</b>
-              <span className="badge">{targetDialect}</span>
-              {isTargetDirty && <span className="badge">modified</span>}
+      <div className="convert-workspace">
+        <section className="convert-compare-panel">
+          <div className="convert-diff-head">
+            <div className="convert-diff-head-side convert-diff-head-source">
+              <div>
+                <b>Source SQL</b>
+                <span className="badge">{sourceDialect}</span>
+              </div>
+              <button className="tool-btn" onClick={onFormatSource} disabled={!sourceSql.trim()}>Format</button>
             </div>
-            <div className="convert-head-actions">
+            <div className="convert-diff-head-side convert-diff-head-target">
+              <div>
+                <b>Target SQL</b>
+                <span className="badge">{targetDialect}</span>
+              </div>
+              <div className="convert-head-actions">
               <button
-                className={`btn-copy ${!isTargetDirty && targetSql.trim() ? 'btn-copy-clean' : ''}`}
+                className={`btn-copy ${conversionFresh ? 'btn-copy-ready' : ''}`}
                 onClick={onCopyTarget}
                 disabled={!targetSql.trim()}
               >
                 Copy Target
               </button>
               <button className="tool-btn" onClick={onFormatTarget} disabled={!targetSql.trim()}>Format</button>
+              </div>
             </div>
           </div>
           <div className="editor-body">
-            <Editor
+            <DiffEditor
               height="100%"
               language="sql"
               theme="vs"
-              value={targetSql}
-              onChange={(value) => {
-                setTargetSql(value || '');
-                setIsTargetDirty(true);
+              original={sourceSql}
+              modified={targetSql}
+              onMount={bindDiffEditors}
+              options={{
+                readOnly: false,
+                originalEditable: true,
+                renderSideBySide: true,
+                ...editorOptions,
               }}
-              onMount={(editor, monaco) => bindStandaloneEditor(editor, monaco, () => targetDialectRef.current)}
-              options={editorOptions}
             />
           </div>
-          <div className="editor-foot">
-            <span>{targetDialect} target editor</span>
-            <span>{targetSql.split('\n').length} lines</span>
+          <div className="convert-diff-foot">
+            <span>{sourceSql.split('\n').length} source lines</span>
+            <span>{targetSql.split('\n').length} target lines</span>
           </div>
         </section>
-
-        {showDiff && (
-          <div className="diff-overlay">
-            <div className="diff-overlay-head">
-              <div>
-                <b>Diff Preview</b>
-                <span className="badge">{sourceDialect}</span>
-                <span className="badge">{targetDialect}</span>
-              </div>
-              <button className="btn" onClick={() => setShowDiff(false)}>Close Diff</button>
-            </div>
-            <div className="diff-overlay-body">
-              <DiffEditor
-                height="100%"
-                language="sql"
-                theme="vs"
-                original={sourceSql}
-                modified={targetSql}
-                onMount={(editor, monaco) => {
-                  bindDiffEditors(editor, monaco);
-                  const modifiedEditor = editor.getModifiedEditor();
-                  modifiedEditor.onDidChangeModelContent(() => {
-                    setTargetSql(modifiedEditor.getValue());
-                    setIsTargetDirty(true);
-                  });
-                }}
-                options={{
-                  readOnly: false,
-                  originalEditable: false,
-                  renderSideBySide: true,
-                  ...editorOptions,
-                }}
-              />
-            </div>
-          </div>
-        )}
       </div>
 
       <section className={`convert-status-panel ${showDiagnosticsPanel ? '' : 'compact'}`}>

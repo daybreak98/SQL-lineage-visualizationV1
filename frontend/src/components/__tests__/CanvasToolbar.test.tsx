@@ -69,4 +69,41 @@ describe('CanvasToolbar', () => {
     expect(container.querySelector('.tool-right .view-toggle')).toBeInTheDocument();
     expect(container.querySelector('.flex.items-center.gap-2')).not.toBeInTheDocument();
   });
+
+  it('keeps mature lineage views visible and moves experimental views into a select', () => {
+    const setState = vi.fn();
+    render(<CanvasToolbar state={baseState()} setState={setState} onTransition={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Subquery' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Table' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Column' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Semantics' })).toBeNull();
+
+    const experimental = screen.getByLabelText('Experimental lineage view');
+    expect(experimental).toHaveValue('');
+
+    fireEvent.change(experimental, { target: { value: 'semantics' } });
+
+    const updater = setState.mock.calls[0][0] as (state: WorkbenchState) => WorkbenchState;
+    expect(updater(baseState()).graphViewMode).toBe('semantics');
+  });
+
+  it('shows the active experimental view in the select', () => {
+    render(
+      <CanvasToolbar
+        state={baseState({ graphViewMode: 'diagnostics' })}
+        setState={vi.fn()}
+        onTransition={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('Experimental lineage view')).toHaveValue('diagnostics');
+  });
+
+  it('does not expose a duplicate diagnostics drawer button beside Focus', () => {
+    render(<CanvasToolbar state={baseState()} setState={vi.fn()} onTransition={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: 'Diag' })).toBeNull();
+    expect(screen.getByLabelText('Experimental lineage view')).toBeInTheDocument();
+  });
 });

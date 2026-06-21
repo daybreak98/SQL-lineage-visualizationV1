@@ -194,6 +194,30 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     }
     return ids;
   }, [current, downstreamImpact.edgeIds, graph.edges, graph.nodes, selectedEdges, state.selectedEntity]);
+  const upstreamColumnEntityIds = useMemo(() => {
+    if (!isColumnEntitySelection(graph.nodes, state.selectedEntity)) return new Set<string>();
+    const ids = new Set<string>();
+    for (const edge of graph.edges) {
+      if (!selectedEdges.has(edge.id)) continue;
+      const [source, target] = edgeEndpointEntityIds(edge);
+      ids.add(source);
+      ids.add(target);
+    }
+    if (state.selectedEntity) ids.delete(state.selectedEntity);
+    return ids;
+  }, [graph.edges, graph.nodes, selectedEdges, state.selectedEntity]);
+  const downstreamColumnEntityIds = useMemo(() => {
+    if (!isColumnEntitySelection(graph.nodes, state.selectedEntity)) return new Set<string>();
+    const ids = new Set<string>();
+    for (const edge of graph.edges) {
+      if (!downstreamImpact.edgeIds.has(edge.id)) continue;
+      const [source, target] = edgeEndpointEntityIds(edge);
+      ids.add(source);
+      ids.add(target);
+    }
+    if (state.selectedEntity) ids.delete(state.selectedEntity);
+    return ids;
+  }, [downstreamImpact.edgeIds, graph.edges, graph.nodes, state.selectedEntity]);
   const hasActiveSelection = hasRealEntitySelection(state);
   const columnSelectionActive = isColumnEntitySelection(graph.nodes, state.selectedEntity);
   const [drag, setDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
@@ -476,6 +500,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
             <defs>
               <marker id="arrowDefault" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#94A3B8" /></marker>
               <marker id="arrowPrimary" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#2563EB" /></marker>
+              <marker id="arrowDownstream" markerWidth="6.3" markerHeight="6.3" refX="5.6" refY="2.1" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,4.2 L5.6,2.1 z" fill="#F59E0B" /></marker>
             </defs>
             {(() => {
               const ports = buildPortIndexes(graph, positions);
@@ -494,7 +519,11 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                 const isRelated = isSelectedEdge || isUpstreamEdge || isDownstreamImpactEdge || edgeTouchesEntity(edge, state.selectedEntity) || (!columnSelectionActive && selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target));
                 const dimmed = hasActiveSelection && !isRelated;
                 const isViewHighlighted = highlights.highlightedEdgeIds.has(edge.id);
-                const markerEnd = (isCurrent || isSelectedEdge || isUpstreamEdge) ? 'url(#arrowPrimary)' : 'url(#arrowDefault)';
+                const markerEnd = isDownstreamImpactEdge
+                  ? 'url(#arrowDownstream)'
+                  : (isCurrent || isSelectedEdge || isUpstreamEdge)
+                    ? 'url(#arrowPrimary)'
+                    : 'url(#arrowDefault)';
                 return (
                   <g key={edge.id} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => {
                     event.stopPropagation();
@@ -502,7 +531,7 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                     setState((s) => selectEdgeMapping(s, targetEntity, edge.mapping || null));
                   }}>
                     <path className="edge-hit" d={edgePath} />
-                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', (isSelectedEdge || isUpstreamEdge) && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
+                    <path className={cx('edge', edge.type, isCurrent && 'current', dimmed && 'dimmed', isViewHighlighted && 'view-highlight', (isSelectedEdge || isUpstreamEdge) && 'edge-selected', isDownstreamImpactEdge && 'downstream-impact', edge.synthetic && state.graphViewMode !== 'table' && 'synthetic')} d={edgePath} markerEnd={markerEnd} />
                   </g>
                 );
               });
@@ -529,10 +558,12 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
                     selectedEntityId={state.selectedEntity}
                     currentEntityIds={current}
                     activeColumnEntityIds={columnPathEntityIds}
+                    upstreamColumnEntityIds={upstreamColumnEntityIds}
+                    downstreamColumnEntityIds={downstreamColumnEntityIds}
                     dimmed={dimmed}
                     warning={warning}
                     dragging={drag?.id === node.id}
-                    downstreamImpact={isDownstreamImpactNode}
+                    downstreamImpact={columnSelectionActive ? false : isDownstreamImpactNode}
                     stale={state.trustStatus === 'stale'}
                     viewHighlighted={isViewHighlighted}
                     onSelectRelation={(entityId) => setState((s) => selectNodeEntity(s, entityId))}

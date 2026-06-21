@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.middleware.local_delivery import MAX_SQL_CHARS
+
 
 # ─── 请求体 ────────────────────────────────────────────────────────
 
@@ -16,7 +18,7 @@ class AnalysisOptions(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    sql: str
+    sql: str = Field(max_length=MAX_SQL_CHARS)
     dialect: str = "spark"
     analysis_level: str = "column"
     default_catalog: str = "default"
@@ -28,7 +30,7 @@ class AnalyzeRequest(BaseModel):
 
 
 class FormatSqlRequest(BaseModel):
-    sql: str
+    sql: str = Field(max_length=MAX_SQL_CHARS)
     dialect: str = "spark"
 
 
@@ -40,7 +42,7 @@ class FormatSqlResponse(BaseModel):
 
 
 class ConvertSqlRequest(BaseModel):
-    sql: str
+    sql: str = Field(max_length=MAX_SQL_CHARS)
     source_dialect: str = "spark"
     target_dialect: str = "spark"
     pretty: bool = True

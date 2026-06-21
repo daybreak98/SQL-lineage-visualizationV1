@@ -125,7 +125,11 @@ describe('LineageCanvas', () => {
     expect(selectedNode).not.toHaveAttribute('data-downstream-impact');
     expect(downstreamNode).toHaveAttribute('data-downstream-impact', 'true');
     expect(unrelatedSourceNode).not.toHaveAttribute('data-downstream-impact');
-    expect(container.querySelectorAll('path.edge.downstream-impact')).toHaveLength(4);
+    const downstreamEdges = container.querySelectorAll('path.edge.downstream-impact');
+    expect(downstreamEdges).toHaveLength(4);
+    downstreamEdges.forEach((edge) => {
+      expect(edge).toHaveAttribute('marker-end', 'url(#arrowDownstream)');
+    });
   });
 
   it('highlights compressed upstream table edges when output is selected in table view', () => {
@@ -134,6 +138,22 @@ describe('LineageCanvas', () => {
     const { container } = render(<LineageCanvas state={state} setState={setState} />);
 
     expect(container.querySelectorAll('path.edge.edge-selected')).toHaveLength(2);
+  });
+
+  it('renders compressed table edges with the same visual edge class as subquery edges', () => {
+    const state = baseState({
+      graphViewMode: 'table',
+      selectedEntity: 'out:group',
+      selectedOutput: null,
+      selectedMapping: null,
+    });
+    const { container } = render(<LineageCanvas state={state} setState={vi.fn()} />);
+
+    const tableEdges = container.querySelectorAll('path.edge.table');
+    expect(tableEdges.length).toBeGreaterThan(0);
+    tableEdges.forEach((edge) => {
+      expect(edge).not.toHaveClass('synthetic');
+    });
   });
 
   it('shows no message when fully analyzed and trusted', () => {
@@ -157,8 +177,11 @@ describe('LineageCanvas', () => {
     // Marker definitions for arrows
     const arrowDefault = container.querySelector('#arrowDefault');
     const arrowPrimary = container.querySelector('#arrowPrimary');
+    const arrowDownstream = container.querySelector('#arrowDownstream');
     expect(arrowDefault).toBeInTheDocument();
     expect(arrowPrimary).toBeInTheDocument();
+    expect(arrowDownstream).toBeInTheDocument();
+    expect(arrowDownstream?.querySelector('path')).toHaveAttribute('fill', '#F59E0B');
     expect(arrowDefault).toHaveAttribute('markerWidth', '6.3');
     expect(arrowDefault).toHaveAttribute('markerHeight', '6.3');
     expect(arrowPrimary).toHaveAttribute('markerWidth', '6.3');
@@ -363,6 +386,40 @@ describe('LineageCanvas', () => {
     expect(selectedEdge).toBeInTheDocument();
     expect(siblingEdge).toHaveClass('dimmed');
     expect(container.querySelector('.relation-node[data-column-selected="true"][data-selected="true"]')).not.toBeInTheDocument();
+  });
+
+  it('highlights upstream and downstream column rows while relation containers use border-only path roles', () => {
+    const state = baseState({
+      graphViewMode: 'column',
+      selectedEntity: 'physical_column:mid_table.mid_id',
+      backendGraph: {
+        nodes: [
+          { id: 'physical_column:source_table.source_id', entityId: 'physical_column:source_table.source_id', type: 'column', label: 'source_table.source_id', x: 0, y: 0 },
+          { id: 'physical_column:mid_table.mid_id', entityId: 'physical_column:mid_table.mid_id', type: 'column', label: 'mid_table.mid_id', x: 0, y: 0 },
+          { id: 'physical_column:target_table.target_id', entityId: 'physical_column:target_table.target_id', type: 'column', label: 'target_table.target_id', x: 0, y: 0 },
+        ],
+        edges: [
+          { id: 'upstream-edge', source: 'physical_column:source_table.source_id', target: 'physical_column:mid_table.mid_id', type: 'projection' },
+          { id: 'downstream-edge', source: 'physical_column:mid_table.mid_id', target: 'physical_column:target_table.target_id', type: 'projection' },
+        ],
+      },
+    });
+
+    const { container } = render(<LineageCanvas state={state} setState={vi.fn()} />);
+    const upstreamRow = container.querySelector('.column-row[data-entity-id="physical_column\\:source_table\\.source_id"]') as HTMLElement;
+    const selectedRow = container.querySelector('.column-row[data-entity-id="physical_column\\:mid_table\\.mid_id"]') as HTMLElement;
+    const downstreamRow = container.querySelector('.column-row[data-entity-id="physical_column\\:target_table\\.target_id"]') as HTMLElement;
+    const upstreamContainer = screen.getByText('source_table', { selector: '.relation-node__title' }).closest('.relation-node') as HTMLElement;
+    const selectedContainer = screen.getByText('mid_table', { selector: '.relation-node__title' }).closest('.relation-node') as HTMLElement;
+    const downstreamContainer = screen.getByText('target_table', { selector: '.relation-node__title' }).closest('.relation-node') as HTMLElement;
+
+    expect(upstreamRow).toHaveAttribute('data-lineage-active', 'upstream');
+    expect(selectedRow).toHaveAttribute('data-lineage-active', 'selected');
+    expect(downstreamRow).toHaveAttribute('data-lineage-active', 'downstream');
+    expect(upstreamContainer).toHaveAttribute('data-column-path-role', 'upstream');
+    expect(selectedContainer).toHaveAttribute('data-column-path-role', 'selected');
+    expect(downstreamContainer).toHaveAttribute('data-column-path-role', 'downstream');
+    expect(container.querySelector('.relation-node[data-column-path-role][data-selected="true"]')).not.toBeInTheDocument();
   });
 
   it('toggles relation collapse without selecting the relation', () => {

@@ -147,7 +147,7 @@ def _lowercase_sql_words(sql: str) -> str:
 
 
 @router.post("/sql/format", response_model=FormatSqlResponse)
-async def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
+def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
     import sqlglot
 
     dialect = _normalize_dialect(request.dialect)
@@ -191,7 +191,7 @@ async def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
 
 
 @router.post("/sql/convert", response_model=ConvertSqlResponse)
-async def convert_sql(request: ConvertSqlRequest) -> ConvertSqlResponse:
+def convert_sql(request: ConvertSqlRequest) -> ConvertSqlResponse:
     import sqlglot
 
     started = time.perf_counter()

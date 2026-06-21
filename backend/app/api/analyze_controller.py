@@ -33,7 +33,7 @@ router = APIRouter()
 
 
 @router.post("/sql/analyze", response_model=AnalysisResult)
-async def analyze(request: AnalyzeRequest) -> AnalysisResult:
+def analyze(request: AnalyzeRequest) -> AnalysisResult:
     parse_result = parse_sql(request.sql, request.dialect, request.options)
 
     graph_view_model = GraphViewModel()

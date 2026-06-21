@@ -238,10 +238,10 @@ flowchart TB
 **服务层** `services/`（23 模块，按职责分组）
 - *解析与守卫*：`sql_parse_service`（`parse_sql` 入口）、`parse_recovery_pipeline`（解析失败兜底）、`sqlglot_compat`（跨版本兼容助手）
 - *结构分析*：`query_structure_service`（CTE/子查询/物理表名一次性提取）、`table_structure_service`、`cte_structure_service`
-- *血缘解析*：`name_resolver`（`resolve_column_lineage_names` 主入口，依赖 `star_expansion_service` + `sqlglot_compat`）、`star_expansion_service`（`SELECT *` 展开）、`partial_lineage_engine`（无 tree 时的正则启发式 IR）、`cte_column_rollup_service`（CTE 列血缘 rollup 到根物理表）、`lineage_adapter`（`simple_to_dependency` / `dependencies_to_simple` 转换）、`lineage_rollup_service`（⚠️ **无调用者，未接入**）
+- *血缘解析*：`name_resolver`（`resolve_column_lineage_names` 主入口，依赖 `star_expansion_service` + `sqlglot_compat`）、`star_expansion_service`（`SELECT *` 展开）、`partial_lineage_engine`（无 tree 时的正则启发式 IR）、`cte_column_rollup_service`（CTE 列血缘 rollup 到根物理表）、`lineage_adapter`（`simple_to_dependency` / `dependencies_to_simple` 转换）
 - *schema 推导*：`derived_relation_schema_builder`（CTE/subquery 派生关系 schema）
-- *表达式分析 (C09)*：`expression_analyzer`（SELECT 投影表达式依赖，无 LLM）、`expression_dependency_extractor`、`lateral_view_dependency_extractor`
-- *图构建与布局*：`graph_builder`（`build_column/cte/table/expression_graph` + `merge_graphs`）、`graph_layout_planner`（编排布局，内部 `_assign_port_orders`）、`graph_crossing_minimizer`、`graph_semantic_layering`（`SemanticLayerAssigner` + `LaneAssigner`，按 node_type 分配 rank/lane）、`graph_port_order_optimizer`（⚠️ **目前仅测试引用，未接入主管线**）
+- *表达式分析 (C09)*：`expression_analyzer`（SELECT 投影表达式依赖，无 LLM）、`expression_dependency_extractor`、`lateral_view_dependency_extractor`（Lateral View AST 输出列到输入列映射）
+- *图构建与布局*：`graph_builder`（`build_column/cte/table/expression_graph` + `merge_graphs`）、`graph_layout_planner`（编排布局，内部 `_assign_port_orders`）、`graph_crossing_minimizer`、`graph_semantic_layering`（`SemanticLayerAssigner` + `LaneAssigner`，按 node_type 分配 rank/lane）、`graph_port_order_optimizer`（字段行排序实验实现；主管线尚未提供字段端口数据契约）
 - *源定位*：`source_location_service`
 - *元数据*：`metadata_import_service`（`preview` / `commit`，走 `metadata_repository`）
 

@@ -7,7 +7,8 @@ from typing import Dict, List, Literal, Optional, Tuple
 
 RelationKind = Literal["table", "cte", "subquery", "output", "unknown"]
 TransformType = Literal["projection", "alias", "aggregate", "window",
-                          "case_when", "expression", "constant", "star", "unknown"]
+                          "case_when", "expression", "constant", "star",
+                          "lateral_view", "unknown"]
 ConfidenceLevel = Literal["high", "medium", "low"]
 DiagnosticLevel = Literal["info", "warning", "error"]
 
