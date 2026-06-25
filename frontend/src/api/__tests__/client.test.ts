@@ -8,6 +8,7 @@ import {
   listMetadataColumns,
   listMetadataTables,
   previewMetadata,
+  uploadMetadataDb,
 } from '../client';
 
 const mockFetch = vi.fn();
@@ -418,6 +419,37 @@ describe('API Client', () => {
         '/api/metadata/columns?table=my%20table',
         undefined,
       );
+    });
+  });
+
+  // ── uploadMetadataDb ───────────────────────────────────────
+
+  describe('uploadMetadataDb', () => {
+    it('posts multipart form data to /api/metadata/upload-db', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'success',
+            message: 'Metadata database replaced.',
+            table_count: 1,
+            column_count: 2,
+          }),
+      });
+
+      const file = new File(['dummy'], 'test.db', { type: 'application/octet-stream' });
+      const result = await uploadMetadataDb(file);
+
+      expect(result.status).toBe('success');
+      expect(result.table_count).toBe(1);
+      expect(result.column_count).toBe(2);
+
+      const [callUrl, callInit] = mockFetch.mock.calls[0];
+      expect(callUrl).toBe('/api/metadata/upload-db');
+      expect(callInit?.method).toBe('POST');
+      expect(callInit?.body).toBeInstanceOf(FormData);
+      const formData = callInit?.body as FormData;
+      expect(formData.get('file')).toBe(file);
     });
   });
 

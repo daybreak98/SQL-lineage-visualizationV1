@@ -1,4 +1,4 @@
-import type { BackendAnalysisResult, ConvertSqlResponse, FormatSqlResponse, MetadataImportResult, MetadataListResponse, MetadataPayload } from '../types/lineage';
+import type { BackendAnalysisResult, ConvertSqlResponse, FormatSqlResponse, MetadataImportResult, MetadataListResponse, MetadataPayload, MetadataUploadResponse } from '../types/lineage';
 
 function normalizeDialect(dialect: string) {
   const value = dialect.trim().toLowerCase();
@@ -88,4 +88,13 @@ export function listMetadataTables() {
 export function listMetadataColumns(table = '') {
   const params = table ? `?table=${encodeURIComponent(table)}` : '';
   return request<MetadataListResponse>(`/api/metadata/columns${params}`);
+}
+
+export function uploadMetadataDb(file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<MetadataUploadResponse>('/api/metadata/upload-db', {
+    method: 'POST',
+    body: formData,
+  });
 }
