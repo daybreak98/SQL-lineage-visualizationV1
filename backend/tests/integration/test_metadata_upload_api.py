@@ -173,3 +173,46 @@ def test_upload_large_db_not_rejected_by_body_limit(tmp_path, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "success"
+
+
+def test_upload_succeeds_while_live_db_held_open(tmp_path, monkeypatch):
+    """Reproduce the production scenario: backend holds an open connection to
+    the live metadata.db (e.g. from a concurrent list_tables request). File
+    replacement would fail with WinError 5/32; the SQLite backup-API path
+    must still succeed."""
+    real_db = tmp_path / "metadata.db"
+    # Seed the live db with the required schema + an old row
+    setup = sqlite3.connect(str(real_db))
+    setup.executescript("""
+        CREATE TABLE metadata_imports (id INTEGER PRIMARY KEY, metadata_version TEXT, source_name TEXT, imported_at TIMESTAMP, table_count INTEGER, column_count INTEGER);
+        CREATE TABLE table_metadata (id INTEGER PRIMARY KEY, catalog TEXT, schema_name TEXT, table_name TEXT, comment TEXT, table_type TEXT, import_id INTEGER);
+        CREATE TABLE column_metadata (id INTEGER PRIMARY KEY, table_id INTEGER, name TEXT, data_type TEXT, comment TEXT, ordinal INTEGER, is_partition BOOLEAN, nullable BOOLEAN);
+        INSERT INTO table_metadata VALUES (777, 'default', 'default', 'old_row', 'x', 'table', NULL);
+    """)
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", real_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", real_db)
+
+    # Hold an open connection to the live db (simulates backend process)
+    holder = sqlite3.connect(str(real_db))
+    holder.execute("SELECT 1").fetchall()
+
+    valid_db = _make_valid_metadata_db(tmp_path)
+    with open(valid_db, "rb") as f:
+        resp = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("valid.db", f, "application/octet-stream")},
+        )
+
+    holder.close()
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    # Live db content must now be the uploaded db's content, not the old row
+    check = sqlite3.connect(str(real_db))
+    rows = check.execute("SELECT table_name FROM table_metadata").fetchall()
+    check.close()
+    assert ("upload_table",) in rows
+    assert ("old_row",) not in rows

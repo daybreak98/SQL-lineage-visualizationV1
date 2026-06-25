@@ -1,3 +1,4 @@
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -101,11 +102,28 @@ async def upload_metadata_db(file: UploadFile = File(...)) -> MetadataUploadResp
         if not ok:
             return MetadataUploadResponse(status="failed", message=message)
 
-        # Backup old db if it exists, then replace
+        # Use SQLite online backup API to copy uploaded db content into the
+        # live db in-place. This avoids any file replacement / lock issues on
+        # Windows (the backend process holds the live db file open).
         if DB_PATH.exists():
             backup = DB_PATH.with_suffix(".db.bak")
-            shutil.move(str(DB_PATH), str(backup))
-        shutil.move(str(tmp_path), str(DB_PATH))
+            live_conn = sqlite3.connect(str(DB_PATH))
+            try:
+                bak_conn = sqlite3.connect(str(backup))
+                try:
+                    live_conn.backup(bak_conn)
+                finally:
+                    bak_conn.close()
+            finally:
+                live_conn.close()
+
+        live_conn = sqlite3.connect(str(DB_PATH))
+        src_conn = sqlite3.connect(str(tmp_path))
+        try:
+            src_conn.backup(live_conn)
+        finally:
+            live_conn.close()
+            src_conn.close()
 
         return MetadataUploadResponse(
             status="success",
