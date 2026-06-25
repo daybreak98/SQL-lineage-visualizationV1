@@ -153,3 +153,23 @@ def test_upload_backs_up_old_db(tmp_path, monkeypatch):
     rows = bak_conn.execute("SELECT id FROM table_metadata").fetchall()
     bak_conn.close()
     assert (99,) in rows
+
+
+def test_upload_large_db_not_rejected_by_body_limit(tmp_path, monkeypatch):
+    real_db = tmp_path / "metadata.db"
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", real_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", real_db)
+
+    valid_db = _make_valid_metadata_db(tmp_path)
+    # Pad the db file to > 2MB to exceed MAX_REQUEST_BODY_BYTES
+    with open(valid_db, "ab") as f:
+        f.write(b"\0" * (3 * 1024 * 1024))
+
+    with open(valid_db, "rb") as f:
+        resp = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("big.db", f, "application/octet-stream")},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"

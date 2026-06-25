@@ -51,13 +51,14 @@ class LocalDeliveryGuardMiddleware(BaseHTTPMiddleware):
         if not is_loopback_client(client_host):
             return JSONResponse({"detail": "Local access only"}, status_code=403)
 
-        content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > self.max_request_body_bytes:
-                    return JSONResponse({"detail": "Request body too large"}, status_code=413)
-            except ValueError:
-                return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
+        if request.url.path != "/api/metadata/upload-db":
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > self.max_request_body_bytes:
+                        return JSONResponse({"detail": "Request body too large"}, status_code=413)
+                except ValueError:
+                    return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
 
         if request.url.path not in _SQL_PATHS:
             return await call_next(request)
