@@ -397,3 +397,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .btn-copy:disabled { opacity:.48; cursor:not-allowed; }
 .btn-copy-ready { background:#ECFDF5; border-color:#BBF7D0; color:#047857; font-weight:700; }
 .btn-copy-ready:hover:not(:disabled) { background:#DCFCE7; border-color:#22C55E; box-shadow:0 0 0 2px rgba(34,197,94,.18), 0 0 12px rgba(34,197,94,.28); color:#047857; }
+
+.metadata-tabs { display:flex; gap:8px; padding:8px 14px; border-bottom:1px solid var(--line); }
+.metadata-tabs .btn.active { background:var(--blue); color:white; border-color:var(--blue); }
+.metadata-dropzone { border:2px dashed var(--line); border-radius:8px; padding:32px 16px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:12px; }
+.metadata-dropzone.drag-over { border-color:var(--blue); background:rgba(37,99,235,.05); }
+.metadata-dropzone-hint { color:var(--slate-600); font-size:13px; }
