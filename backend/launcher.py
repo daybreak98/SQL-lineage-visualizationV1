@@ -100,7 +100,7 @@ def run_tray():
     @WNDPROC
     def wndproc(hwnd, msg, wparam, lparam):
         if msg == WM_TRAY and lparam == WM_RBUTTONUP:
-            threading.Thread(target=_popup_menu, args=(hwnd,), daemon=True).start()
+            _popup_menu(hwnd)
             return 0
         if msg == WM_COMMAND:
             if wparam == ID_OPEN:
