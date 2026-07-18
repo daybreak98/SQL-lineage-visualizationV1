@@ -33,6 +33,24 @@ PHYSICAL_TABLE_PATTERN = re.compile(
 COMMENT_PATTERN = re.compile(r"--[^\n]*|/\*[\s\S]*?\*/")
 CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 REGEX_BACKSLASH_PATTERN = re.compile(r"\\{1,2}[dswDSW]|\\{1,2}u[0-9a-fA-F]{4}")
+INLINE_OR_SCALAR_SUBQUERY_PATTERN = re.compile(
+    r"\b(?:from|join)\s*\(\s*(?:select|with)\b|"
+    r"\b(?:select|where|and|or)\b[^;()]*?\(\s*select\b",
+    re.IGNORECASE | re.DOTALL,
+)
+JOIN_PATTERN = re.compile(r"\b(?:left|right|full|inner|outer|cross\s+)?join\b", re.IGNORECASE)
+SET_OPERATION_PATTERN = re.compile(r"\b(?:union(?:\s+(?:all|distinct))?|intersect|except)\b", re.IGNORECASE)
+SPARK_SQL_MARKERS = (
+    "lateral view",
+    "get_json_object(",
+    "from_json(",
+    "regexp_replace(",
+    "regexp_extract(",
+    "explode(",
+    "posexplode(",
+    "collect_set(",
+    "named_struct(",
+)
 
 
 def _strip_sql_comments(sql: str) -> str:
@@ -40,6 +58,35 @@ def _strip_sql_comments(sql: str) -> str:
     return COMMENT_PATTERN.sub(
         lambda match: re.sub(r"[^\r\n]", " ", match.group(0)), sql
     )
+
+
+def _mask_sql_literals(sql: str) -> str:
+    """Mask quoted literals and identifiers so their semicolons are not statements."""
+    masked: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote is None:
+            if char in ("'", '"', "`"):
+                quote = char
+                masked.append(" ")
+            else:
+                masked.append(char)
+        else:
+            masked.append(char if char in "\r\n" else " ")
+            if char == quote:
+                if quote == "'" and index + 1 < len(sql) and sql[index + 1] == "'":
+                    index += 1
+                    masked.append(" ")
+                else:
+                    quote = None
+        index += 1
+    return "".join(masked)
+
+
+def _executable_statements(structural_sql: str) -> list[str]:
+    return [statement.strip() for statement in _mask_sql_literals(structural_sql).split(";") if statement.strip()]
 
 
 def _function_families(sql: str) -> dict[str, bool]:
@@ -55,6 +102,7 @@ def inspect_case(path: Path) -> dict[str, object]:
     sql = path.read_text(encoding="utf-8")
     comments = COMMENT_PATTERN.findall(sql)
     structural_sql = _strip_sql_comments(sql)
+    executable_statements = _executable_statements(structural_sql)
     cte_aliases = sorted(set(CTE_ALIAS_PATTERN.findall(structural_sql)))
     inline_aliases = sorted(set(INLINE_ALIAS_PATTERN.findall(structural_sql)))
     physical_tables = sorted(set(PHYSICAL_TABLE_PATTERN.findall(structural_sql)))
@@ -62,6 +110,18 @@ def inspect_case(path: Path) -> dict[str, object]:
     chinese_comment_count = sum(bool(CHINESE_PATTERN.search(comment)) for comment in comments)
     regex_backslash_count = len(REGEX_BACKSLASH_PATTERN.findall(structural_sql))
     named_relation_count = len(cte_aliases) + len(inline_aliases) + len(physical_tables)
+    has_cte = bool(CTE_ALIAS_PATTERN.search(structural_sql))
+    has_inline_or_scalar_subquery = bool(
+        INLINE_OR_SCALAR_SUBQUERY_PATTERN.search(structural_sql)
+    )
+    has_join = bool(JOIN_PATTERN.search(structural_sql))
+    has_set_operation = bool(SET_OPERATION_PATTERN.search(structural_sql))
+    is_spark_sql = any(marker in structural_sql.lower() for marker in SPARK_SQL_MARKERS)
+    executable_statement_count = len(executable_statements)
+    has_single_final_query = bool(
+        executable_statement_count == 1
+        and re.match(r"^(?:with|select)\b", executable_statements[0], re.IGNORECASE)
+    )
     has_dirty_sql_markers = bool(
         chinese_comment_count
         and regex_backslash_count
@@ -78,12 +138,25 @@ def inspect_case(path: Path) -> dict[str, object]:
         "chinese_comment_count": chinese_comment_count,
         "regex_backslash_count": regex_backslash_count,
         "required_function_families": function_families,
+        "has_cte": has_cte,
+        "has_inline_or_scalar_subquery": has_inline_or_scalar_subquery,
+        "has_join": has_join,
+        "has_set_operation": has_set_operation,
+        "is_spark_sql": is_spark_sql,
+        "executable_statement_count": executable_statement_count,
+        "has_single_final_query": has_single_final_query,
         "has_dirty_sql_markers": has_dirty_sql_markers,
     }
     result["static_contract_passed"] = bool(
         result["line_count"] >= 300
         and named_relation_count >= 26
         and has_dirty_sql_markers
+        and has_cte
+        and has_inline_or_scalar_subquery
+        and has_join
+        and has_set_operation
+        and is_spark_sql
+        and has_single_final_query
     )
     return result
 
