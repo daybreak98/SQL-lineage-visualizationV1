@@ -85,9 +85,20 @@ FROM combined_rows;
         "SELECT 1 AS first_query; SELECT 2 AS second_query;",
         encoding="utf-8",
     )
+    incomplete_with_case = tmp_path / "incomplete_with.sql"
+    incomplete_with_case.write_text(
+        "WITH source_rows AS (SELECT 1 AS id)", encoding="utf-8"
+    )
+    dml_with_case = tmp_path / "dml_with.sql"
+    dml_with_case.write_text(
+        "WITH source_rows AS (SELECT 1 AS id) INSERT INTO mart.target SELECT id FROM source_rows",
+        encoding="utf-8",
+    )
 
     valid_result = inspect_case(valid_case)
     multiple_result = inspect_case(multiple_statements_case)
+    incomplete_with_result = inspect_case(incomplete_with_case)
+    dml_with_result = inspect_case(dml_with_case)
 
     assert valid_result["has_cte"] is True
     assert valid_result["has_inline_or_scalar_subquery"] is True
@@ -98,3 +109,7 @@ FROM combined_rows;
     assert valid_result["has_single_final_query"] is True
     assert multiple_result["executable_statement_count"] == 2
     assert multiple_result["has_single_final_query"] is False
+    assert incomplete_with_result["executable_statement_count"] == 1
+    assert incomplete_with_result["has_single_final_query"] is False
+    assert dml_with_result["executable_statement_count"] == 1
+    assert dml_with_result["has_single_final_query"] is False

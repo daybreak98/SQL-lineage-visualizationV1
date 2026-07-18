@@ -51,6 +51,18 @@ SPARK_SQL_MARKERS = (
     "collect_set(",
     "named_struct(",
 )
+TOP_LEVEL_QUERY_KEYWORDS = {
+    "with",
+    "select",
+    "insert",
+    "update",
+    "delete",
+    "merge",
+    "create",
+    "drop",
+    "alter",
+    "truncate",
+}
 
 
 def _strip_sql_comments(sql: str) -> str:
@@ -89,6 +101,49 @@ def _executable_statements(structural_sql: str) -> list[str]:
     return [statement.strip() for statement in _mask_sql_literals(structural_sql).split(";") if statement.strip()]
 
 
+def _top_level_query_keywords(statement: str) -> list[str]:
+    """Return statement-kind keywords that occur outside nested query parentheses."""
+    masked_statement = _mask_sql_literals(statement)
+    keywords: list[str] = []
+    depth = 0
+    index = 0
+    while index < len(masked_statement):
+        char = masked_statement[index]
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+        if char.isalpha() or char == "_":
+            word_end = index + 1
+            while word_end < len(masked_statement) and (
+                masked_statement[word_end].isalnum() or masked_statement[word_end] == "_"
+            ):
+                word_end += 1
+            word = masked_statement[index:word_end].lower()
+            if depth == 0 and word in TOP_LEVEL_QUERY_KEYWORDS:
+                keywords.append(word)
+            index = word_end
+            continue
+        index += 1
+    return keywords
+
+
+def _has_single_select_final_query(executable_statements: list[str]) -> bool:
+    if len(executable_statements) != 1:
+        return False
+    keywords = _top_level_query_keywords(executable_statements[0])
+    return bool(
+        keywords
+        and keywords[0] in {"with", "select"}
+        and keywords[-1] == "select"
+        and all(keyword in {"with", "select"} for keyword in keywords)
+    )
+
+
 def _function_families(sql: str) -> dict[str, bool]:
     normalized_sql = sql.lower()
     return {
@@ -118,10 +173,7 @@ def inspect_case(path: Path) -> dict[str, object]:
     has_set_operation = bool(SET_OPERATION_PATTERN.search(structural_sql))
     is_spark_sql = any(marker in structural_sql.lower() for marker in SPARK_SQL_MARKERS)
     executable_statement_count = len(executable_statements)
-    has_single_final_query = bool(
-        executable_statement_count == 1
-        and re.match(r"^(?:with|select)\b", executable_statements[0], re.IGNORECASE)
-    )
+    has_single_final_query = _has_single_select_final_query(executable_statements)
     has_dirty_sql_markers = bool(
         chinese_comment_count
         and regex_backslash_count
