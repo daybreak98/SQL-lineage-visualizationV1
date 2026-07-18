@@ -23,7 +23,7 @@ CTE_ALIAS_PATTERN = re.compile(
 )
 INLINE_ALIAS_PATTERN = re.compile(
     r"\)\s+(?:as\s+)?([a-zA-Z_][\w$]*)\s*(?:on\b|where\b|group\b|"
-    r"order\b|join\b|,|\)|$)",
+    r"order\b|join\b|(?:left|right|full|inner|outer|cross)(?:\s+outer)?\s+join\b|,|\)|$)",
     re.IGNORECASE | re.MULTILINE,
 )
 PHYSICAL_TABLE_PATTERN = re.compile(
@@ -33,6 +33,13 @@ PHYSICAL_TABLE_PATTERN = re.compile(
 COMMENT_PATTERN = re.compile(r"--[^\n]*|/\*[\s\S]*?\*/")
 CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 REGEX_BACKSLASH_PATTERN = re.compile(r"\\{1,2}[dswDSW]|\\{1,2}u[0-9a-fA-F]{4}")
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Mask comment content while retaining line boundaries for structure patterns."""
+    return COMMENT_PATTERN.sub(
+        lambda match: re.sub(r"[^\r\n]", " ", match.group(0)), sql
+    )
 
 
 def _function_families(sql: str) -> dict[str, bool]:
@@ -46,13 +53,14 @@ def _function_families(sql: str) -> dict[str, bool]:
 def inspect_case(path: Path) -> dict[str, object]:
     """Return deterministic static lineage-corpus evidence for one SQL case."""
     sql = path.read_text(encoding="utf-8")
-    cte_aliases = sorted(set(CTE_ALIAS_PATTERN.findall(sql)))
-    inline_aliases = sorted(set(INLINE_ALIAS_PATTERN.findall(sql)))
-    physical_tables = sorted(set(PHYSICAL_TABLE_PATTERN.findall(sql)))
-    function_families = _function_families(sql)
     comments = COMMENT_PATTERN.findall(sql)
+    structural_sql = _strip_sql_comments(sql)
+    cte_aliases = sorted(set(CTE_ALIAS_PATTERN.findall(structural_sql)))
+    inline_aliases = sorted(set(INLINE_ALIAS_PATTERN.findall(structural_sql)))
+    physical_tables = sorted(set(PHYSICAL_TABLE_PATTERN.findall(structural_sql)))
+    function_families = _function_families(structural_sql)
     chinese_comment_count = sum(bool(CHINESE_PATTERN.search(comment)) for comment in comments)
-    regex_backslash_count = len(REGEX_BACKSLASH_PATTERN.findall(sql))
+    regex_backslash_count = len(REGEX_BACKSLASH_PATTERN.findall(structural_sql))
     named_relation_count = len(cte_aliases) + len(inline_aliases) + len(physical_tables)
     has_dirty_sql_markers = bool(
         chinese_comment_count
