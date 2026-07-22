@@ -253,6 +253,13 @@ export interface MetadataListResponse {
   total: number;
 }
 
+export interface MetadataUploadResponse {
+  status: 'success' | 'failed';
+  message?: string;
+  table_count?: number;
+  column_count?: number;
+}
+
 export interface PathContext {
   status: 'idle' | 'ready' | 'partial' | 'stale' | 'low_confidence';
   display: string;

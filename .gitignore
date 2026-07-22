@@ -27,3 +27,8 @@ data/metadata.db
 
 # env
 .env
+
+# PyInstaller
+dist/
+build/
+*.db.bak
