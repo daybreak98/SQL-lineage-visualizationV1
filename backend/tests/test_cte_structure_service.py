@@ -66,3 +66,48 @@ def test_non_cte_query_returns_partial():
     assert result.nodes == []
     assert result.edges == []
     assert "non_cte_query" in result.unsupported_features
+
+
+def test_inline_subquery_structure_preserves_derived_relation_node():
+    result = analyze_cte_structure(
+        """
+        select s.user_id, s.gmv
+        from (
+          select user_id, sum(order_amount) as gmv
+          from fact_order
+          group by user_id
+        ) s
+        """
+    )
+
+    assert result.status == "success"
+    assert {(node.id, node.node_type) for node in result.nodes} == {
+        ("physical_table:fact_order", "table"),
+        ("subquery:s", "subquery"),
+        ("query_result:final", "output"),
+    }
+    assert {(edge.source, edge.target, edge.edge_type) for edge in result.edges} == {
+        ("physical_table:fact_order", "subquery:s", "table_to_subquery"),
+        ("subquery:s", "query_result:final", "subquery_to_result"),
+    }
+
+
+def test_scalar_subquery_inside_cte_preserves_its_parent_relation():
+    result = analyze_cte_structure(
+        """
+        with enriched as (
+          select
+            o.order_id,
+            (select max(p.pay_amount) from payment p where p.order_id=o.order_id) as max_pay
+          from fact_order o
+        )
+        select order_id, max_pay from enriched
+        """
+    )
+
+    assert {(edge.source, edge.target, edge.edge_type) for edge in result.edges} == {
+        ("physical_table:fact_order", "cte:enriched", "table_to_cte"),
+        ("physical_table:payment", "subquery:max_pay", "table_to_subquery"),
+        ("subquery:max_pay", "cte:enriched", "subquery_dependency"),
+        ("cte:enriched", "query_result:final", "cte_to_result"),
+    }

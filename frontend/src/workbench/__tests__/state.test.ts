@@ -8,7 +8,7 @@ import {
   buildAnalyzeSuccessState,
   initialWorkbenchState,
 } from '../state';
-import { selectNodeEntity } from '../actions';
+import { clearSelection, selectNodeEntity } from '../actions';
 
 describe('workbench state helpers', () => {
   it('keeps the bottom detail panel closed by default', () => {
@@ -164,5 +164,24 @@ describe('workbench state helpers', () => {
     const cleared = selectNodeEntity(selected, 'out:group');
     expect(cleared.selectedEntity).toBe('out:group');
     expect(cleared.detailMode).toBe('collapsed');
+  });
+
+  it('clears lineage selection and closes detail as one state transition', () => {
+    const next = clearSelection({
+      ...initialWorkbenchState,
+      selectedOutput: 'output_column:gmv',
+      selectedEntity: 'output_column:gmv',
+      selectedMapping: 'edge:gmv',
+      detailMode: 'expanded',
+      detailTab: 'mapping',
+      renderMode: 'current_field_path',
+    });
+
+    expect(next.selectedOutput).toBeNull();
+    expect(next.selectedEntity).toBe('out:group');
+    expect(next.selectedMapping).toBeNull();
+    expect(next.detailMode).toBe('collapsed');
+    expect(next.detailTab).toBe('summary');
+    expect(next.renderMode).toBe('subquery_dependency');
   });
 });

@@ -35,6 +35,7 @@ router = APIRouter()
 @router.post("/sql/analyze", response_model=AnalysisResult)
 def analyze(request: AnalyzeRequest) -> AnalysisResult:
     parse_result = parse_sql(request.sql, request.dialect, request.options)
+    analysis_dialect = parse_result.dialect
 
     graph_view_model = GraphViewModel()
     diagnostics = list(parse_result.diagnostics)
@@ -46,6 +47,30 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     semantics_report_val: dict | None = None
 
     capabilities: dict[str, object] = dict(parse_result.capabilities)
+
+    if parse_result.tree is not None and capabilities.get("query_projection") is False:
+        confidence = _adjust_confidence(confidence, status, unsupported_features)
+        return _assemble_result(
+            request=request,
+            status=status,
+            confidence_level=_confidence_level_from_scores(confidence, status),
+            confidence=confidence,
+            elapsed_ms=parse_result.elapsed_ms,
+            stage_statuses=stage_statuses,
+            diagnostics=_dedupe_diagnostics(diagnostics),
+            output_fields=parse_result.output_fields,
+            unsupported_features=sorted(set(unsupported_features)),
+            graph_view_model=graph_view_model,
+            source_locations=source_locations,
+            capabilities=capabilities,
+            semantics_report=semantics_report_val,
+            normalized_sql=parse_result.normalized_sql,
+            analysis_sql=parse_result.analysis_sql,
+            sql_text_bundle=parse_result.sql_text_bundle,
+            preflight_report=parse_result.preflight_report,
+            segments=parse_result.segments,
+            parse_attempts=parse_result.parse_attempts,
+        )
 
     # 4. Try recovery pipeline — never return empty graph if structure facts exist
     if parse_result.tree is None and request.analysis_options.include_graph:
@@ -66,12 +91,22 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
                     allow_subquery=structure.has_subquery,
                 )
                 lineage_result = resolve_column_lineage_names(
-                    request.sql, request.dialect, tree=tree, metadata=metadata, context=context)
+                    request.sql, analysis_dialect, tree=tree, metadata=metadata, context=context)
                 diagnostics.extend(lineage_result.diagnostics)
                 stage_statuses.extend(lineage_result.stage_statuses)
                 unsupported_features.extend(lineage_result.unsupported_features)
                 status = _merge_status(status, lineage_result.status)
-                graphs = _build_structure_graphs(request, tree, structure, lineage_result, diagnostics, stage_statuses, unsupported_features)
+                graphs = _build_structure_graphs(
+                    request,
+                    tree,
+                    structure,
+                    lineage_result,
+                    diagnostics,
+                    stage_statuses,
+                    unsupported_features,
+                    parse_result.output_fields,
+                    analysis_dialect,
+                )
                 if graphs:
                     merge_graph = merge_graphs("table", *graphs)
                     graph_view_model = GraphViewModel(**merge_graph.to_dict())
@@ -84,7 +119,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
                     tree=None,
                 )
                 table_structure = analyze_table_structure(
-                    request.sql, request.dialect, tree=None,
+                    request.sql, analysis_dialect, tree=None,
                     table_names=sorted(ir.table_names),
                 )
                 if table_structure.nodes:
@@ -94,7 +129,10 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
                     if ir.column_edges:
                         lineages = _convert_ir_edges_to_lineages(ir)
                         if lineages:
-                            graphs.append(build_column_lineage_graph(lineages))
+                            graphs.append(build_column_lineage_graph(
+                                lineages,
+                                _output_field_names(parse_result.output_fields),
+                            ))
                     if graphs:
                         merge_graph = merge_graphs("table", *graphs)
                         graph_view_model = GraphViewModel(**merge_graph.to_dict())
@@ -140,7 +178,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     # 3. Load metadata only for physical tables
     metadata = _load_metadata(sorted(structure.physical_table_names))
     schema_result = (
-        build_derived_relation_schemas(tree, request.dialect)
+        build_derived_relation_schemas(tree, analysis_dialect)
         if structure.has_cte or structure.has_subquery
         else None
     )
@@ -159,7 +197,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
 
     # 5. Resolve column lineage (unified)
     lineage_result = resolve_column_lineage_names(
-        request.sql, request.dialect, tree=tree, metadata=metadata, context=context)
+        request.sql, analysis_dialect, tree=tree, metadata=metadata, context=context)
     diagnostics.extend(lineage_result.diagnostics)
     stage_statuses.extend(lineage_result.stage_statuses)
     unsupported_features.extend(lineage_result.unsupported_features)
@@ -168,11 +206,11 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     # 6. Build structure graphs — CTE takes precedence, table_structure only for final SELECT tables
     graphs = []
 
-    if structure.has_cte:
+    if structure.has_cte or structure.has_subquery:
         final_table_names = sorted(
             structure.final_select_source_names & structure.physical_table_names)
         if final_table_names:
-            table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree,
+            table_structure = analyze_table_structure(request.sql, analysis_dialect, tree=tree,
                                                        table_names=final_table_names)
             if table_structure.nodes:
                 diagnostics.extend(table_structure.diagnostics)
@@ -181,7 +219,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
                 status = _merge_status(status, table_structure.status)
                 graphs.append(build_table_structure_graph(table_structure))
     else:
-        table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree,
+        table_structure = analyze_table_structure(request.sql, analysis_dialect, tree=tree,
                                                    table_names=sorted(structure.physical_table_names))
         if table_structure.nodes:
             diagnostics.extend(table_structure.diagnostics)
@@ -190,8 +228,8 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
             status = _merge_status(status, table_structure.status)
             graphs.append(build_table_structure_graph(table_structure))
 
-    if structure.has_cte:
-        cte_structure = analyze_cte_structure(request.sql, request.dialect, tree=tree)
+    if structure.has_cte or structure.has_subquery:
+        cte_structure = analyze_cte_structure(request.sql, analysis_dialect, tree=tree)
         if cte_structure.nodes:
             diagnostics.extend(cte_structure.diagnostics)
             stage_statuses.extend(cte_structure.stage_statuses)
@@ -203,7 +241,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
         # Derived rollup: expand immediate CTE/subquery lineage to root physical tables.
         if structure.has_cte or structure.has_subquery:
             if schema_result is None:
-                schema_result = build_cte_schemas(tree, request.dialect)
+                schema_result = build_cte_schemas(tree, analysis_dialect)
             if schema_result.schemas:
                 immediate_deps = [
                     _simple_to_rollup_dependency(lin, structure.cte_names)
@@ -218,17 +256,24 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
                 for rd in rollup_result.diagnostics:
                     diagnostics.append(Diagnostic(
                         code=rd.code, level=rd.level, message=rd.message))
-        graphs.append(build_column_lineage_graph(lineage_result.lineages))
+    if lineage_result.lineages or parse_result.output_fields:
+        graphs.append(build_column_lineage_graph(
+            lineage_result.lineages,
+            _output_field_names(parse_result.output_fields),
+        ))
 
     if graphs:
-        graph = merge_graphs("subquery_dependency" if structure.has_cte else "table", *graphs)
+        graph = merge_graphs(
+            "subquery_dependency" if (structure.has_cte or structure.has_subquery) else "table",
+            *graphs,
+        )
         graph_view_model = GraphViewModel(**graph.to_dict())
         stage_statuses.append({"stage": "graph_build", "status": "success", "elapsed_ms": 0,
                                 "diagnostic_codes": [], "message": "GraphViewModel built."})
 
     # 7. C09 expression analysis
     if request.analysis_options.include_expression_lineage:
-        analyzer = ExpressionAnalyzer(dialect=request.dialect)
+        analyzer = ExpressionAnalyzer(dialect=analysis_dialect)
         metrics = analyzer.analyze_select(tree)
         if metrics:
             semantics_report_val = metrics_to_semantics_report(metrics)
@@ -294,24 +339,37 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     )
 
 
-def _build_structure_graphs(request, tree, structure, lineage_result, diagnostics, stage_statuses, unsupported_features):
+def _build_structure_graphs(
+    request,
+    tree,
+    structure,
+    lineage_result,
+    diagnostics,
+    stage_statuses,
+    unsupported_features,
+    output_fields,
+    analysis_dialect,
+):
     """Build structure graphs from query structure and lineage result."""
     graphs = []
-    table_structure = analyze_table_structure(request.sql, request.dialect, tree=tree)
+    table_structure = analyze_table_structure(request.sql, analysis_dialect, tree=tree)
     if table_structure.nodes:
         diagnostics.extend(table_structure.diagnostics)
         stage_statuses.extend(table_structure.stage_statuses)
         unsupported_features.extend(table_structure.unsupported_features)
         graphs.append(build_table_structure_graph(table_structure))
-    if structure.has_cte:
+    if structure.has_cte or structure.has_subquery:
         from app.services.cte_structure_service import analyze_cte_structure
-        cte_structure = analyze_cte_structure(request.sql, request.dialect, tree=tree)
+        cte_structure = analyze_cte_structure(request.sql, analysis_dialect, tree=tree)
         if cte_structure.nodes:
             diagnostics.extend(cte_structure.diagnostics)
             stage_statuses.extend(cte_structure.stage_statuses)
             graphs.append(build_cte_structure_graph(cte_structure))
-    if lineage_result and lineage_result.lineages:
-        graphs.append(build_column_lineage_graph(lineage_result.lineages))
+    if lineage_result and (lineage_result.lineages or output_fields):
+        graphs.append(build_column_lineage_graph(
+            lineage_result.lineages,
+            _output_field_names(output_fields),
+        ))
     return graphs
 
 
@@ -506,6 +564,16 @@ def _output_column_names(graph_view_model: GraphViewModel, output_fields: list) 
     if names:
         return names
     return [str(field.name) for field in output_fields if getattr(field, "name", "")]
+
+
+def _output_field_names(output_fields: list) -> list[str]:
+    names: list[str] = []
+    for field in output_fields:
+        name = str(getattr(field, "name", "")).strip()
+        if not name or name == "*" or name.endswith(".*"):
+            continue
+        names.append(name)
+    return names
 
 
 def _target_entities(graph_view_model: GraphViewModel) -> list[dict[str, str]]:

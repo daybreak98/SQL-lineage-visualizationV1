@@ -5,6 +5,7 @@ import { buildPortIndexes, nodeBox, routeEdgePath, visibleGraph } from '../graph
 import type { GraphEdge, GraphNode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
 import { RelationNodeCard } from './LineageCanvas/RelationNodeCard';
+import { buildLineageTraversalIndex, collectLineagePath } from './LineageCanvas/traversal';
 import {
   applyDraggedPositions,
   clearSelectedMapping,
@@ -30,14 +31,6 @@ function edgeTouchesEntity(edge: GraphEdge, entityId: string) {
     edge.targetPort === entityId ||
     edge.originalSourceEntityId === entityId ||
     edge.originalTargetEntityId === entityId;
-}
-
-function visibleOwnerEntityId(nodes: GraphNode[], entityId: string) {
-  for (const node of nodes) {
-    if (node.entityId === entityId) return entityId;
-    if (node.columns?.some((column) => column.entityId === entityId)) return node.entityId;
-  }
-  return entityId;
 }
 
 function isColumnEntitySelection(nodes: GraphNode[], entityId?: string | null) {
@@ -100,88 +93,68 @@ function centerOffset(
 export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
-  const graph = useMemo(() => visibleGraph(state), [state]);
+  const columnProjectionSelection = state.graphViewMode === 'column' ? state.selectedEntity : 'out:group';
+  const columnProjectionQuery = state.graphViewMode === 'column' ? state.query : '';
+  const graphInput = useMemo(() => ({
+    backendGraph: state.backendGraph,
+    positions: state.positions,
+    graphViewMode: state.graphViewMode,
+    columnContainerMode: state.columnContainerMode,
+    collapsedRelationIds: state.collapsedRelationIds,
+    selectedEntity: columnProjectionSelection,
+    query: columnProjectionQuery,
+  }), [
+    state.backendGraph,
+    state.positions,
+    state.graphViewMode,
+    state.columnContainerMode,
+    state.collapsedRelationIds,
+    columnProjectionSelection,
+    columnProjectionQuery,
+  ]);
+  const graph = useMemo(() => visibleGraph(graphInput), [graphInput]);
   const current = useMemo(() => currentEntitySet(state), [state]);
   const highlights = useMemo(() => viewHighlightSets(state), [state]);
-  const selectedEdges = useMemo(() => {
-    const entityId = state.selectedEntity;
-    if (!hasRealEntitySelection(state)) return new Set<string>();
-    const ids = new Set<string>();
-    const reverse = new Map<string, Array<{ previous: string; edgeId: string }>>();
-    graph.edges.forEach((edge) => {
-      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
-      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
-      if (!reverse.has(target)) reverse.set(target, []);
-      reverse.get(target)!.push({ previous: source, edgeId: edge.id });
-    });
-    const visited = new Set<string>([entityId]);
-    const queue = [entityId];
-    while (queue.length > 0) {
-      const currentEntity = queue.shift()!;
-      for (const item of reverse.get(currentEntity) ?? []) {
-        ids.add(item.edgeId);
-        if (!visited.has(item.previous)) {
-          visited.add(item.previous);
-          queue.push(item.previous);
-        }
-      }
+  const hasActiveSelection = hasRealEntitySelection(state);
+  const ownerByEntity = useMemo(() => {
+    const owners = new Map<string, string>();
+    for (const node of graph.nodes) {
+      owners.set(node.entityId, node.entityId);
+      for (const column of node.columns ?? []) owners.set(column.entityId, node.entityId);
     }
-    return ids;
-  }, [state, graph.edges]);
+    return owners;
+  }, [graph.nodes]);
+  const traversalIndex = useMemo(() => buildLineageTraversalIndex(graph.edges), [graph.edges]);
+  const upstreamPath = useMemo(
+    () => hasActiveSelection
+      ? collectLineagePath(traversalIndex, state.selectedEntity, 'upstream')
+      : { entityIds: new Set<string>(), edgeIds: new Set<string>() },
+    [hasActiveSelection, state.selectedEntity, traversalIndex],
+  );
+  const downstreamPath = useMemo(
+    () => hasActiveSelection
+      ? collectLineagePath(traversalIndex, state.selectedEntity, 'downstream')
+      : { entityIds: new Set<string>(), edgeIds: new Set<string>() },
+    [hasActiveSelection, state.selectedEntity, traversalIndex],
+  );
+  const selectedEdges = upstreamPath.edgeIds;
   const downstreamImpact = useMemo(() => {
-    const entityId = state.selectedEntity;
-    if (!hasRealEntitySelection(state)) return { nodeIds: new Set<string>(), edgeIds: new Set<string>() };
-
-    const outgoing = new Map<string, Array<{ next: string; edge: GraphEdge }>>();
-    graph.edges.forEach((edge) => {
-      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
-      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
-      if (!outgoing.has(source)) outgoing.set(source, []);
-      outgoing.get(source)!.push({ next: target, edge });
-    });
-
     const nodeIds = new Set<string>();
-    const edgeIds = new Set<string>();
-    const visited = new Set<string>([entityId]);
-    const queue = [entityId];
-    while (queue.length > 0) {
-      const currentEntity = queue.shift()!;
-      for (const { next, edge } of outgoing.get(currentEntity) ?? []) {
-        edgeIds.add(edge.id);
-        if (!visited.has(next)) {
-          visited.add(next);
-          nodeIds.add(visibleOwnerEntityId(graph.nodes, next));
-          queue.push(next);
-        }
-      }
+    for (const entityId of downstreamPath.entityIds) {
+      nodeIds.add(ownerByEntity.get(entityId) ?? entityId);
     }
-
-    return { nodeIds, edgeIds };
-  }, [state, graph.edges, graph.nodes]);
+    return { nodeIds, edgeIds: downstreamPath.edgeIds };
+  }, [downstreamPath, ownerByEntity]);
   const selectedNodeIds = useMemo(() => {
     const entityId = state.selectedEntity;
-    if (!hasRealEntitySelection(state)) return new Set<string>();
-    const ids = new Set<string>([entityId, visibleOwnerEntityId(graph.nodes, entityId)]);
-    const reverse = new Map<string, string[]>();
-    graph.edges.forEach((edge) => {
-      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
-      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
-      if (!reverse.has(target)) reverse.set(target, []);
-      reverse.get(target)!.push(source);
-    });
-    const queue = [entityId];
-    while (queue.length > 0) {
-      const currentEntity = queue.shift()!;
-      for (const source of reverse.get(currentEntity) ?? []) {
-        if (!ids.has(source)) {
-          ids.add(source);
-          ids.add(visibleOwnerEntityId(graph.nodes, source));
-          queue.push(source);
-        }
-      }
+    if (!hasActiveSelection) return new Set<string>();
+    const ids = new Set<string>([entityId, ownerByEntity.get(entityId) ?? entityId]);
+    for (const source of upstreamPath.entityIds) {
+      ids.add(source);
+      ids.add(ownerByEntity.get(source) ?? source);
     }
     return ids;
-  }, [state, graph.edges, graph.nodes]);
+  }, [hasActiveSelection, ownerByEntity, state.selectedEntity, upstreamPath.entityIds]);
   const columnPathEntityIds = useMemo(() => {
     if (!isColumnEntitySelection(graph.nodes, state.selectedEntity)) return current;
     const ids = new Set<string>();
@@ -218,7 +191,6 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
     if (state.selectedEntity) ids.delete(state.selectedEntity);
     return ids;
   }, [downstreamImpact.edgeIds, graph.edges, graph.nodes, state.selectedEntity]);
-  const hasActiveSelection = hasRealEntitySelection(state);
   const columnSelectionActive = isColumnEntitySelection(graph.nodes, state.selectedEntity);
   const [drag, setDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
@@ -233,54 +205,16 @@ export function LineageCanvas({ state, setState, onNodeDoubleClick }: Props) {
   const pathContext = buildPathContext(state);
   const graphViewMode = state.graphViewMode ?? 'table';
   const upstreamNodeIds = useMemo(() => {
-    const entityId = state.selectedEntity;
-    if (!hasRealEntitySelection(state) || graphViewMode !== 'table') return new Set<string>();
-    const ids = new Set<string>();
-    const reverse = new Map<string, string[]>();
-    graph.edges.forEach((edge) => {
-      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
-      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
-      if (!reverse.has(target)) reverse.set(target, []);
-      reverse.get(target)!.push(source);
-    });
-    const queue = [entityId];
-    while (queue.length > 0) {
-      const currentEntity = queue.shift()!;
-      for (const source of reverse.get(currentEntity) ?? []) {
-        if (!ids.has(source)) {
-          ids.add(source);
-          queue.push(source);
-        }
-      }
-    }
-    return ids;
-  }, [state, graph.edges, graphViewMode]);
-  const upstreamEdgeIds = useMemo(() => {
-    const entityId = state.selectedEntity;
-    if (!hasRealEntitySelection(state) || graphViewMode !== 'table') return new Set<string>();
-    const ids = new Set<string>();
-    const reverse = new Map<string, Array<{ previous: string; edgeId: string }>>();
-    graph.edges.forEach((edge) => {
-      const source = edge.originalSourceEntityId ?? edge.sourcePort ?? edge.source;
-      const target = edge.originalTargetEntityId ?? edge.targetPort ?? edge.target;
-      if (!reverse.has(target)) reverse.set(target, []);
-      reverse.get(target)!.push({ previous: source, edgeId: edge.id });
-    });
-    const visited = new Set<string>([entityId]);
-    const queue = [entityId];
-    while (queue.length > 0) {
-      const currentEntity = queue.shift()!;
-      for (const item of reverse.get(currentEntity) ?? []) {
-        ids.add(item.edgeId);
-        if (!visited.has(item.previous)) {
-          visited.add(item.previous);
-          queue.push(item.previous);
-        }
-      }
-    }
-    return ids;
-  }, [state, graph.edges, graphViewMode]);
-  const byEntity = Object.fromEntries(graph.nodes.map((node) => [node.entityId, node]));
+    if (!hasActiveSelection || graphViewMode !== 'table') return new Set<string>();
+    return upstreamPath.entityIds;
+  }, [graphViewMode, hasActiveSelection, upstreamPath.entityIds]);
+  const upstreamEdgeIds = graphViewMode === 'table' && hasActiveSelection
+    ? upstreamPath.edgeIds
+    : new Set<string>();
+  const byEntity = useMemo(
+    () => Object.fromEntries(graph.nodes.map((node) => [node.entityId, node])),
+    [graph.nodes],
+  );
   const positions = useMemo(
     () => ({ ...Object.fromEntries(graph.nodes.map((node) => [node.id, { x: node.x, y: node.y }])), ...state.positions, ...draftPositions }),
     [graph.nodes, state.positions, draftPositions],

@@ -11,8 +11,13 @@ from app.domain import diagnostics_model as diag_codes
 from app.domain.lineage_context import LineageResolveContext
 from app.models import Diagnostic
 from app.domain.lineage_model import SimpleColumnLineage
+from app.services.lateral_view_dependency_extractor import extract_lateral_view_dependencies
 from app.services.star_expansion_service import _detect_star, expand_star_items
-from app.services.sqlglot_compat import get_from_expression, get_with_expression
+from app.services.sqlglot_compat import (
+    get_from_expression,
+    get_with_expression,
+    is_set_operation,
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,15 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
                 stage_status="failed",
             )
 
+    if is_set_operation(tree):
+        return _resolve_set_operation_lineages(
+            tree=tree,
+            dialect=dialect,
+            metadata=metadata,
+            context=context,
+            started=started,
+        )
+
     unsupported = _detect_unsupported(
         tree, has_metadata=metadata is not None,
         is_cte_context=is_cte_context, context=context)
@@ -101,6 +115,21 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     diagnostics: list[Diagnostic] = []
     lineages: list[SimpleColumnLineage] = []
     unsupported_features: list[str] = []
+    lateral_by_output: dict[str, list] = {}
+    for dependency in extract_lateral_view_dependencies(tree):
+        lateral_by_output.setdefault(
+            dependency.output_column.lower().strip("`"), []
+        ).append(dependency)
+    if lateral_by_output:
+        diagnostics.append(Diagnostic(
+            code=diag_codes.UNSUPPORTED_LATERAL_VIEW,
+            level="warning",
+            message=(
+                "LATERAL VIEW column dependencies were extracted with medium confidence; "
+                "row-expansion semantics remain defensive."
+            ),
+        ))
+        unsupported_features.append("lateral_view")
 
     # Build metadata lookup: {table_name: set(column_names)}
     metadata_cols: dict[str, set[str]] = {}
@@ -122,26 +151,57 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
             continue  # handled above
 
         column = _simple_column_from_select_item(select_item)
+        lateral_sources = (
+            lateral_by_output.get(column.name.lower().strip("`"), [])
+            if column is not None
+            else []
+        )
+        if lateral_sources:
+            output_column = select_item.alias_or_name
+            for dependency in lateral_sources:
+                source_table = alias_to_table.get(dependency.source_table_alias or "")
+                if source_table is None and len(tables) == 1:
+                    source_table = tables[0].table_name
+                if source_table is None:
+                    diagnostics.append(Diagnostic(
+                        code=diag_codes.UNKNOWN_TABLE_ALIAS,
+                        level="warning",
+                        message=(
+                            "LATERAL VIEW source alias "
+                            f"{dependency.source_table_alias or '<unknown>'} cannot be resolved."
+                        ),
+                    ))
+                    continue
+                lineages.append(SimpleColumnLineage(
+                    source_table=source_table,
+                    source_column=dependency.source_column,
+                    output_column=output_column,
+                ))
+            continue
         if column is None:
             expression_lineages, expression_diagnostics = _expression_column_lineages(
                 select_item=select_item,
-                tables=tables,
-                alias_to_table=alias_to_table,
+                outer_tables=tables,
                 metadata_cols=metadata_cols,
+                dialect=dialect,
             )
             lineages.extend(expression_lineages)
             diagnostics.extend(expression_diagnostics)
             if not expression_lineages and not expression_diagnostics:
-                diagnostics.append(
-                    Diagnostic(
-                        code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
-                        level="warning",
-                        message=(
-                            "Expression projection has no resolvable source columns. "
-                            "Only source-column dependency extraction is supported."
-                        ),
+                if (
+                    _source_columns_in_expression(select_item)
+                    or select_item.find(exp.Star) is not None
+                ):
+                    diagnostics.append(
+                        Diagnostic(
+                            code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                            level="warning",
+                            message=(
+                                "Expression projection has no resolvable source columns. "
+                                "Only source-column dependency extraction is supported."
+                            ),
+                        )
                     )
-                )
             continue
 
         output_column = select_item.alias_or_name
@@ -298,6 +358,105 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     )
 
 
+def _resolve_set_operation_lineages(
+    tree: exp.Expression,
+    dialect: str,
+    metadata: dict[str, list[str]] | None,
+    context: LineageResolveContext | None,
+    started: float,
+) -> NameResolverResult:
+    branches = _set_operation_selects(tree)
+    if not branches:
+        return _result(
+            started=started,
+            status="partial",
+            confidence_level="unknown",
+            diagnostics=[Diagnostic(
+                code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                level="warning",
+                message="Set operation has no resolvable SELECT branches.",
+            )],
+            unsupported_features=["set_operation"],
+            stage_status="partial",
+        )
+
+    canonical_outputs = [
+        projection.alias_or_name or f"_col_{index + 1}"
+        for index, projection in enumerate(branches[0].selects)
+    ]
+    lineages: list[SimpleColumnLineage] = []
+    diagnostics: list[Diagnostic] = []
+    unsupported_features: list[str] = []
+    alias_to_table: dict[str, str] = {}
+    statuses: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for branch in branches:
+        branch_result = resolve_column_lineage_names(
+            branch.sql(dialect=dialect),
+            dialect,
+            tree=branch,
+            metadata=metadata,
+            context=context,
+        )
+        statuses.append(branch_result.status)
+        diagnostics.extend(branch_result.diagnostics)
+        unsupported_features.extend(branch_result.unsupported_features)
+        alias_to_table.update(branch_result.alias_to_table)
+
+        branch_outputs = [
+            projection.alias_or_name or f"_col_{index + 1}"
+            for index, projection in enumerate(branch.selects)
+        ]
+        output_positions = {
+            output.lower().strip("`"): index
+            for index, output in enumerate(branch_outputs)
+        }
+        for lineage in branch_result.lineages:
+            index = output_positions.get(lineage.output_column.lower().strip("`"))
+            if index is None or index >= len(canonical_outputs):
+                diagnostics.append(Diagnostic(
+                    code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                    level="warning",
+                    message=(
+                        f"Set-operation output {lineage.output_column} cannot be mapped "
+                        "to the first branch by position."
+                    ),
+                ))
+                continue
+            mapped = SimpleColumnLineage(
+                source_table=lineage.source_table,
+                source_column=lineage.source_column,
+                output_column=canonical_outputs[index],
+            )
+            key = (mapped.source_table, mapped.source_column, mapped.output_column)
+            if key not in seen:
+                seen.add(key)
+                lineages.append(mapped)
+
+    status = "failed" if statuses and all(item == "failed" for item in statuses) else (
+        "partial" if diagnostics or any(item != "success" for item in statuses) else "success"
+    )
+    return _result(
+        started=started,
+        status=status,
+        confidence_level="high" if status == "success" else "unknown",
+        lineages=lineages,
+        diagnostics=diagnostics,
+        unsupported_features=list(dict.fromkeys(unsupported_features)),
+        stage_status=status,
+        alias_to_table=alias_to_table,
+    )
+
+
+def _set_operation_selects(tree: exp.Expression) -> list[exp.Select]:
+    if is_set_operation(tree):
+        return _set_operation_selects(tree.this) + _set_operation_selects(tree.expression)
+    if isinstance(tree, exp.Subquery):
+        return _set_operation_selects(tree.this)
+    return [tree] if isinstance(tree, exp.Select) else []
+
+
 def _table_references(tree: exp.Expression, dialect: str,
                        is_cte_context: bool = False,
                        context: LineageResolveContext | None = None) -> list[TableReference]:
@@ -402,9 +561,9 @@ def _simple_column_from_select_item(select_item: exp.Expression) -> exp.Column |
 
 def _expression_column_lineages(
     select_item: exp.Expression,
-    tables: list[TableReference],
-    alias_to_table: dict[str, str],
+    outer_tables: list[TableReference],
     metadata_cols: dict[str, set[str]],
+    dialect: str,
 ) -> tuple[list[SimpleColumnLineage], list[Diagnostic]]:
     output_column = select_item.alias_or_name
     source_columns = _source_columns_in_expression(select_item)
@@ -413,10 +572,15 @@ def _expression_column_lineages(
     seen_lineages: set[tuple[str, str, str]] = set()
 
     for column in source_columns:
-        source_table, diagnostic = _resolve_source_table_for_column(
+        table_scopes = _table_scopes_for_column(
             column=column,
-            tables=tables,
-            alias_to_table=alias_to_table,
+            select_item=select_item,
+            outer_tables=outer_tables,
+            dialect=dialect,
+        )
+        source_table, diagnostic = _resolve_source_table_for_column_scopes(
+            column=column,
+            table_scopes=table_scopes,
             metadata_cols=metadata_cols,
         )
         if diagnostic is not None:
@@ -443,18 +607,90 @@ def _expression_column_lineages(
 def _source_columns_in_expression(select_item: exp.Expression) -> list[exp.Column]:
     expression = select_item.this if isinstance(select_item, exp.Alias) else select_item
     columns: list[exp.Column] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[int, str, str]] = set()
 
     for column in expression.find_all(exp.Column):
         if isinstance(column.this, exp.Star):
             continue
-        key = (column.table, column.name)
+        owner_select = column.find_ancestor(exp.Select)
+        key = (id(owner_select), column.table, column.name)
         if key in seen:
             continue
         seen.add(key)
         columns.append(column)
 
     return columns
+
+
+def _table_scopes_for_column(
+    column: exp.Column,
+    select_item: exp.Expression,
+    outer_tables: list[TableReference],
+    dialect: str,
+) -> list[list[TableReference]]:
+    projection_select = select_item.find_ancestor(exp.Select)
+    current_select = column.find_ancestor(exp.Select)
+    scopes: list[list[TableReference]] = []
+    seen_scopes: set[tuple[tuple[str, str], ...]] = set()
+
+    while current_select is not None and current_select is not projection_select:
+        scope = _table_references_from_final_select(current_select, dialect)
+        _append_table_scope(scopes, seen_scopes, scope)
+        current_select = current_select.find_ancestor(exp.Select)
+
+    _append_table_scope(scopes, seen_scopes, outer_tables)
+    return scopes
+
+
+def _append_table_scope(
+    scopes: list[list[TableReference]],
+    seen_scopes: set[tuple[tuple[str, str], ...]],
+    scope: list[TableReference],
+) -> None:
+    if not scope:
+        return
+    identity = tuple((table.table_name, table.alias) for table in scope)
+    if identity in seen_scopes:
+        return
+    seen_scopes.add(identity)
+    scopes.append(scope)
+
+
+def _resolve_source_table_for_column_scopes(
+    column: exp.Column,
+    table_scopes: list[list[TableReference]],
+    metadata_cols: dict[str, set[str]],
+) -> tuple[str | None, Diagnostic | None]:
+    if not table_scopes:
+        return None, None
+
+    if not column.table:
+        scope = table_scopes[0]
+        return _resolve_source_table_for_column(
+            column=column,
+            tables=scope,
+            alias_to_table={table.alias: table.table_name for table in scope},
+            metadata_cols=metadata_cols,
+        )
+
+    qualifier = column.table
+    for scope in table_scopes:
+        alias_to_table = {table.alias: table.table_name for table in scope}
+        table_names = {table.table_name for table in scope}
+        if qualifier not in alias_to_table and qualifier not in table_names:
+            continue
+        return _resolve_source_table_for_column(
+            column=column,
+            tables=scope,
+            alias_to_table=alias_to_table,
+            metadata_cols=metadata_cols,
+        )
+
+    return None, Diagnostic(
+        code=diag_codes.UNKNOWN_TABLE_ALIAS,
+        level="warning",
+        message=f"Table alias {qualifier} cannot be resolved from the FROM/JOIN tables.",
+    )
 
 
 def _resolve_source_table_for_column(
@@ -567,10 +803,10 @@ def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False,
             )
 
     has_lateral = any(isinstance(node, exp.Lateral) for node in tree.find_all(exp.Lateral))
-    if has_lateral and not skip_subq_check:
+    if has_lateral and not extract_lateral_view_dependencies(tree):
         return (
             diag_codes.UNSUPPORTED_LATERAL_VIEW,
-            "lateral view / explode lineage is not supported in the current name resolver.",
+            "lateral view / explode output cannot be resolved to an input column.",
             "lateral_view",
         )
 

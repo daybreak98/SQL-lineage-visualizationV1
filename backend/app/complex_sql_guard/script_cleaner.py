@@ -158,6 +158,7 @@ def _split_statements(sql: str) -> list[ScriptStatement]:
     statements: list[ScriptStatement] = []
     start = 0
     quote: str | None = None
+    comment: str | None = None
     index = 0
 
     while index < len(sql):
@@ -175,9 +176,30 @@ def _split_statements(sql: str) -> list[ScriptStatement]:
             index += 1
             continue
 
+        if comment == "line":
+            if char in {"\r", "\n"}:
+                comment = None
+            index += 1
+            continue
+        if comment == "block":
+            if char == "*" and next_char == "/":
+                comment = None
+                index += 2
+            else:
+                index += 1
+            continue
+
         if char in {"'", '"', "`"}:
             quote = char
             index += 1
+            continue
+        if char == "-" and next_char == "-":
+            comment = "line"
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            comment = "block"
+            index += 2
             continue
 
         if char == ";":
@@ -220,7 +242,7 @@ def _make_statement(sql: str, start: int, end: int) -> ScriptStatement | None:
 
 
 def _classify_statement(statement: ScriptStatement) -> ScriptStatement:
-    sql = statement.sql
+    sql = _strip_leading_comments(statement.sql)
     diagnostics: list[Diagnostic] = []
     statement_type = "unknown"
 
@@ -336,7 +358,7 @@ def _extract_insert_source(statement: ScriptStatement) -> ScriptSelection | None
     leading = len(suffix) - len(suffix.lstrip())
     trailing = len(suffix) - len(suffix.rstrip())
     source_sql = suffix.strip()
-    if not source_sql or not _QUERY_RE.match(source_sql):
+    if not source_sql or not _QUERY_RE.match(_strip_leading_comments(source_sql)):
         return None
 
     with_prefix = ""
@@ -388,3 +410,23 @@ def _find_matching_paren(text: str, open_pos: int) -> int:
                 return index
         index += 1
     return -1
+
+
+def _strip_leading_comments(sql: str) -> str:
+    """Return a classification view without changing the parsed SQL text."""
+    remaining = sql
+    while True:
+        remaining = remaining.lstrip()
+        if remaining.startswith("--"):
+            newline = remaining.find("\n", 2)
+            if newline < 0:
+                return ""
+            remaining = remaining[newline + 1:]
+            continue
+        if remaining.startswith("/*"):
+            comment_end = remaining.find("*/", 2)
+            if comment_end < 0:
+                return ""
+            remaining = remaining[comment_end + 2:]
+            continue
+        return remaining

@@ -18,13 +18,17 @@ from app.services.lateral_view_dependency_extractor import (
     extract_lateral_view_dependencies,
 )
 from app.services.name_resolver import resolve_column_lineage_names
-from app.services.sqlglot_compat import get_from_expression, get_with_expression
+from app.services.sqlglot_compat import (
+    get_from_expression,
+    get_with_expression,
+    is_set_operation,
+)
 
 
 @dataclass
 class DerivedSelectNode:
     relation_name: str
-    select_node: exp.Select
+    select_node: exp.Query
     relation_kind: str = "cte"
 
 
@@ -46,11 +50,13 @@ def extract_cte_select_nodes(tree: Any) -> List[DerivedSelectNode]:
         name = getattr(cte_expr, "alias_or_name", None)
         if not name:
             continue
-        inner_select = cte_expr.find(exp.Select)
-        if inner_select is not None:
+        query = cte_expr.this
+        if isinstance(query, exp.Subquery):
+            query = query.this
+        if isinstance(query, exp.Query):
             nodes.append(DerivedSelectNode(
                 relation_name=name,
-                select_node=inner_select,
+                select_node=query,
                 relation_kind="cte",
             ))
     return nodes
@@ -66,15 +72,25 @@ def build_derived_relation_schemas(
     # Phase 1: Build CTE schemas in WITH order so earlier CTEs are visible later.
     for cte_node in cte_nodes:
         schema = _build_single_schema(
-            cte_node.select_node, cte_node.relation_name, "cte", cte_names, schemas)
+            cte_node.select_node,
+            cte_node.relation_name,
+            "cte",
+            cte_names,
+            schemas,
+            dialect,
+        )
         schemas[schema.relation_key] = schema
 
     # Phase 2: Build inline subquery schemas in the final SELECT and CTE bodies.
-    select_nodes = [node.select_node for node in cte_nodes]
+    select_nodes = [
+        select
+        for node in cte_nodes
+        for select in _query_selects(node.select_node)
+    ]
     outer_select = _outer_select(tree)
     if outer_select is not None:
         select_nodes.append(outer_select)
-    _build_inline_subquery_schemas(select_nodes, schemas, cte_names)
+    _build_inline_subquery_schemas(select_nodes, schemas, cte_names, dialect=dialect)
 
     return BuildDerivedSchemasResult(schemas=schemas)
 
@@ -90,28 +106,42 @@ def _build_inline_subquery_schemas(
     schemas: Dict[str, DerivedRelationSchema],
     cte_names: Set[str],
     visited: Optional[Set[str]] = None,
-    max_depth: int = 3,
+    max_depth: int = 16,
+    dialect: str = "spark",
 ) -> None:
-    if visited is None:
-        visited = set()
+    completed = visited if visited is not None else set()
     if max_depth <= 0:
         return
+    visiting: Set[str] = set()
 
-    new_schemas: Dict[str, DerivedRelationSchema] = {}
+    def build_subquery(query: exp.Query, alias: str, depth: int) -> None:
+        key = alias.lower().strip("`")
+        if key in schemas or key in completed or key in visiting or depth <= 0:
+            return
+
+        visiting.add(key)
+        try:
+            for child_select in _query_selects(query):
+                for child_query, child_alias in _extract_from_subqueries(child_select):
+                    build_subquery(child_query, child_alias, depth - 1)
+
+            schemas[key] = _build_single_schema(
+                query,
+                alias,
+                "subquery",
+                cte_names,
+                schemas,
+                dialect,
+            )
+            completed.add(key)
+        except Exception:
+            completed.add(key)
+        finally:
+            visiting.discard(key)
 
     for select_node in select_nodes:
         for subquery, alias in _extract_from_subqueries(select_node):
-            key = alias.lower().strip("`")
-            if key in schemas or key in new_schemas or key in visited:
-                continue
-            visited.add(key)
-            try:
-                schema = _build_single_schema(subquery, alias, "subquery", cte_names, schemas)
-                new_schemas[key] = schema
-            except Exception:
-                pass
-
-    schemas.update(new_schemas)
+            build_subquery(subquery, alias, max_depth)
 
 
 def _extract_from_subqueries(
@@ -122,14 +152,14 @@ def _extract_from_subqueries(
     from_expr = get_from_expression(select_node)
     if from_expr is not None and isinstance(from_expr.this, exp.Subquery):
         alias = from_expr.this.alias or from_expr.alias
-        inner = from_expr.this.this  # Subquery.this → Select
-        if alias and isinstance(inner, exp.Select):
+        inner = from_expr.this.this
+        if alias and isinstance(inner, exp.Query):
             pairs.append((inner, alias))
     for join in select_node.args.get("joins") or []:
         if isinstance(join.this, exp.Subquery):
             alias = join.this.alias or join.alias
             inner = join.this.this
-            if alias and isinstance(inner, exp.Select):
+            if alias and isinstance(inner, exp.Query):
                 pairs.append((inner, alias))
     return pairs
 
@@ -144,18 +174,27 @@ def _outer_select(tree: Any) -> Optional[exp.Select]:
     return found if isinstance(found, exp.Select) else None
 
 
+def _query_selects(query: exp.Query) -> List[exp.Select]:
+    if is_set_operation(query):
+        return _query_selects(query.this) + _query_selects(query.expression)
+    if isinstance(query, exp.Subquery):
+        return _query_selects(query.this)
+    return [query] if isinstance(query, exp.Select) else []
+
+
 def _build_single_schema(
-    select_node: exp.Select,
+    select_node: exp.Query,
     relation_name: str,
     relation_kind: str,
     cte_names: Set[str],
     existing_schemas: Dict[str, DerivedRelationSchema],
+    dialect: str,
 ) -> DerivedRelationSchema:
     schema = DerivedRelationSchema(relation_name=relation_name, relation_kind=relation_kind)
 
     # Path A: name_resolver for simple column projections
     inner_result = resolve_column_lineage_names(
-        "", "spark", tree=select_node, is_cte_context=False)
+        "", dialect, tree=select_node, is_cte_context=False)
 
     resolved_columns: Set[str] = set()
     grouped_inputs: Dict[str, List[ColumnRef]] = {}
@@ -163,9 +202,14 @@ def _build_single_schema(
     for lineage in inner_result.lineages:
         output_key = lineage.output_column.lower().strip("`")
         src = lineage.source_table.lower().strip("`")
-        source_kind = "cte" if src in cte_names else "table"
+        source_name = lineage.source_table
+        if src.startswith("subquery:"):
+            source_name = lineage.source_table[len("subquery:"):]
+            source_kind = "subquery"
+        else:
+            source_kind = "cte" if src in cte_names else "table"
         grouped_inputs.setdefault(output_key, []).append(
-            ColumnRef(lineage.source_table, lineage.source_column, source_kind)
+            ColumnRef(source_name, lineage.source_column, source_kind)
         )
         output_names[output_key] = lineage.output_column
 
@@ -177,6 +221,9 @@ def _build_single_schema(
         )
         schema.add_dependency(dep)
         resolved_columns.add(output_key)
+
+    if is_set_operation(select_node):
+        return schema
 
     # Path B: ExpressionDependencyExtractor for complex expressions
     _extract_complex_dependencies(select_node, relation_name, relation_kind,

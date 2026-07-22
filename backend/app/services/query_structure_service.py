@@ -107,7 +107,12 @@ def _direct_table_names(expr_node: Any) -> Set[str]:
 
 
 def _has_subquery(tree: Any) -> bool:
-    return any(True for _ in tree.find_all(exp.Subquery)) if tree else False
+    if tree is None:
+        return False
+    return any(True for _ in tree.find_all(exp.Subquery)) or any(
+        isinstance(exists.this, exp.Query)
+        for exists in tree.find_all(exp.Exists)
+    )
 
 
 def _table_full_name(table: Any) -> str:

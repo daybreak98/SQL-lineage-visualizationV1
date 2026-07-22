@@ -16,6 +16,16 @@ type RawApiEdge = NonNullable<NonNullable<BackendAnalysisResult['graph_view_mode
 
 export type GraphLike = { nodes: GraphNode[]; edges: GraphEdge[] };
 export type PositionMap = Record<string, { x: number; y: number }>;
+export type VisibleGraphState = Pick<
+  WorkbenchState,
+  | 'backendGraph'
+  | 'positions'
+  | 'graphViewMode'
+  | 'columnContainerMode'
+  | 'collapsedRelationIds'
+  | 'selectedEntity'
+  | 'query'
+>;
 
 
 const LAYOUT = {
@@ -673,7 +683,7 @@ function visibleLegacyColumnGraph(base: GraphLike, positions: PositionMap): Grap
   return applyManualPositions(layouted, positions);
 }
 
-function visibleRelationColumnGraph(state: WorkbenchState, base: GraphLike, positions: PositionMap): GraphLike {
+function visibleRelationColumnGraph(state: VisibleGraphState, base: GraphLike, positions: PositionMap): GraphLike {
   const projected = buildRelationColumnProjection(base, {
     collapsedRelationIds: state.collapsedRelationIds ?? {},
     selectedEntityId: state.selectedEntity,
@@ -684,7 +694,7 @@ function visibleRelationColumnGraph(state: WorkbenchState, base: GraphLike, posi
 }
 
 
-export function visibleGraph(state: WorkbenchState): GraphLike {
+export function visibleGraph(state: VisibleGraphState): GraphLike {
   const base = state.backendGraph;
   if (!base) return { nodes: [], edges: [] };
 

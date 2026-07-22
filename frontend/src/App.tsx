@@ -18,6 +18,7 @@ import { exampleSql } from './data/exampleSql';
 import { transitionRenderMode } from './data/selectors';
 import { DialectConvertPage } from './pages/DialectConvertPage';
 import type { SearchItem, WorkbenchState } from './types/lineage';
+import { clearSelection } from './workbench/actions';
 import {
   applySearchSelection,
   applySqlDraftChange,
@@ -84,14 +85,9 @@ export default function App() {
 
   const onTransition = useCallback((event: string) => {
     setState((s) => {
+      if (event === 'CLEAR_SELECTION') return clearSelection(s);
       const t = transitionRenderMode(s.renderMode, event);
-      const patch: Partial<WorkbenchState> = { renderMode: t.mode, lastTransition: t.description };
-      if (event === 'CLEAR_SELECTION') {
-        patch.selectedOutput = null;
-        patch.selectedEntity = 'out:group';
-        patch.selectedMapping = null;
-      }
-      return { ...s, ...patch };
+      return { ...s, renderMode: t.mode, lastTransition: t.description };
     });
   }, []);
 

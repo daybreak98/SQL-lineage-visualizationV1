@@ -9,6 +9,11 @@ from sqlglot.errors import ParseError as SqlglotParseError
 
 from app.domain import diagnostics_model as diag_codes
 from app.models import Diagnostic
+from app.services.sqlglot_compat import (
+    get_from_expression,
+    get_with_expression,
+    is_set_operation,
+)
 
 
 @dataclass(frozen=True)
@@ -67,8 +72,9 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
             stage_status="failed",
         )
 
-    with_expr = _get_arg(tree, "with")
-    if with_expr is None:
+    with_expr = get_with_expression(tree)
+    named_subqueries = _named_subqueries(tree)
+    if with_expr is None and not named_subqueries:
         return _result(
             started=started,
             status="partial",
@@ -84,33 +90,61 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
             stage_status="partial",
         )
 
-    cte_names = {cte.alias_or_name for cte in with_expr.expressions}
+    cte_expressions = list(with_expr.expressions) if with_expr is not None else []
+    cte_names = {cte.alias_or_name for cte in cte_expressions}
     nodes_by_id: dict[str, StructureNode] = {}
     edges_by_id: dict[str, StructureEdge] = {}
 
-    for cte in with_expr.expressions:
+    for cte in cte_expressions:
         cte_name = cte.alias_or_name
         cte_id = _cte_id(cte_name)
         nodes_by_id[cte_id] = StructureNode(id=cte_id, node_type="cte", label=cte_name)
 
-    for cte in with_expr.expressions:
+    for alias in named_subqueries:
+        subquery_id = _subquery_id(alias)
+        nodes_by_id[subquery_id] = StructureNode(
+            id=subquery_id,
+            node_type="subquery",
+            label=alias,
+        )
+
+    for cte in cte_expressions:
         cte_name = cte.alias_or_name
         target_id = _cte_id(cte_name)
-        for table in cte.this.find_all(exp.Table):
-            source_name = _table_name_without_alias(table, dialect)
-            if source_name == cte_name:
+        for source in _direct_sources(cte.this):
+            source_id, source_type, source_label = _source_identity(
+                source, dialect, cte_names
+            )
+            if not source_id or source_id == target_id:
                 continue
-            if source_name in cte_names:
-                source_id = _cte_id(source_name)
-                edge_type = "cte_dependency"
-            else:
-                source_id = _physical_table_id(source_name)
-                edge_type = "table_to_cte"
-                nodes_by_id[source_id] = StructureNode(
-                    id=source_id,
-                    node_type="table",
-                    label=source_name,
-                )
+            nodes_by_id.setdefault(
+                source_id,
+                StructureNode(id=source_id, node_type=source_type, label=source_label),
+            )
+            edge_type = {
+                "cte": "cte_dependency",
+                "subquery": "subquery_dependency",
+            }.get(source_type, "table_to_cte")
+            edge = StructureEdge(source=source_id, target=target_id, edge_type=edge_type)
+            edges_by_id[edge.id] = edge
+
+    for alias, subquery in named_subqueries.items():
+        target_id = _subquery_id(alias)
+        for source in _direct_sources(_subquery_body(subquery)):
+            source_id, source_type, source_label = _source_identity(
+                source, dialect, cte_names
+            )
+            if not source_id or source_id == target_id:
+                continue
+            nodes_by_id.setdefault(
+                source_id,
+                StructureNode(id=source_id, node_type=source_type, label=source_label),
+            )
+            edge_type = (
+                "table_to_subquery"
+                if source_type == "table"
+                else "subquery_dependency"
+            )
             edge = StructureEdge(source=source_id, target=target_id, edge_type=edge_type)
             edges_by_id[edge.id] = edge
 
@@ -133,6 +167,25 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
         edge = StructureEdge(source=source_id, target=result_id, edge_type=edge_type)
         edges_by_id[edge.id] = edge
 
+    aliases_by_subquery_identity = {
+        id(expression): alias for alias, expression in named_subqueries.items()
+    }
+    for alias, subquery in named_subqueries.items():
+        target_id, edge_type = _containing_relation_target(
+            subquery,
+            aliases_by_subquery_identity,
+            result_id,
+        )
+        source_id = _subquery_id(alias)
+        if not target_id or source_id == target_id:
+            continue
+        edge = StructureEdge(
+            source=source_id,
+            target=target_id,
+            edge_type=edge_type,
+        )
+        edges_by_id[edge.id] = edge
+
     return _result(
         started=started,
         status="success",
@@ -144,18 +197,111 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
 
 
 def _final_query_sources(tree: exp.Expression, dialect: str) -> list[exp.Table]:
-    from_expr = _get_arg(tree, "from")
+    outer_select = _outer_select(tree)
+    if outer_select is None:
+        return []
+    from_expr = get_from_expression(outer_select)
     sources: list[exp.Table] = []
     if from_expr is not None and isinstance(from_expr.this, exp.Table):
         sources.append(from_expr.this)
-    for join in tree.args.get("joins") or []:
+    for join in outer_select.args.get("joins") or []:
         if isinstance(join.this, exp.Table):
             sources.append(join.this)
     return sources
 
 
-def _get_arg(tree: exp.Expression, key: str):
-    return tree.args.get(key) or tree.args.get(f"{key}_")
+def _named_subqueries(tree: exp.Expression) -> dict[str, exp.Expression]:
+    result: dict[str, exp.Expression] = {}
+    generated_index = 0
+    for subquery in tree.find_all(exp.Subquery):
+        alias = subquery.alias_or_name
+        if not alias:
+            alias_expression = subquery.find_ancestor(exp.Alias)
+            alias = alias_expression.alias_or_name if alias_expression is not None else ""
+        if not alias:
+            generated_index += 1
+            predicate = subquery.parent
+            prefix = "in_subquery" if isinstance(predicate, exp.In) else "subquery"
+            alias = f"{prefix}_{generated_index}"
+        if alias:
+            result[alias] = subquery
+
+    exists_index = 0
+    for exists in tree.find_all(exp.Exists):
+        query = exists.this
+        if not isinstance(query, exp.Query) or isinstance(query, exp.Subquery):
+            continue
+        exists_index += 1
+        result[f"exists_subquery_{exists_index}"] = query
+    return result
+
+
+def _subquery_body(subquery: exp.Expression) -> exp.Expression:
+    if isinstance(subquery, exp.Subquery):
+        return subquery.this
+    return subquery
+
+
+def _outer_select(tree: exp.Expression | None) -> exp.Select | None:
+    if isinstance(tree, exp.Select):
+        return tree
+    if isinstance(tree, exp.Subquery):
+        return _outer_select(tree.this)
+    expression = getattr(tree, "expression", None)
+    if isinstance(expression, exp.Select):
+        return expression
+    this = getattr(tree, "this", None)
+    if isinstance(this, exp.Select):
+        return this
+    return None
+
+
+def _direct_sources(tree: exp.Expression | None) -> list[exp.Expression]:
+    if is_set_operation(tree):
+        return _direct_sources(tree.this) + _direct_sources(tree.expression)
+    select = _outer_select(tree)
+    if select is None:
+        return []
+    result: list[exp.Expression] = []
+    from_expr = get_from_expression(select)
+    if from_expr is not None and isinstance(from_expr.this, (exp.Table, exp.Subquery)):
+        result.append(from_expr.this)
+    for join in select.args.get("joins") or []:
+        if isinstance(join.this, (exp.Table, exp.Subquery)):
+            result.append(join.this)
+    return result
+
+
+def _containing_relation_target(
+    subquery: exp.Expression,
+    aliases_by_subquery_identity: dict[int, str],
+    result_id: str,
+) -> tuple[str, str]:
+    parent = subquery.parent
+    while parent is not None:
+        parent_alias = aliases_by_subquery_identity.get(id(parent))
+        if parent_alias:
+            return _subquery_id(parent_alias), "subquery_dependency"
+        if isinstance(parent, exp.CTE):
+            return _cte_id(parent.alias_or_name), "subquery_dependency"
+        parent = parent.parent
+    return result_id, "subquery_to_result"
+
+
+def _source_identity(
+    source: exp.Expression,
+    dialect: str,
+    cte_names: set[str],
+) -> tuple[str, str, str]:
+    if isinstance(source, exp.Subquery):
+        alias = source.alias_or_name
+        return (_subquery_id(alias), "subquery", alias) if alias else ("", "", "")
+    if isinstance(source, exp.Table):
+        name = _table_name_without_alias(source, dialect)
+        if name in cte_names:
+            return _cte_id(name), "cte", name
+        return _physical_table_id(name), "table", name
+    return "", "", ""
 
 
 def _table_name_without_alias(table: exp.Table, dialect: str) -> str:
@@ -171,6 +317,10 @@ def _cte_id(name: str) -> str:
 
 def _physical_table_id(name: str) -> str:
     return f"physical_table:{name}"
+
+
+def _subquery_id(name: str) -> str:
+    return f"subquery:{name}"
 
 
 def _result(

@@ -34,3 +34,36 @@ group by user_id;
     assert "from dwd_order_di" in selection.analysis_sql
     assert selection.selected_kind == "insert_source_query"
     assert selection.selected_target == "insert_source_0001"
+
+
+def test_leading_comments_do_not_hide_analyzable_queries():
+    selection = select_analysis_statement(
+        """
+        -- first validation
+        select id from first_table;
+
+        /* final validation */
+        select id from final_table;
+        """
+    )
+
+    assert "final_table" in selection.analysis_sql
+    assert selection.selected_kind == "query_statement"
+    assert selection.selected_target == "statement_0001"
+    assert not any(
+        diagnostic.code == "UNKNOWN_STATEMENT_TYPE"
+        for diagnostic in selection.diagnostics
+    )
+
+
+def test_semicolons_inside_comments_do_not_split_the_query():
+    selection = select_analysis_statement(
+        """
+        /* validation notes; this is still one statement; */
+        select id from final_table;
+        """
+    )
+
+    assert selection.selected_kind == "query_statement"
+    assert selection.statement_count == 1
+    assert "final_table" in selection.analysis_sql

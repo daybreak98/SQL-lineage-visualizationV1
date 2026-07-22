@@ -102,3 +102,94 @@ def test_cte_lateral_view_output_resolves_explode_input_column():
     } == {
         ("ods_order_log", "refund_amount"),
     }
+
+
+def test_cte_set_operation_merges_branch_dependencies_by_ordinal():
+    tree = sqlglot.parse_one(
+        """
+        with combined as (
+          select id, amount from order_a
+          union all
+          select user_id, total_amount from order_b
+        )
+        select id, amount from combined
+        """,
+        dialect="spark",
+    )
+
+    result = build_derived_relation_schemas(tree, dialect="spark")
+    schema = result.schemas["combined"]
+
+    assert {
+        (source.relation_name, source.column_name)
+        for source in schema.get_dependency("id").inputs
+    } == {
+        ("order_a", "id"),
+        ("order_b", "user_id"),
+    }
+    assert {
+        (source.relation_name, source.column_name)
+        for source in schema.get_dependency("amount").inputs
+    } == {
+        ("order_a", "amount"),
+        ("order_b", "total_amount"),
+    }
+
+
+def test_inline_set_operation_merges_branch_dependencies_by_ordinal():
+    tree = sqlglot.parse_one(
+        """
+        select id
+        from (
+          select id from order_a
+          union all
+          select user_id from order_b
+        ) combined
+        """,
+        dialect="spark",
+    )
+
+    result = build_derived_relation_schemas(tree, dialect="spark")
+    dependency = result.schemas["combined"].get_dependency("id")
+
+    assert dependency is not None
+    assert {
+        (source.relation_name, source.column_name)
+        for source in dependency.inputs
+    } == {
+        ("order_a", "id"),
+        ("order_b", "user_id"),
+    }
+
+
+def test_nested_inline_subqueries_build_inner_schema_before_outer_schema():
+    tree = sqlglot.parse_one(
+        """
+        select c.z
+        from (
+          select b.y * 2 as z
+          from (
+            select a.x + 1 as y
+            from source_a a
+          ) b
+        ) c
+        """,
+        dialect="spark",
+    )
+
+    result = build_derived_relation_schemas(tree, dialect="spark")
+
+    assert set(result.schemas) == {"b", "c"}
+    inner = result.schemas["b"].get_dependency("y")
+    outer = result.schemas["c"].get_dependency("z")
+    assert inner is not None
+    assert outer is not None
+    assert {(source.relation_name, source.column_name) for source in inner.inputs} == {
+        ("source_a", "x"),
+    }
+    assert {
+        (source.relation_name, source.column_name, source.relation_kind)
+        for source in outer.inputs
+    } == {
+        ("b", "y", "subquery"),
+    }

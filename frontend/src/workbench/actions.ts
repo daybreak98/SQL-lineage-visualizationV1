@@ -1,4 +1,5 @@
 import type { DetailTab, GraphViewMode, WorkbenchState } from '../types/lineage';
+import { transitionRenderMode } from '../data/selectors';
 
 let canvasCommandId = 0;
 
@@ -104,6 +105,20 @@ export function selectNodeEntity(state: WorkbenchState, entityId: string): Workb
     selectedMapping: null,
     detailMode: alreadySelected ? 'collapsed' : 'compact',
     detailTab: 'summary',
+  };
+}
+
+export function clearSelection(state: WorkbenchState): WorkbenchState {
+  const transition = transitionRenderMode(state.renderMode, 'CLEAR_SELECTION');
+  return {
+    ...state,
+    selectedOutput: null,
+    selectedEntity: 'out:group',
+    selectedMapping: null,
+    detailMode: 'collapsed',
+    detailTab: 'summary',
+    renderMode: transition.mode,
+    lastTransition: transition.description,
   };
 }
 

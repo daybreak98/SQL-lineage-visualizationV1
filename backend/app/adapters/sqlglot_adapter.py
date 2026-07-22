@@ -34,7 +34,7 @@ def extract_output_fields_from_tree(
 
     output_fields: list[dict[str, str]] = []
 
-    for col_expr in tree.selects:
+    for col_expr in getattr(tree, "selects", []):
         alias = col_expr.alias or ""
 
         if alias:
@@ -50,10 +50,15 @@ def extract_output_fields_from_tree(
         else:
             raw = restore_placeholders(col_expr.sql(dialect=dialect))
             is_simple_column = isinstance(col_expr, Column)
+            output_name = (
+                restore_placeholders(col_expr.name)
+                if is_simple_column and col_expr.name
+                else raw
+            )
             output_fields.append(
                 {
-                    "name": raw,
-                    "display_name": raw,
+                    "name": output_name,
+                    "display_name": output_name,
                     "expression": raw,
                     "source_type": "unknown" if is_simple_column else "expression",
                 }
