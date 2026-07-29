@@ -4,7 +4,15 @@ import sys
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPOSITORY_ROOT))
-from tools.validate_production_dirty_sql_corpus import inspect_case, validate_corpus
+from fastapi.testclient import TestClient
+
+from app.main import app
+from tools.validate_production_dirty_sql_corpus import (
+    PHYSICAL_TABLE_PATTERN,
+    _strip_sql_comments,
+    inspect_case,
+    validate_corpus,
+)
 
 
 CORPUS_DIR = REPOSITORY_ROOT / "测试用例" / "血缘压测_生产脏SQL_20260719"
@@ -113,3 +121,56 @@ FROM combined_rows;
     assert incomplete_with_result["has_single_final_query"] is False
     assert dml_with_result["executable_statement_count"] == 1
     assert dml_with_result["has_single_final_query"] is False
+
+
+def test_production_dirty_sql_corpus_runtime_lineage_contract():
+    expected_output_counts = {
+        "01": 14,
+        "02": 17,
+        "03": 18,
+        "04": 20,
+        "05": 15,
+        "06": 20,
+        "07": 20,
+        "08": 20,
+        "09": 20,
+        "10": 20,
+    }
+    client = TestClient(app)
+
+    for case_path in sorted(CORPUS_DIR.glob("*.sql")):
+        sql = case_path.read_text(encoding="utf-8")
+        response = client.post(
+            "/api/sql/analyze",
+            json={"sql": sql, "dialect": "spark"},
+        )
+        assert response.status_code == 200, case_path.name
+        data = response.json()
+        graph = data["graph_view_model"]
+        node_ids = {node["id"] for node in graph["nodes"]}
+        output_names = {field["name"] for field in data["output_fields"]}
+        expected_tables = set(
+            PHYSICAL_TABLE_PATTERN.findall(_strip_sql_comments(sql))
+        )
+
+        assert data["status"] == "success", case_path.name
+        assert data["confidence_level"] == "high", case_path.name
+        assert data["diagnostics_report"]["error_count"] == 0, case_path.name
+        warning_codes = {
+            diagnostic["code"]
+            for diagnostic in data["diagnostics_report"]["diagnostics"]
+            if diagnostic["level"] == "warning"
+        }
+        assert warning_codes <= {"LONG_SQL_DETECTED"}, case_path.name
+        assert data["diagnostics_report"]["info_count"] <= 15, case_path.name
+        assert len(output_names) == expected_output_counts[case_path.name[:2]]
+        assert {f"physical_table:{name}" for name in expected_tables} <= node_ids
+        assert {f"output_column:{name}" for name in output_names} <= node_ids
+        assert any(
+            node["node_type"] == "subquery"
+            for node in graph["nodes"]
+        ), case_path.name
+        assert any(
+            edge["edge_type"] == "column_lineage"
+            for edge in graph["edges"]
+        ), case_path.name

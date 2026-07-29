@@ -37,3 +37,20 @@ def test_freemarker_block_shield():
     assert sum(1 for placeholder in bundle.placeholders if placeholder.kind == "freemarker_block") == 2
     assert diag_codes.FREEMARKER_BLOCK_DETECTED in {diagnostic.code for diagnostic in diagnostics}
 
+
+def test_repeated_info_shields_are_aggregated_without_losing_placeholders():
+    sql = (
+        "-- first comment\n"
+        "select 'a', 'b', payload from t "
+        "where get_json_object(payload, '$.a') = 'x' "
+        "and get_json_object(payload, '$.b') = 'y'\n"
+        "/* second comment */"
+    )
+    bundle, diagnostics = DirtySqlPreprocessor().preprocess(sql)
+
+    assert len(bundle.placeholders) == 8
+    by_code = {diagnostic.code: diagnostic for diagnostic in diagnostics}
+    assert by_code[diag_codes.LITERAL_SHIELD_APPLIED].extra["occurrence_count"] == 4
+    assert by_code[diag_codes.JSON_PATH_LITERAL_SHIELD_APPLIED].extra["occurrence_count"] == 2
+    assert by_code["COMMENT_SHIELD_APPLIED"].extra["occurrence_count"] == 2
+    assert len(diagnostics) == 3
