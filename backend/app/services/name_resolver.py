@@ -802,7 +802,14 @@ def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False,
                 "subquery",
             )
 
-    has_lateral = any(isinstance(node, exp.Lateral) for node in tree.find_all(exp.Lateral))
+    has_lateral = any(
+        isinstance(node, exp.Lateral)
+        and (
+            not isinstance(tree, exp.Select)
+            or node.find_ancestor(exp.Select) is tree
+        )
+        for node in tree.find_all(exp.Lateral)
+    )
     if has_lateral and not extract_lateral_view_dependencies(tree):
         return (
             diag_codes.UNSUPPORTED_LATERAL_VIEW,

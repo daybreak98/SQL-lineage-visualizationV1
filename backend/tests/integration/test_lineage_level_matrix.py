@@ -274,6 +274,31 @@ def test_lateral_view_output_rolls_up_to_explode_input():
     } <= _edge_set(data)
 
 
+def test_nested_cte_lateral_view_does_not_block_final_select_lineage():
+    data = _analyze(
+        """
+        with exploded as (
+          select t.user_id, item_id
+          from user_items t
+          lateral view explode(t.item_ids) e as item_id
+        ),
+        item_counts as (
+          select user_id, count(item_id) as item_count
+          from exploded
+          group by user_id
+        )
+        select user_id, item_count
+        from item_counts
+        """,
+        dialect="hive",
+    )
+
+    assert {
+        ("physical_column:user_items.user_id", "output_column:user_id", "column_lineage"),
+        ("physical_column:user_items.item_ids", "output_column:item_count", "column_lineage"),
+    } <= _edge_set(data)
+
+
 def test_scalar_subquery_preserves_structure_and_inner_column_dependency():
     data = _analyze(
         """
@@ -330,6 +355,32 @@ def test_constant_outputs_remain_visible_without_fake_source_edges():
     assert {"output_column:user_id", "output_column:flag", "output_column:run_date"} <= node_ids
     assert not any(
         edge["target"] in {"output_column:flag", "output_column:run_date"}
+        and edge["edge_type"] == "column_lineage"
+        for edge in data["graph_view_model"]["edges"]
+    )
+
+
+def test_cte_set_operation_constants_do_not_report_unknown_derived_columns():
+    data = _analyze(
+        """
+        with sources as (
+          select order_id, 'online' as source_type from online_orders
+          union all
+          select order_id, 'offline' as source_type from offline_orders
+        )
+        select source_type
+        from sources
+        """
+    )
+
+    assert data["status"] == "success"
+    assert not any(
+        diagnostic["code"] in {"UNKNOWN_COLUMN", "UNKNOWN_DERIVED_COLUMN"}
+        and "source_type" in diagnostic["message"]
+        for diagnostic in data["diagnostics_report"]["diagnostics"]
+    )
+    assert not any(
+        edge["target"] == "output_column:source_type"
         and edge["edge_type"] == "column_lineage"
         for edge in data["graph_view_model"]["edges"]
     )

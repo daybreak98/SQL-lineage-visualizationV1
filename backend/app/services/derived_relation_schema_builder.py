@@ -182,6 +182,40 @@ def _query_selects(query: exp.Query) -> List[exp.Select]:
     return [query] if isinstance(query, exp.Select) else []
 
 
+def _add_constant_dependencies(
+    query: exp.Query,
+    relation_name: str,
+    relation_kind: str,
+    resolved_columns: Set[str],
+    schema: DerivedRelationSchema,
+) -> None:
+    branches = _query_selects(query)
+    if not branches:
+        return
+
+    for index, first_projection in enumerate(branches[0].selects):
+        output_name = first_projection.alias_or_name
+        output_key = output_name.lower().strip("`") if output_name else ""
+        if not output_key or output_key in resolved_columns:
+            continue
+        if any(index >= len(branch.selects) for branch in branches):
+            continue
+        projections = [branch.selects[index] for branch in branches]
+        if any(
+            projection.find(exp.Column) is not None
+            or projection.find(exp.Star) is not None
+            for projection in projections
+        ):
+            continue
+        schema.add_dependency(ColumnDependency(
+            output=ColumnRef(relation_name, output_name, relation_kind),
+            inputs=[],
+            transform_type="constant",
+            expression=first_projection.sql(),
+        ))
+        resolved_columns.add(output_key)
+
+
 def _build_single_schema(
     select_node: exp.Query,
     relation_name: str,
@@ -221,6 +255,9 @@ def _build_single_schema(
         )
         schema.add_dependency(dep)
         resolved_columns.add(output_key)
+
+    _add_constant_dependencies(
+        select_node, relation_name, relation_kind, resolved_columns, schema)
 
     if is_set_operation(select_node):
         return schema
