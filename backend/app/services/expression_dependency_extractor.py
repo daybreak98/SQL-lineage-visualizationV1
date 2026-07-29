@@ -120,7 +120,7 @@ class ExpressionDependencyExtractor:
         self, expression: Any, scope: ResolveScope,
     ) -> List[ColumnRef]:
         refs: List[ColumnRef] = []
-        for col in expression.find_all(exp.Column):
+        for col in source_columns_with_named_windows(expression):
             if isinstance(col.this, exp.Star):
                 continue  # skip star references inside qualified stars
             table_or_alias = col.table
@@ -169,3 +169,35 @@ class ExpressionDependencyExtractor:
                 seen.add(key)
                 result.append(ref)
         return result
+
+
+def source_columns_with_named_windows(expression: Any) -> List[exp.Column]:
+    """Collect expression columns plus referenced WINDOW-clause definitions."""
+    columns = list(expression.find_all(exp.Column))
+    select = expression.find_ancestor(exp.Select)
+    if select is None:
+        return columns
+
+    definitions = {
+        window.name.lower().strip("`"): window
+        for window in (select.args.get("windows") or [])
+        if window.name
+    }
+    pending = [
+        str(window.alias).lower().strip("`")
+        for window in expression.find_all(exp.Window)
+        if window.alias
+    ]
+    visited: Set[str] = set()
+    while pending:
+        name = pending.pop()
+        if not name or name in visited:
+            continue
+        visited.add(name)
+        definition = definitions.get(name)
+        if definition is None:
+            continue
+        columns.extend(definition.find_all(exp.Column))
+        if definition.alias:
+            pending.append(str(definition.alias).lower().strip("`"))
+    return columns

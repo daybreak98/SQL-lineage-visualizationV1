@@ -12,6 +12,7 @@ from app.domain.lineage_context import LineageResolveContext
 from app.models import Diagnostic
 from app.domain.lineage_model import SimpleColumnLineage
 from app.services.lateral_view_dependency_extractor import extract_lateral_view_dependencies
+from app.services.expression_dependency_extractor import source_columns_with_named_windows
 from app.services.star_expansion_service import _detect_star, expand_star_items
 from app.services.sqlglot_compat import (
     get_from_expression,
@@ -598,7 +599,7 @@ def _source_columns_in_expression(select_item: exp.Expression) -> list[exp.Colum
     columns: list[exp.Column] = []
     seen: set[tuple[int, str, str]] = set()
 
-    for column in expression.find_all(exp.Column):
+    for column in source_columns_with_named_windows(expression):
         if isinstance(column.this, exp.Star):
             continue
         owner_select = column.find_ancestor(exp.Select)

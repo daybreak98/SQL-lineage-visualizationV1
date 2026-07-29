@@ -500,6 +500,35 @@ def test_correlated_exists_is_visible_in_subquery_structure():
     } <= _edge_set(data)
 
 
+def test_named_window_definition_columns_are_output_dependencies():
+    data = _analyze(
+        "select sum(a.amount) over metric_window as running_amount "
+        "from source_a a "
+        "window metric_window as ("
+        "partition by a.user_id order by a.event_time"
+        ")"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        (
+            "physical_column:source_a.amount",
+            "output_column:running_amount",
+            "column_lineage",
+        ),
+        (
+            "physical_column:source_a.user_id",
+            "output_column:running_amount",
+            "column_lineage",
+        ),
+        (
+            "physical_column:source_a.event_time",
+            "output_column:running_amount",
+            "column_lineage",
+        ),
+    } <= _edge_set(data)
+
+
 def test_union_branches_with_reused_inline_alias_roll_up_every_physical_column():
     data = _analyze(
         """
