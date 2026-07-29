@@ -14,9 +14,9 @@ from app.domain.lineage_model import SimpleColumnLineage
 from app.services.lateral_view_dependency_extractor import extract_lateral_view_dependencies
 from app.services.expression_dependency_extractor import source_columns_with_named_windows
 from app.services.relation_transform_dependency_extractor import (
+    extract_pivot_star_dependencies,
     extract_pivot_transforms,
     extract_relation_transform_dependencies,
-    pivot_star_output_names,
 )
 from app.services.star_expansion_service import _detect_star, expand_star_items
 from app.services.sqlglot_compat import (
@@ -134,6 +134,7 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
         )
         relation_transform_by_output.setdefault(key, []).append(dependency)
     pivot_transforms = extract_pivot_transforms(tree)
+    pivot_star_dependencies = extract_pivot_star_dependencies(tree, metadata)
     # Build metadata lookup: {table_name: set(column_names)}
     metadata_cols: dict[str, set[str]] = {}
     if metadata:
@@ -151,30 +152,18 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     for select_item in tree.selects:
         is_star, _qualifier = _detect_star(select_item)
         if is_star:
-            pivot_output_names = pivot_star_output_names(tree, metadata)
-            if pivot_transforms and pivot_output_names:
-                generated = {
-                    column.lower().strip("`")
-                    for transform in pivot_transforms
-                    for column in transform.generated_columns
-                }
-                for transform in pivot_transforms:
-                    source_table = alias_to_table.get(transform.source_alias)
+            if pivot_transforms:
+                for dependency in pivot_star_dependencies:
+                    source_table = alias_to_table.get(
+                        dependency.source_table_alias or ""
+                    )
                     if source_table is None:
                         continue
-                    for output_column in pivot_output_names:
-                        if output_column.lower().strip("`") not in generated:
-                            lineages.append(SimpleColumnLineage(
-                                source_table=source_table,
-                                source_column=output_column,
-                                output_column=output_column,
-                            ))
-                    for dependency in transform.dependencies:
-                        lineages.append(SimpleColumnLineage(
-                            source_table=source_table,
-                            source_column=dependency.source_column,
-                            output_column=dependency.output_column,
-                        ))
+                    lineages.append(SimpleColumnLineage(
+                        source_table=source_table,
+                        source_column=dependency.source_column,
+                        output_column=dependency.output_column,
+                    ))
             continue  # handled above
 
         column = _simple_column_from_select_item(select_item)

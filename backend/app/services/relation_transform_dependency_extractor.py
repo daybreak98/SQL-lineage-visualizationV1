@@ -75,6 +75,97 @@ def extract_pivot_transforms(tree: Any) -> list[PivotTransform]:
     return transforms
 
 
+def extract_pivot_star_dependencies(
+    tree: Any,
+    metadata: dict[str, list[str]] | None = None,
+) -> list[RelationTransformDependency]:
+    if not isinstance(tree, exp.Select):
+        return []
+
+    dependencies: list[RelationTransformDependency] = []
+    visited_relations: set[int] = set()
+    for pivot in tree.find_all(exp.Pivot):
+        if pivot.find_ancestor(exp.Select) is not tree or pivot.args.get("unpivot"):
+            continue
+        relation = pivot.parent
+        relation_id = id(relation)
+        if relation_id in visited_relations:
+            continue
+        visited_relations.add(relation_id)
+
+        source_alias = getattr(relation, "alias_or_name", None) or ""
+        if not source_alias:
+            continue
+        source_columns = _pivot_source_columns(
+            tree,
+            source_alias,
+            metadata or {},
+        )
+        state: dict[str, tuple[str, tuple[str, ...]]] = {
+            _column_key(column): (column, (column,))
+            for column in source_columns
+        }
+
+        for stage in relation.args.get("pivots") or []:
+            if stage.args.get("unpivot"):
+                continue
+            measure_groups = [
+                _column_names([measure])
+                for measure in stage.expressions
+            ]
+            field_columns = _pivot_field_columns(stage)
+            consumed = {
+                _column_key(column)
+                for columns in measure_groups
+                for column in columns
+            } | {_column_key(column) for column in field_columns}
+            next_state = {
+                key: value
+                for key, value in state.items()
+                if key not in consumed
+            }
+            generated_columns = [
+                column.name
+                for column in stage.args.get("columns") or []
+                if isinstance(column, exp.Identifier) and column.name
+            ]
+            measures_are_positional = (
+                bool(measure_groups)
+                and len(generated_columns) % len(measure_groups) == 0
+            )
+            for index, output_column in enumerate(generated_columns):
+                measure_columns = (
+                    measure_groups[index % len(measure_groups)]
+                    if measures_are_positional
+                    else [
+                        column
+                        for group in measure_groups
+                        for column in group
+                    ]
+                )
+                root_columns: list[str] = []
+                for source_column in field_columns + measure_columns:
+                    prior = state.get(_column_key(source_column))
+                    root_columns.extend(
+                        prior[1] if prior is not None else (source_column,)
+                    )
+                next_state[_column_key(output_column)] = (
+                    output_column,
+                    tuple(dict.fromkeys(root_columns)),
+                )
+            state = next_state
+
+        for output_column, root_columns in state.values():
+            for source_column in root_columns:
+                dependencies.append(RelationTransformDependency(
+                    output_column=output_column,
+                    source_column=source_column,
+                    source_table_alias=source_alias,
+                    transform_type="pivot",
+                ))
+    return _dedupe(dependencies)
+
+
 def pivot_star_output_names(
     tree: Any,
     metadata: dict[str, list[str]] | None = None,
@@ -83,18 +174,11 @@ def pivot_star_output_names(
         isinstance(item, exp.Star) for item in tree.selects
     ):
         return []
-    transforms = extract_pivot_transforms(tree)
-    if len(transforms) != 1:
-        return []
-
-    transform = transforms[0]
-    source_columns = _pivot_source_columns(tree, transform.source_alias, metadata or {})
-    consumed = {column.lower().strip("`") for column in transform.consumed_columns}
-    group_columns = [
-        column for column in source_columns
-        if column.lower().strip("`") not in consumed
-    ]
-    return list(dict.fromkeys(group_columns + list(transform.generated_columns)))
+    dependencies = extract_pivot_star_dependencies(tree, metadata)
+    return list(dict.fromkeys(
+        dependency.output_column
+        for dependency in dependencies
+    ))
 
 
 def _extract_unpivot_dependencies(tree: exp.Select) -> list[RelationTransformDependency]:
@@ -144,14 +228,36 @@ def _extract_unnest_dependencies(tree: exp.Select) -> list[RelationTransformDepe
             for column in getattr(alias_expression, "columns", [])
             if isinstance(column, exp.Identifier) and column.name
         ]
-        source_columns = [
-            column for expression in unnest.expressions
-            for column in expression.find_all(exp.Column)
+        source_groups = [
+            list(expression.find_all(exp.Column))
+            for expression in unnest.expressions
         ]
-        for output_column in output_columns:
+        flattened_sources = [
+            source_column
+            for source_group in source_groups
+            for source_column in source_group
+        ]
+        for index, output_column in enumerate(output_columns):
+            if len(source_groups) == 1:
+                source_columns = source_groups[0]
+            elif len(output_columns) == len(source_groups):
+                source_columns = source_groups[index]
+            else:
+                source_columns = flattened_sources
             for source_column in source_columns:
                 dependencies.append(RelationTransformDependency(
                     output_column=output_column,
+                    output_table_alias=output_alias or None,
+                    source_column=source_column.name,
+                    source_table_alias=source_column.table or None,
+                    transform_type="unnest",
+                ))
+
+        offset = unnest.args.get("offset")
+        if isinstance(offset, exp.Identifier) and offset.name:
+            for source_column in flattened_sources:
+                dependencies.append(RelationTransformDependency(
+                    output_column=offset.name,
                     output_table_alias=output_alias or None,
                     source_column=source_column.name,
                     source_table_alias=source_column.table or None,
@@ -178,6 +284,18 @@ def _pivot_source_columns(
             if projection.alias_or_name and not isinstance(projection, exp.Star)
         ]
     return []
+
+
+def _column_key(column: str) -> str:
+    return column.lower().strip('`"')
+
+
+def _pivot_field_columns(pivot: exp.Pivot) -> list[str]:
+    columns: list[str] = []
+    for field in pivot.args.get("fields") or []:
+        target = field.this if isinstance(field, exp.In) else field
+        columns.extend(_column_names([target]))
+    return list(dict.fromkeys(columns))
 
 
 def _column_names(expressions: list[exp.Expression]) -> list[str]:

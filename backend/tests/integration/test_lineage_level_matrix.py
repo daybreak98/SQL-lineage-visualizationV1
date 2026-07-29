@@ -413,6 +413,126 @@ def test_unnest_output_rolls_up_to_collection_input():
     } <= _edge_set(data)
 
 
+def test_multi_collection_unnest_maps_outputs_by_position():
+    data = _analyze(
+        "select t.id, u.item, u.qty from source_a t "
+        "cross join unnest(t.items, t.quantities) as u(item, qty)"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:source_a.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_a.items", "output_column:item", "column_lineage"),
+        ("physical_column:source_a.quantities", "output_column:qty", "column_lineage"),
+    } <= edges
+    assert (
+        "physical_column:source_a.quantities",
+        "output_column:item",
+        "column_lineage",
+    ) not in edges
+    assert (
+        "physical_column:source_a.items",
+        "output_column:qty",
+        "column_lineage",
+    ) not in edges
+
+
+def test_unnest_with_ordinality_maps_position_to_collection_input():
+    data = _analyze(
+        "select t.id, u.item, u.ord from source_a t "
+        "cross join unnest(t.items) with ordinality as u(item, ord)"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        ("physical_column:source_a.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_a.items", "output_column:item", "column_lineage"),
+        ("physical_column:source_a.items", "output_column:ord", "column_lineage"),
+    } <= _edge_set(data)
+
+
+def test_cte_pivot_rolls_generated_columns_to_physical_inputs():
+    data = _analyze(
+        "with p as ("
+        "select * from ("
+        "select dept, fiscal_year, sales from sales_fact"
+        ") s pivot ("
+        "sum(sales) for fiscal_year in (2024 as y2024, 2025 as y2025)"
+        ")"
+        ") select dept, y2024, y2025 from p"
+    )
+
+    assert {
+        ("physical_column:sales_fact.dept", "output_column:dept", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:y2024", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:y2024", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:y2025", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:y2025", "column_lineage"),
+    } <= _edge_set(data)
+    assert not any(
+        edge[0].startswith("physical_column:p.")
+        for edge in _edge_set(data)
+        if edge[2] == "column_lineage"
+    )
+
+
+def test_multiple_pivot_clauses_compose_column_dependencies():
+    data = _analyze(
+        "select * from ("
+        "select dept, fiscal_year, channel, sales from sales_fact"
+        ") s "
+        "pivot (sum(sales) for fiscal_year in (2024 as y2024, 2025 as y2025)) "
+        "pivot (sum(y2024) for channel in ('app' as app, 'web' as web))"
+    )
+
+    assert {field["name"] for field in data["output_fields"]} == {
+        "dept",
+        "y2025",
+        "app",
+        "web",
+    }
+    assert {
+        ("physical_column:sales_fact.dept", "output_column:dept", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:y2025", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:y2025", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:app", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:app", "column_lineage"),
+        ("physical_column:sales_fact.channel", "output_column:app", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:web", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:web", "column_lineage"),
+        ("physical_column:sales_fact.channel", "output_column:web", "column_lineage"),
+    } <= _edge_set(data)
+
+
+def test_multi_measure_pivot_maps_each_output_to_its_measure():
+    data = _analyze(
+        "select * from ("
+        "select dept, fiscal_year, sales, cost from sales_fact"
+        ") s pivot ("
+        "sum(sales) as total, max(cost) as peak "
+        "for fiscal_year in (2024 as y2024, 2025 as y2025)"
+        ")"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:sales_fact.sales", "output_column:y2024_total", "column_lineage"),
+        ("physical_column:sales_fact.cost", "output_column:y2024_peak", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:y2025_total", "column_lineage"),
+        ("physical_column:sales_fact.cost", "output_column:y2025_peak", "column_lineage"),
+    } <= edges
+    assert (
+        "physical_column:sales_fact.cost",
+        "output_column:y2024_total",
+        "column_lineage",
+    ) not in edges
+    assert (
+        "physical_column:sales_fact.sales",
+        "output_column:y2024_peak",
+        "column_lineage",
+    ) not in edges
+
+
 def test_nested_cte_lateral_view_does_not_block_final_select_lineage():
     data = _analyze(
         """

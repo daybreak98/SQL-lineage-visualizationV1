@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from sqlglot import exp
 
+from app.domain.lineage_context import LineageResolveContext
 from app.domain.cte_rollup_models import (
     ColumnDependency, ColumnRef, DerivedRelationSchema, LineageDiagnostic,
 )
@@ -18,6 +19,9 @@ from app.services.lateral_view_dependency_extractor import (
     extract_lateral_view_dependencies,
 )
 from app.services.name_resolver import resolve_column_lineage_names
+from app.services.relation_transform_dependency_extractor import (
+    extract_pivot_transforms,
+)
 from app.services.sqlglot_compat import (
     get_from_expression,
     get_with_expression,
@@ -73,6 +77,12 @@ def build_derived_relation_schemas(
 
     # Phase 1: Build CTE schemas in WITH order so earlier CTEs are visible later.
     for cte_node in cte_nodes:
+        _build_inline_subquery_schemas(
+            _query_selects(cte_node.select_node),
+            schemas,
+            cte_names,
+            dialect=dialect,
+        )
         schema = _build_single_schema(
             cte_node.select_node,
             cte_node.relation_name,
@@ -276,8 +286,27 @@ def _build_single_schema(
     schema = DerivedRelationSchema(relation_name=relation_name, relation_kind=relation_kind)
 
     # Path A: name_resolver for simple column projections
+    derived_metadata: Dict[str, List[str]] = {}
+    for schema_key, existing_schema in existing_schemas.items():
+        column_names = [
+            dependency.output.column_name
+            for dependency in existing_schema.output_columns.values()
+        ]
+        derived_metadata[schema_key] = column_names
+        if existing_schema.relation_kind == "subquery":
+            derived_metadata[f"subquery:{schema_key}"] = column_names
+    resolver_context = LineageResolveContext(
+        cte_names=cte_names,
+        allow_cte=bool(cte_names),
+        allow_subquery=True,
+    )
     inner_result = resolve_column_lineage_names(
-        "", dialect, tree=select_node, is_cte_context=False)
+        "",
+        dialect,
+        tree=select_node,
+        metadata=derived_metadata or None,
+        context=resolver_context,
+    )
 
     resolved_columns: Set[str] = set()
     grouped_inputs: Dict[str, List[ColumnRef]] = {}
@@ -325,8 +354,9 @@ def _build_single_schema(
                                    cte_names, resolved_columns, schema)
 
     # Path C: select * expansion from known schemas
-    _expand_star_from_schemas(select_node, relation_name, relation_kind,
-                               existing_schemas, resolved_columns, schema)
+    if not extract_pivot_transforms(select_node):
+        _expand_star_from_schemas(select_node, relation_name, relation_kind,
+                                  existing_schemas, resolved_columns, schema)
 
     # Path D: LATERAL VIEW output column -> row-expanding expression inputs.
     _apply_lateral_view_dependencies(
