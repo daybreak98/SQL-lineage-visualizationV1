@@ -11,6 +11,7 @@ from app.complex_sql_guard import analyze_complex_sql
 from app.complex_sql_guard.dialect import get_dialect_profile
 from app.domain import diagnostics_model as diag_codes
 from app.models import Diagnostic, OutputField
+from app.services.dml_projection_service import build_dml_projection
 
 
 @dataclass
@@ -45,8 +46,11 @@ def parse_sql(
     complex_result = analyze_complex_sql(sql, dialect=dialect, options=options or {})
 
     tree = complex_result.selected_tree
+    dml_projection = build_dml_projection(tree, parser_dialect)
+    if dml_projection is not None:
+        tree = dml_projection.tree
     output_fields = (
-        [
+        dml_projection.output_fields if dml_projection is not None else [
             OutputField(**payload)
             for payload in extract_output_fields_from_tree(
                 tree,
