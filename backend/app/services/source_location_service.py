@@ -91,8 +91,10 @@ def build_source_locations(
 
     entities = _normalize_targets(target_entities, output_column_names)
     entity_ids_by_type: Dict[str, Set[str]] = {}
+    source_names_by_id: Dict[str, str] = {}
     for e in entities:
         entity_ids_by_type.setdefault(e["entityType"], set()).add(e["entityId"])
+        source_names_by_id[e["entityId"]] = str(e.get("sourceName") or "")
 
     # ── CTE locations ──
     cte_names: Set[str] = set()
@@ -106,7 +108,12 @@ def build_source_locations(
     # ── Inline / scalar / predicate subquery locations ──
     if "subquery" in entity_ids_by_type:
         for entity_id in entity_ids_by_type["subquery"]:
-            location = _find_subquery_location(sql, masked_sql, entity_id)
+            location = _find_subquery_location(
+                sql,
+                masked_sql,
+                entity_id,
+                source_name=source_names_by_id.get(entity_id),
+            )
             if location is not None:
                 locations[entity_id] = location.to_dict()
 
@@ -355,6 +362,7 @@ def _find_subquery_location(
     original_sql: str,
     masked_sql: str,
     entity_id: str,
+    source_name: str | None = None,
 ) -> SourceLocation | None:
     name = entity_id.split(":", 1)[1] if ":" in entity_id else entity_id
     generated = re.fullmatch(r"(exists_subquery|in_subquery|subquery)_(\d+)", name)
@@ -395,14 +403,27 @@ def _find_subquery_location(
             "approximate",
         )
 
-    escaped_name = re.escape(name)
+    occurrence_match = re.fullmatch(r"(?P<name>.+)__occurrence_(?P<index>[2-9]\d*)", name)
+    is_generated_duplicate = (
+        occurrence_match is not None
+        and bool(source_name)
+        and source_name == occurrence_match.group("name")
+    )
+    lookup_name = source_name or name
+    occurrence_index = (
+        int(occurrence_match.group("index")) - 1
+        if is_generated_duplicate and occurrence_match is not None
+        else 0
+    )
+    escaped_name = re.escape(lookup_name)
     alias_pattern = re.compile(
         rf"\)\s+(?:as\s+)?(?P<alias>`{escaped_name}`|\b{escaped_name}\b)",
         flags=re.IGNORECASE,
     )
-    alias_match = alias_pattern.search(masked_sql)
-    if alias_match is None:
+    alias_matches = list(alias_pattern.finditer(masked_sql))
+    if not 0 <= occurrence_index < len(alias_matches):
         return None
+    alias_match = alias_matches[occurrence_index]
     return _source_location_from_span(
         original_sql,
         entity_id,

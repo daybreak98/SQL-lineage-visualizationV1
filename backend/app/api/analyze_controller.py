@@ -601,6 +601,10 @@ def _target_entities(graph_view_model: GraphViewModel) -> list[dict[str, str]]:
         if entity_id in seen:
             continue
         seen.add(entity_id)
-        entities.append({"entityId": entity_id, "entityType": entity_type})
+        entities.append({
+            "entityId": entity_id,
+            "entityType": entity_type,
+            "sourceName": label,
+        })
     return entities
 

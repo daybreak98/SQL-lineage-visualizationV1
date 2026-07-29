@@ -74,6 +74,9 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
 
     with_expr = get_with_expression(tree)
     named_subqueries = _named_subqueries(tree)
+    aliases_by_subquery_identity = {
+        id(expression): alias for alias, expression in named_subqueries.items()
+    }
     if with_expr is None and not named_subqueries:
         return _result(
             started=started,
@@ -100,12 +103,12 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
         cte_id = _cte_id(cte_name)
         nodes_by_id[cte_id] = StructureNode(id=cte_id, node_type="cte", label=cte_name)
 
-    for alias in named_subqueries:
+    for alias, subquery in named_subqueries.items():
         subquery_id = _subquery_id(alias)
         nodes_by_id[subquery_id] = StructureNode(
             id=subquery_id,
             node_type="subquery",
-            label=alias,
+            label=_subquery_declared_name(subquery) or alias,
         )
 
     for cte in cte_expressions:
@@ -113,7 +116,7 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
         target_id = _cte_id(cte_name)
         for source in _direct_sources(cte.this):
             source_id, source_type, source_label = _source_identity(
-                source, dialect, cte_names
+                source, dialect, cte_names, aliases_by_subquery_identity
             )
             if not source_id or source_id == target_id:
                 continue
@@ -132,7 +135,7 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
         target_id = _subquery_id(alias)
         for source in _direct_sources(_subquery_body(subquery)):
             source_id, source_type, source_label = _source_identity(
-                source, dialect, cte_names
+                source, dialect, cte_names, aliases_by_subquery_identity
             )
             if not source_id or source_id == target_id:
                 continue
@@ -167,9 +170,6 @@ def analyze_cte_structure(sql: str, dialect: str = "spark",
         edge = StructureEdge(source=source_id, target=result_id, edge_type=edge_type)
         edges_by_id[edge.id] = edge
 
-    aliases_by_subquery_identity = {
-        id(expression): alias for alias, expression in named_subqueries.items()
-    }
     for alias, subquery in named_subqueries.items():
         target_id, edge_type = _containing_relation_target(
             subquery,
@@ -212,17 +212,20 @@ def _final_query_sources(tree: exp.Expression, dialect: str) -> list[exp.Table]:
 
 def _named_subqueries(tree: exp.Expression) -> dict[str, exp.Expression]:
     result: dict[str, exp.Expression] = {}
-    for subquery_index, subquery in enumerate(tree.find_all(exp.Subquery), start=1):
-        alias = subquery.alias_or_name
-        if not alias:
-            alias_expression = subquery.find_ancestor(exp.Alias)
-            alias = alias_expression.alias_or_name if alias_expression is not None else ""
+    alias_counts: dict[str, int] = {}
+    subqueries = list(tree.find_all(exp.Subquery))
+    subqueries.sort(key=_subquery_source_offset)
+    for subquery_index, subquery in enumerate(subqueries, start=1):
+        alias = _subquery_declared_name(subquery)
         if not alias:
             predicate = subquery.parent
             prefix = "in_subquery" if isinstance(predicate, exp.In) else "subquery"
             alias = f"{prefix}_{subquery_index}"
         if alias:
-            result[alias] = subquery
+            alias_counts[alias] = alias_counts.get(alias, 0) + 1
+            occurrence = alias_counts[alias]
+            unique_alias = alias if occurrence == 1 else f"{alias}__occurrence_{occurrence}"
+            result[unique_alias] = subquery
 
     exists_index = 0
     for exists in tree.find_all(exp.Exists):
@@ -232,6 +235,30 @@ def _named_subqueries(tree: exp.Expression) -> dict[str, exp.Expression]:
         exists_index += 1
         result[f"exists_subquery_{exists_index}"] = query
     return result
+
+
+def _subquery_source_offset(subquery: exp.Subquery) -> float:
+    """Order subqueries by their original SQL position instead of AST traversal order."""
+    query = subquery.this
+    if isinstance(query, exp.Select):
+        projection_offsets = [
+            offset
+            for projection in query.expressions
+            if (offset := _expression_source_offset(projection)) is not None
+        ]
+        if projection_offsets:
+            return min(projection_offsets)
+    offset = _expression_source_offset(subquery)
+    return float(offset) if offset is not None else float("inf")
+
+
+def _expression_source_offset(expression: exp.Expression) -> int | None:
+    offsets = [
+        int(start)
+        for node in expression.walk()
+        if (start := node.meta.get("start")) is not None
+    ]
+    return min(offsets) if offsets else None
 
 
 def _subquery_body(subquery: exp.Expression) -> exp.Expression:
@@ -290,10 +317,12 @@ def _source_identity(
     source: exp.Expression,
     dialect: str,
     cte_names: set[str],
+    aliases_by_subquery_identity: dict[int, str],
 ) -> tuple[str, str, str]:
     if isinstance(source, exp.Subquery):
-        alias = source.alias_or_name
-        return (_subquery_id(alias), "subquery", alias) if alias else ("", "", "")
+        alias = aliases_by_subquery_identity.get(id(source), source.alias_or_name)
+        label = _subquery_declared_name(source) or alias
+        return (_subquery_id(alias), "subquery", label) if alias else ("", "", "")
     if isinstance(source, exp.Table):
         name = _table_name_without_alias(source, dialect)
         if name in cte_names:
@@ -319,6 +348,14 @@ def _physical_table_id(name: str) -> str:
 
 def _subquery_id(name: str) -> str:
     return f"subquery:{name}"
+
+
+def _subquery_declared_name(subquery: exp.Subquery) -> str:
+    alias = subquery.alias_or_name
+    if alias:
+        return alias
+    alias_expression = subquery.find_ancestor(exp.Alias)
+    return alias_expression.alias_or_name if alias_expression is not None else ""
 
 
 def _result(

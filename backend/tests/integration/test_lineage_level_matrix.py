@@ -503,6 +503,83 @@ def test_cte_body_does_not_consume_generated_subquery_index():
     assert in_location["startOffset"] == sql.index(" in (") + 1
 
 
+def test_cte_nested_named_subquery_precedes_in_subquery_in_source_order():
+    sql = (
+        "with c as (select * from (select id from a) x) "
+        "select * from c where id in (select id from b)"
+    )
+    data = _analyze(sql)
+
+    subquery_ids = {
+        node["id"]
+        for node in data["graph_view_model"]["nodes"]
+        if node["node_type"] == "subquery"
+    }
+    assert {"subquery:x", "subquery:in_subquery_2"} <= subquery_ids
+    assert data["source_locations"]["subquery:x"]["rawText"] == "x"
+    in_location = data["source_locations"]["subquery:in_subquery_2"]
+    assert in_location["rawText"].lower() == "in"
+    assert in_location["startOffset"] == sql.index(" in (") + 1
+
+
+def test_nested_generated_subqueries_follow_lexical_source_order():
+    sql = (
+        "select * from (select * from (select id from a)) "
+        "where id in (select id from b)"
+    )
+    data = _analyze(sql)
+
+    expected_ids = {
+        "subquery:subquery_1",
+        "subquery:subquery_2",
+        "subquery:in_subquery_3",
+    }
+    actual_ids = {
+        node["id"]
+        for node in data["graph_view_model"]["nodes"]
+        if node["node_type"] == "subquery"
+    }
+    assert expected_ids <= actual_ids
+    assert expected_ids <= set(data["source_locations"])
+    assert data["source_locations"]["subquery:subquery_1"]["startOffset"] == 15
+    assert data["source_locations"]["subquery:subquery_2"]["startOffset"] == 30
+    assert data["source_locations"]["subquery:in_subquery_3"]["startOffset"] == 58
+
+
+def test_reused_named_subquery_aliases_keep_distinct_nodes_and_locations():
+    sql = (
+        "select * from (select id from a) s "
+        "union all "
+        "select * from (select id from b) s"
+    )
+    data = _analyze(sql)
+
+    expected_ids = {"subquery:s", "subquery:s__occurrence_2"}
+    actual_ids = {
+        node["id"]
+        for node in data["graph_view_model"]["nodes"]
+        if node["node_type"] == "subquery"
+    }
+    assert expected_ids <= actual_ids
+    assert data["source_locations"]["subquery:s"]["startOffset"] == 33
+    assert data["source_locations"]["subquery:s__occurrence_2"]["startOffset"] == 78
+
+
+def test_literal_alias_that_looks_like_occurrence_suffix_is_not_decoded():
+    sql = "select * from (select id from a) `s__occurrence_2`"
+    data = _analyze(sql)
+
+    node = next(
+        node
+        for node in data["graph_view_model"]["nodes"]
+        if node["id"] == "subquery:s__occurrence_2"
+    )
+    assert node["label"] == "s__occurrence_2"
+    location = data["source_locations"]["subquery:s__occurrence_2"]
+    assert location["rawText"] == "`s__occurrence_2`"
+    assert location["startOffset"] == 33
+
+
 def test_ddl_only_script_returns_partial_empty_graph_instead_of_server_error():
     data = _analyze(
         "drop table t; create table t(a int); msck repair table t"
