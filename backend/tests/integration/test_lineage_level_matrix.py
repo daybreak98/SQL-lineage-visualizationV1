@@ -401,6 +401,41 @@ def test_unpivot_generated_columns_roll_up_to_each_unpivoted_source():
     } <= _edge_set(data)
 
 
+def test_multi_value_unpivot_maps_tuple_outputs_by_position():
+    data = _analyze(
+        "select id, metric, sales_value, cost_value from metrics "
+        "unpivot ("
+        "(sales_value, cost_value) for metric in ("
+        "(sales_2024, cost_2024) as y2024, "
+        "(sales_2025, cost_2025) as y2025"
+        ")"
+        ")"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:metrics.id", "output_column:id", "column_lineage"),
+        ("physical_column:metrics.sales_2024", "output_column:metric", "column_lineage"),
+        ("physical_column:metrics.cost_2024", "output_column:metric", "column_lineage"),
+        ("physical_column:metrics.sales_2025", "output_column:metric", "column_lineage"),
+        ("physical_column:metrics.cost_2025", "output_column:metric", "column_lineage"),
+        ("physical_column:metrics.sales_2024", "output_column:sales_value", "column_lineage"),
+        ("physical_column:metrics.sales_2025", "output_column:sales_value", "column_lineage"),
+        ("physical_column:metrics.cost_2024", "output_column:cost_value", "column_lineage"),
+        ("physical_column:metrics.cost_2025", "output_column:cost_value", "column_lineage"),
+    } <= edges
+    assert (
+        "physical_column:metrics.cost_2024",
+        "output_column:sales_value",
+        "column_lineage",
+    ) not in edges
+    assert (
+        "physical_column:metrics.sales_2024",
+        "output_column:cost_value",
+        "column_lineage",
+    ) not in edges
+
+
 def test_unnest_output_rolls_up_to_collection_input():
     data = _analyze(
         "select t.id, u.item from source_a t "

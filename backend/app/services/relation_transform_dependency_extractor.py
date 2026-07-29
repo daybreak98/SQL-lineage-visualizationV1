@@ -188,28 +188,64 @@ def _extract_unpivot_dependencies(tree: exp.Select) -> list[RelationTransformDep
             continue
         relation = pivot.parent
         source_alias = getattr(relation, "alias_or_name", None) or ""
-        input_columns = [
-            column.name
-            for field in pivot.args.get("fields") or []
-            if isinstance(field, exp.In)
-            for expression in field.expressions
-            for column in expression.find_all(exp.Column)
-            if column.name
-        ]
-        output_columns = [
-            identifier.name
-            for identifier in pivot.expressions
-            if isinstance(identifier, exp.Identifier) and identifier.name
-        ]
+        input_groups: list[list[exp.Column]] = []
+        label_outputs: list[str] = []
         for field in pivot.args.get("fields") or []:
-            field_expression = field.this if isinstance(field, exp.In) else None
-            if isinstance(field_expression, exp.Identifier) and field_expression.name:
-                output_columns.append(field_expression.name)
-        for output_column in dict.fromkeys(output_columns):
-            for source_column in input_columns:
+            if not isinstance(field, exp.In):
+                continue
+            label_expressions = (
+                field.this.expressions
+                if isinstance(field.this, exp.Tuple)
+                else [field.this]
+            )
+            label_outputs.extend(
+                expression.name
+                for expression in label_expressions
+                if isinstance(expression, exp.Identifier) and expression.name
+            )
+            for expression in field.expressions:
+                payload = (
+                    expression.this
+                    if isinstance(expression, exp.PivotAlias)
+                    else expression
+                )
+                input_groups.append(list(payload.find_all(exp.Column)))
+
+        value_outputs: list[str] = []
+        for expression in pivot.expressions:
+            output_expressions = (
+                expression.expressions
+                if isinstance(expression, exp.Tuple)
+                else [expression]
+            )
+            value_outputs.extend(
+                output.name
+                for output in output_expressions
+                if isinstance(output, (exp.Identifier, exp.Column)) and output.name
+            )
+
+        flattened_inputs = [
+            source_column
+            for input_group in input_groups
+            for source_column in input_group
+        ]
+        output_sources = {
+            output_column: flattened_inputs
+            for output_column in label_outputs
+        }
+        for index, output_column in enumerate(value_outputs):
+            output_sources[output_column] = (
+                [input_group[index] for input_group in input_groups]
+                if input_groups
+                and all(index < len(input_group) for input_group in input_groups)
+                else flattened_inputs
+            )
+
+        for output_column, source_columns in output_sources.items():
+            for source_column in source_columns:
                 dependencies.append(RelationTransformDependency(
                     output_column=output_column,
-                    source_column=source_column,
+                    source_column=source_column.name,
                     source_table_alias=source_alias or None,
                     transform_type="unpivot",
                 ))
