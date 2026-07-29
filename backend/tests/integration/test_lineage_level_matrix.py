@@ -458,6 +458,51 @@ def test_same_named_physical_columns_use_table_alias_source_locations():
     assert orders_location["startOffset"] == sql.index("o.id") + 2
 
 
+def test_generated_in_subquery_location_uses_global_subquery_index():
+    sql = "select * from (select id from a) where id in (select id from b)"
+    data = _analyze(sql)
+
+    subquery_ids = {
+        node["id"]
+        for node in data["graph_view_model"]["nodes"]
+        if node["node_type"] == "subquery"
+    }
+    assert {"subquery:subquery_1", "subquery:in_subquery_2"} <= subquery_ids
+    in_location = data["source_locations"]["subquery:in_subquery_2"]
+    assert in_location["rawText"].lower() == "in"
+    assert in_location["startOffset"] == sql.index(" in (") + 1
+
+
+def test_named_subquery_still_consumes_global_generated_subquery_index():
+    sql = "select * from (select id from a) named where id in (select id from b)"
+    data = _analyze(sql)
+
+    subquery_ids = {
+        node["id"]
+        for node in data["graph_view_model"]["nodes"]
+        if node["node_type"] == "subquery"
+    }
+    assert {"subquery:named", "subquery:in_subquery_2"} <= subquery_ids
+    in_location = data["source_locations"]["subquery:in_subquery_2"]
+    assert in_location["rawText"].lower() == "in"
+    assert in_location["startOffset"] == sql.index(" in (") + 1
+
+
+def test_cte_body_does_not_consume_generated_subquery_index():
+    sql = (
+        "with base as (select id from a) "
+        "select * from base where id in (select id from b)"
+    )
+    data = _analyze(sql)
+
+    assert "subquery:in_subquery_1" in {
+        node["id"] for node in data["graph_view_model"]["nodes"]
+    }
+    in_location = data["source_locations"]["subquery:in_subquery_1"]
+    assert in_location["rawText"].lower() == "in"
+    assert in_location["startOffset"] == sql.index(" in (") + 1
+
+
 def test_ddl_only_script_returns_partial_empty_graph_instead_of_server_error():
     data = _analyze(
         "drop table t; create table t(a int); msck repair table t"

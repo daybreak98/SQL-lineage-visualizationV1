@@ -364,14 +364,9 @@ def _find_subquery_location(
         if kind == "exists_subquery":
             pattern = r"\bexists\s*\(\s*select\b"
             token = "exists"
-        elif kind == "in_subquery":
-            pattern = r"\bin\s*\(\s*select\b"
-            token = "in"
-        else:
-            pattern = r"\(\s*select\b"
-            token = "select"
-        matches = list(re.finditer(pattern, masked_sql, flags=re.IGNORECASE))
-        if 0 <= index < len(matches):
+            matches = list(re.finditer(pattern, masked_sql, flags=re.IGNORECASE))
+            if not 0 <= index < len(matches):
+                return None
             match = matches[index]
             token_match = re.search(token, match.group(0), flags=re.IGNORECASE)
             token_start = match.start() + (token_match.start() if token_match else 0)
@@ -384,7 +379,21 @@ def _find_subquery_location(
                 token_end,
                 "approximate",
             )
-        return None
+
+        openings = _generated_subquery_openings(masked_sql)
+        if not 0 <= index < len(openings):
+            return None
+        opening_kind, token_start, token_end = openings[index]
+        if opening_kind != kind:
+            return None
+        return _source_location_from_span(
+            original_sql,
+            entity_id,
+            "subquery",
+            token_start,
+            token_end,
+            "approximate",
+        )
 
     escaped_name = re.escape(name)
     alias_pattern = re.compile(
@@ -402,6 +411,21 @@ def _find_subquery_location(
         alias_match.end("alias"),
         "exact",
     )
+
+
+def _generated_subquery_openings(masked_sql: str) -> List[Tuple[str, int, int]]:
+    """Return SQLGlot Subquery openings in lexical order, excluding CTE and EXISTS bodies."""
+    openings: List[Tuple[str, int, int]] = []
+    for match in re.finditer(r"\(\s*(?P<select>select)\b", masked_sql, flags=re.IGNORECASE):
+        prefix_match = re.search(r"(?P<keyword>[A-Za-z_]+)\s*$", masked_sql[:match.start()])
+        prefix = prefix_match.group("keyword").lower() if prefix_match else ""
+        if prefix in {"as", "exists"}:
+            continue
+        if prefix == "in" and prefix_match is not None:
+            openings.append(("in_subquery", prefix_match.start("keyword"), prefix_match.end("keyword")))
+        else:
+            openings.append(("subquery", match.start("select"), match.end("select")))
+    return openings
 
 
 def _table_alias_bindings(masked_sql: str) -> Dict[str, List[Tuple[str, int, int]]]:

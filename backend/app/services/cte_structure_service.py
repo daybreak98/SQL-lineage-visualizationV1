@@ -212,17 +212,15 @@ def _final_query_sources(tree: exp.Expression, dialect: str) -> list[exp.Table]:
 
 def _named_subqueries(tree: exp.Expression) -> dict[str, exp.Expression]:
     result: dict[str, exp.Expression] = {}
-    generated_index = 0
-    for subquery in tree.find_all(exp.Subquery):
+    for subquery_index, subquery in enumerate(tree.find_all(exp.Subquery), start=1):
         alias = subquery.alias_or_name
         if not alias:
             alias_expression = subquery.find_ancestor(exp.Alias)
             alias = alias_expression.alias_or_name if alias_expression is not None else ""
         if not alias:
-            generated_index += 1
             predicate = subquery.parent
             prefix = "in_subquery" if isinstance(predicate, exp.In) else "subquery"
-            alias = f"{prefix}_{generated_index}"
+            alias = f"{prefix}_{subquery_index}"
         if alias:
             result[alias] = subquery
 
