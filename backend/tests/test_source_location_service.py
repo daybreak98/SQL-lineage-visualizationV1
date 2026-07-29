@@ -151,6 +151,28 @@ def test_same_table_appears_twice_has_two_occurrences():
     assert len(loc["occurrences"]) == 2
 
 
+def test_reused_alias_is_scoped_to_its_union_branch_for_physical_columns():
+    sql = (
+        "select s.id from prod.users s\n"
+        "union all\n"
+        "select s.id from prod.orders s"
+    )
+    result = build_source_locations(
+        sql,
+        target_entities=[
+            {"entityId": "physical_column:prod.users.id", "entityType": "physical_column"},
+            {"entityId": "physical_column:prod.orders.id", "entityType": "physical_column"},
+        ],
+    )
+
+    users = result.locations["physical_column:prod.users.id"]
+    orders = result.locations["physical_column:prod.orders.id"]
+    assert (users["line"], users["col"]) == (1, 10)
+    assert (orders["line"], orders["col"]) == (3, 10)
+    assert len(users["occurrences"]) == 1
+    assert len(orders["occurrences"]) == 1
+
+
 def test_source_location_has_all_required_fields():
     result = build_source_locations(
         "select a from dwd_order_di",

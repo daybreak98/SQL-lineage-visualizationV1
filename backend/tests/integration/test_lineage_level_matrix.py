@@ -439,6 +439,25 @@ def test_inline_scalar_and_exists_subqueries_have_source_locations():
         assert location["endOffset"] > location["startOffset"]
 
 
+def test_same_named_physical_columns_use_table_alias_source_locations():
+    sql = (
+        "select\n"
+        "  u.id as user_id,\n"
+        "  o.id as order_id\n"
+        "from users u\n"
+        "join orders o on u.id = o.id"
+    )
+    data = _analyze(sql)
+
+    users_location = data["source_locations"]["physical_column:users.id"]
+    orders_location = data["source_locations"]["physical_column:orders.id"]
+
+    assert (users_location["line"], users_location["col"]) == (2, 5)
+    assert (orders_location["line"], orders_location["col"]) == (3, 5)
+    assert users_location["startOffset"] == sql.index("u.id") + 2
+    assert orders_location["startOffset"] == sql.index("o.id") + 2
+
+
 def test_ddl_only_script_returns_partial_empty_graph_instead_of_server_error():
     data = _analyze(
         "drop table t; create table t(a int); msck repair table t"
