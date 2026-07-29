@@ -27,6 +27,7 @@ class FunctionRegistry:
 class UdtfRegistry:
     row_expanding_functions: tuple[str, ...] = (
         "explode", "posexplode", "inline", "map_entries", "stack",
+        "parse_url_tuple", "variant_explode",
     )
 
 

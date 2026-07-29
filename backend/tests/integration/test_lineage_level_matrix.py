@@ -663,6 +663,14 @@ def test_cte_stack_constant_output_does_not_become_a_physical_column():
             "select t.id, k, v from source_a t "
             "lateral view stack(2, 'a', t.col_a, 'b', t.col_b) s as k, v"
         ),
+        (
+            "select host, path from web_events t "
+            "lateral view parse_url_tuple(t.url, 'HOST', 'PATH') p as host, path"
+        ),
+        (
+            "select pos, k, v from source_a t "
+            "lateral view variant_explode(t.payload) e as pos, k, v"
+        ),
     ],
 )
 def test_known_row_expanding_functions_are_not_reported_as_black_box_udfs(sql):
