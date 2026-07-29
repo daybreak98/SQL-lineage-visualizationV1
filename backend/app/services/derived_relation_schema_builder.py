@@ -87,9 +87,7 @@ def build_derived_relation_schemas(
         for node in cte_nodes
         for select in _query_selects(node.select_node)
     ]
-    outer_select = _outer_select(tree)
-    if outer_select is not None:
-        select_nodes.append(outer_select)
+    select_nodes.extend(_query_selects(tree))
     _build_inline_subquery_schemas(select_nodes, schemas, cte_names, dialect=dialect)
 
     return BuildDerivedSchemasResult(schemas=schemas)
@@ -105,27 +103,28 @@ def _build_inline_subquery_schemas(
     select_nodes: List[exp.Select],
     schemas: Dict[str, DerivedRelationSchema],
     cte_names: Set[str],
-    visited: Optional[Set[str]] = None,
+    visited: Optional[Set[int]] = None,
     max_depth: int = 16,
     dialect: str = "spark",
 ) -> None:
     completed = visited if visited is not None else set()
     if max_depth <= 0:
         return
-    visiting: Set[str] = set()
+    visiting: Set[int] = set()
 
     def build_subquery(query: exp.Query, alias: str, depth: int) -> None:
         key = alias.lower().strip("`")
-        if key in schemas or key in completed or key in visiting or depth <= 0:
+        query_identity = id(query)
+        if query_identity in completed or query_identity in visiting or depth <= 0:
             return
 
-        visiting.add(key)
+        visiting.add(query_identity)
         try:
             for child_select in _query_selects(query):
                 for child_query, child_alias in _extract_from_subqueries(child_select):
                     build_subquery(child_query, child_alias, depth - 1)
 
-            schemas[key] = _build_single_schema(
+            built_schema = _build_single_schema(
                 query,
                 alias,
                 "subquery",
@@ -133,11 +132,16 @@ def _build_inline_subquery_schemas(
                 schemas,
                 dialect,
             )
-            completed.add(key)
+            existing_schema = schemas.get(key)
+            if existing_schema is None:
+                schemas[key] = built_schema
+            elif existing_schema.relation_kind == "subquery":
+                _merge_derived_schema(existing_schema, built_schema)
+            completed.add(query_identity)
         except Exception:
-            completed.add(key)
+            completed.add(query_identity)
         finally:
-            visiting.discard(key)
+            visiting.discard(query_identity)
 
     for select_node in select_nodes:
         for subquery, alias in _extract_from_subqueries(select_node):
@@ -314,6 +318,48 @@ def _dedupe_column_refs(inputs: List[ColumnRef]) -> List[ColumnRef]:
         seen.add(key)
         result.append(ref)
     return result
+
+
+def _merge_derived_schema(
+    target: DerivedRelationSchema,
+    incoming: DerivedRelationSchema,
+) -> None:
+    """Merge same-alias schemas from separate set-operation branches."""
+    for column_key, incoming_dependency in incoming.output_columns.items():
+        existing_dependency = target.output_columns.get(column_key)
+        if existing_dependency is None:
+            target.output_columns[column_key] = incoming_dependency
+            continue
+        incoming_inputs: List[ColumnRef] = []
+        for input_ref in incoming_dependency.inputs:
+            if (
+                input_ref.relation_kind == "subquery"
+                and input_ref.relation_key == target.relation_key
+            ):
+                shadowed_dependency = target.get_dependency(input_ref.column_name)
+                if shadowed_dependency is not None:
+                    incoming_inputs.extend(shadowed_dependency.inputs)
+                    continue
+            incoming_inputs.append(input_ref)
+        inputs = _dedupe_column_refs(existing_dependency.inputs + incoming_inputs)
+        target.output_columns[column_key] = ColumnDependency(
+            output=existing_dependency.output,
+            inputs=inputs,
+            transform_type=(
+                incoming_dependency.transform_type
+                if not existing_dependency.inputs and incoming_dependency.inputs
+                else existing_dependency.transform_type
+            ),
+            expression=existing_dependency.expression or incoming_dependency.expression,
+            confidence=(
+                "medium"
+                if existing_dependency.confidence != incoming_dependency.confidence
+                else existing_dependency.confidence
+            ),
+            diagnostics=(
+                existing_dependency.diagnostics + incoming_dependency.diagnostics
+            ),
+        )
 
 
 def _apply_lateral_view_dependencies(

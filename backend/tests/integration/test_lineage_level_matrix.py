@@ -411,6 +411,26 @@ def test_correlated_exists_is_visible_in_subquery_structure():
     } <= _edge_set(data)
 
 
+def test_union_branches_with_reused_inline_alias_roll_up_every_physical_column():
+    data = _analyze(
+        """
+        select s.id, s.name
+        from (select a.id, a.name from source_a a) s
+        union all
+        select s.id, s.name
+        from (select b.id, b.name from source_b b) s
+        """
+    )
+
+    assert data["status"] == "success"
+    assert {
+        ("physical_column:source_a.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_b.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_a.name", "output_column:name", "column_lineage"),
+        ("physical_column:source_b.name", "output_column:name", "column_lineage"),
+    } <= _edge_set(data)
+
+
 def test_inline_scalar_and_exists_subqueries_have_source_locations():
     data = _analyze(
         """
@@ -437,6 +457,26 @@ def test_inline_scalar_and_exists_subqueries_have_source_locations():
         assert location["entityType"] == "subquery"
         assert location["startOffset"] >= 0
         assert location["endOffset"] > location["startOffset"]
+
+
+def test_nested_inline_subqueries_reusing_alias_do_not_emit_self_cycle():
+    data = _analyze(
+        "select s.id from (select s.id from (select a.id from source_a a) s) s"
+    )
+
+    assert (
+        "physical_column:source_a.id",
+        "output_column:id",
+        "column_lineage",
+    ) in _edge_set(data)
+    assert not any(
+        node["id"] == "physical_column:s.id"
+        for node in data["graph_view_model"]["nodes"]
+    )
+    assert not any(
+        diagnostic["code"] == "CYCLIC_DERIVED_RELATION"
+        for diagnostic in data["diagnostics"]
+    )
 
 
 def test_same_named_physical_columns_use_table_alias_source_locations():
