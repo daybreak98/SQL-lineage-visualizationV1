@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.domain.lineage_context import LineageResolveContext
-from app.models import AnalyzeRequest, AnalysisResult, Diagnostic, DiagnosticsReport, GraphViewModel
+from app.models import (
+    AnalyzeRequest,
+    AnalysisResult,
+    Diagnostic,
+    DiagnosticsReport,
+    GraphViewModel,
+    OutputField,
+)
 from app.repositories import metadata_repository as meta_repo
 from app.services.cte_structure_service import analyze_cte_structure
 from app.services.graph_builder import (
@@ -27,6 +34,7 @@ from app.services.sql_parse_service import parse_sql
 from app.services.table_structure_service import analyze_table_structure
 from app.services.parse_recovery_pipeline import ParseRecoveryPipeline
 from app.services.partial_lineage_engine import PartialLineageEngine
+from app.services.relation_transform_dependency_extractor import pivot_star_output_names
 from app.domain.lineage_model import SimpleColumnLineage
 
 router = APIRouter()
@@ -184,6 +192,17 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     )
     if schema_result is not None and schema_result.schemas:
         metadata.update(_derived_schema_metadata(schema_result.schemas))
+    pivot_outputs = pivot_star_output_names(tree, metadata)
+    if pivot_outputs:
+        parse_result.output_fields = [
+            OutputField(
+                name=name,
+                display_name=name,
+                expression=name,
+                source_type="expression",
+            )
+            for name in pivot_outputs
+        ]
 
     # 4. Build resolver context
     context = LineageResolveContext(

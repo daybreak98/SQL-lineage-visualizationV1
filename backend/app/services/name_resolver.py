@@ -13,6 +13,11 @@ from app.models import Diagnostic
 from app.domain.lineage_model import SimpleColumnLineage
 from app.services.lateral_view_dependency_extractor import extract_lateral_view_dependencies
 from app.services.expression_dependency_extractor import source_columns_with_named_windows
+from app.services.relation_transform_dependency_extractor import (
+    extract_pivot_transforms,
+    extract_relation_transform_dependencies,
+    pivot_star_output_names,
+)
 from app.services.star_expansion_service import _detect_star, expand_star_items
 from app.services.sqlglot_compat import (
     get_from_expression,
@@ -121,13 +126,21 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
         lateral_by_output.setdefault(
             dependency.output_column.lower().strip("`"), []
         ).append(dependency)
+    relation_transform_by_output: dict[tuple[str, str], list] = {}
+    for dependency in extract_relation_transform_dependencies(tree):
+        key = (
+            (dependency.output_table_alias or "").lower().strip("`"),
+            dependency.output_column.lower().strip("`"),
+        )
+        relation_transform_by_output.setdefault(key, []).append(dependency)
+    pivot_transforms = extract_pivot_transforms(tree)
     # Build metadata lookup: {table_name: set(column_names)}
     metadata_cols: dict[str, set[str]] = {}
     if metadata:
         metadata_cols = {tname: set(cols) for tname, cols in metadata.items()}
 
     # -- Handle SELECT * via star_expansion_service --
-    if metadata and _has_any_star(tree.selects):
+    if metadata and _has_any_star(tree.selects) and not pivot_transforms:
         source_table_names = list(table_names)
         columns_by_table = {tname: [{"name": c} for c in cols] for tname, cols in (metadata or {}).items()}
         star_result = expand_star_items(tree.selects, source_table_names, alias_to_table, columns_by_table)
@@ -138,9 +151,65 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     for select_item in tree.selects:
         is_star, _qualifier = _detect_star(select_item)
         if is_star:
+            pivot_output_names = pivot_star_output_names(tree, metadata)
+            if pivot_transforms and pivot_output_names:
+                generated = {
+                    column.lower().strip("`")
+                    for transform in pivot_transforms
+                    for column in transform.generated_columns
+                }
+                for transform in pivot_transforms:
+                    source_table = alias_to_table.get(transform.source_alias)
+                    if source_table is None:
+                        continue
+                    for output_column in pivot_output_names:
+                        if output_column.lower().strip("`") not in generated:
+                            lineages.append(SimpleColumnLineage(
+                                source_table=source_table,
+                                source_column=output_column,
+                                output_column=output_column,
+                            ))
+                    for dependency in transform.dependencies:
+                        lineages.append(SimpleColumnLineage(
+                            source_table=source_table,
+                            source_column=dependency.source_column,
+                            output_column=dependency.output_column,
+                        ))
             continue  # handled above
 
         column = _simple_column_from_select_item(select_item)
+        relation_transform_sources = []
+        if column is not None:
+            transform_key = (
+                column.table.lower().strip("`") if column.table else "",
+                column.name.lower().strip("`"),
+            )
+            relation_transform_sources = relation_transform_by_output.get(
+                transform_key,
+                relation_transform_by_output.get(("", transform_key[1]), []),
+            )
+        if relation_transform_sources:
+            output_column = select_item.alias_or_name
+            for dependency in relation_transform_sources:
+                source_table = alias_to_table.get(dependency.source_table_alias or "")
+                if source_table is None and len(tables) == 1:
+                    source_table = tables[0].table_name
+                if source_table is None:
+                    diagnostics.append(Diagnostic(
+                        code=diag_codes.UNKNOWN_TABLE_ALIAS,
+                        level="warning",
+                        message=(
+                            f"{dependency.transform_type.upper()} source alias "
+                            f"{dependency.source_table_alias or '<unknown>'} cannot be resolved."
+                        ),
+                    ))
+                    continue
+                lineages.append(SimpleColumnLineage(
+                    source_table=source_table,
+                    source_column=dependency.source_column,
+                    output_column=output_column,
+                ))
+            continue
         lateral_sources = (
             lateral_by_output.get(column.name.lower().strip("`"), [])
             if column is not None

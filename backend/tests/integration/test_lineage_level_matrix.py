@@ -363,6 +363,56 @@ def test_lateral_view_output_rolls_up_to_explode_input():
     } <= _edge_set(data)
 
 
+def test_pivot_star_exposes_group_and_generated_measure_columns():
+    data = _analyze(
+        "select * from ("
+        "select dept, fiscal_year, sales from sales_fact"
+        ") src pivot ("
+        "sum(sales) for fiscal_year in (2024 as y2024, 2025 as y2025)"
+        ")"
+    )
+
+    assert {field["name"] for field in data["output_fields"]} == {
+        "dept",
+        "y2024",
+        "y2025",
+    }
+    assert {
+        ("physical_column:sales_fact.dept", "output_column:dept", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:y2024", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:y2024", "column_lineage"),
+        ("physical_column:sales_fact.sales", "output_column:y2025", "column_lineage"),
+        ("physical_column:sales_fact.fiscal_year", "output_column:y2025", "column_lineage"),
+    } <= _edge_set(data)
+
+
+def test_unpivot_generated_columns_roll_up_to_each_unpivoted_source():
+    data = _analyze(
+        "select id, metric, value from metrics "
+        "unpivot (value for metric in (sales, cost))"
+    )
+
+    assert {
+        ("physical_column:metrics.id", "output_column:id", "column_lineage"),
+        ("physical_column:metrics.sales", "output_column:metric", "column_lineage"),
+        ("physical_column:metrics.cost", "output_column:metric", "column_lineage"),
+        ("physical_column:metrics.sales", "output_column:value", "column_lineage"),
+        ("physical_column:metrics.cost", "output_column:value", "column_lineage"),
+    } <= _edge_set(data)
+
+
+def test_unnest_output_rolls_up_to_collection_input():
+    data = _analyze(
+        "select t.id, u.item from source_a t "
+        "cross join unnest(t.items) as u(item)"
+    )
+
+    assert {
+        ("physical_column:source_a.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_a.items", "output_column:item", "column_lineage"),
+    } <= _edge_set(data)
+
+
 def test_nested_cte_lateral_view_does_not_block_final_select_lineage():
     data = _analyze(
         """
