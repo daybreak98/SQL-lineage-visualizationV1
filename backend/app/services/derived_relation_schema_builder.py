@@ -30,6 +30,7 @@ class DerivedSelectNode:
     relation_name: str
     select_node: exp.Query
     relation_kind: str = "cte"
+    column_aliases: List[str] = field(default_factory=list)
 
 
 CTESelectNode = DerivedSelectNode
@@ -58,6 +59,7 @@ def extract_cte_select_nodes(tree: Any) -> List[DerivedSelectNode]:
                 relation_name=name,
                 select_node=query,
                 relation_kind="cte",
+                column_aliases=list(cte_expr.alias_column_names),
             ))
     return nodes
 
@@ -79,6 +81,7 @@ def build_derived_relation_schemas(
             schemas,
             dialect,
         )
+        _apply_declared_column_aliases(schema, cte_node.column_aliases)
         schemas[schema.relation_key] = schema
 
     # Phase 2: Build inline subquery schemas in the final SELECT and CTE bodies.
@@ -112,7 +115,12 @@ def _build_inline_subquery_schemas(
         return
     visiting: Set[int] = set()
 
-    def build_subquery(query: exp.Query, alias: str, depth: int) -> None:
+    def build_subquery(
+        query: exp.Query,
+        alias: str,
+        column_aliases: List[str],
+        depth: int,
+    ) -> None:
         key = alias.lower().strip("`")
         query_identity = id(query)
         if query_identity in completed or query_identity in visiting or depth <= 0:
@@ -121,8 +129,12 @@ def _build_inline_subquery_schemas(
         visiting.add(query_identity)
         try:
             for child_select in _query_selects(query):
-                for child_query, child_alias in _extract_from_subqueries(child_select):
-                    build_subquery(child_query, child_alias, depth - 1)
+                for (
+                    child_query,
+                    child_alias,
+                    child_columns,
+                ) in _extract_from_subqueries(child_select):
+                    build_subquery(child_query, child_alias, child_columns, depth - 1)
 
             built_schema = _build_single_schema(
                 query,
@@ -132,6 +144,7 @@ def _build_inline_subquery_schemas(
                 schemas,
                 dialect,
             )
+            _apply_declared_column_aliases(built_schema, column_aliases)
             existing_schema = schemas.get(key)
             if existing_schema is None:
                 schemas[key] = built_schema
@@ -144,28 +157,60 @@ def _build_inline_subquery_schemas(
             visiting.discard(query_identity)
 
     for select_node in select_nodes:
-        for subquery, alias in _extract_from_subqueries(select_node):
-            build_subquery(subquery, alias, max_depth)
+        for subquery, alias, column_aliases in _extract_from_subqueries(select_node):
+            build_subquery(subquery, alias, column_aliases, max_depth)
 
 
 def _extract_from_subqueries(
     select_node: exp.Select,
-) -> List[tuple]:
-    """Extract (inner_select, alias) pairs from FROM/JOIN subqueries."""
-    pairs: List[tuple] = []
+) -> List[tuple[exp.Query, str, List[str]]]:
+    """Extract query, relation alias, and declared column aliases."""
+    pairs: List[tuple[exp.Query, str, List[str]]] = []
     from_expr = get_from_expression(select_node)
     if from_expr is not None and isinstance(from_expr.this, exp.Subquery):
         alias = from_expr.this.alias or from_expr.alias
         inner = from_expr.this.this
         if alias and isinstance(inner, exp.Query):
-            pairs.append((inner, alias))
+            pairs.append((inner, alias, list(from_expr.this.alias_column_names)))
     for join in select_node.args.get("joins") or []:
         if isinstance(join.this, exp.Subquery):
             alias = join.this.alias or join.alias
             inner = join.this.this
             if alias and isinstance(inner, exp.Query):
-                pairs.append((inner, alias))
+                pairs.append((inner, alias, list(join.this.alias_column_names)))
     return pairs
+
+
+def _apply_declared_column_aliases(
+    schema: DerivedRelationSchema,
+    column_aliases: List[str],
+) -> None:
+    if not column_aliases:
+        return
+    renamed: Dict[str, ColumnDependency] = {}
+    for index, dependency in enumerate(schema.output_columns.values()):
+        column_name = (
+            column_aliases[index]
+            if index < len(column_aliases)
+            else dependency.output.column_name
+        )
+        output = ColumnRef(
+            relation_name=dependency.output.relation_name,
+            column_name=column_name,
+            relation_kind=dependency.output.relation_kind,
+            scope_id=dependency.output.scope_id,
+            table_alias=dependency.output.table_alias,
+            entity_id=dependency.output.entity_id,
+        )
+        renamed[output.column_key] = ColumnDependency(
+            output=output,
+            inputs=dependency.inputs,
+            transform_type=dependency.transform_type,
+            expression=dependency.expression,
+            confidence=dependency.confidence,
+            diagnostics=dependency.diagnostics,
+        )
+    schema.output_columns = renamed
 
 
 def _outer_select(tree: Any) -> Optional[exp.Select]:

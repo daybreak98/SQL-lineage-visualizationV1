@@ -202,6 +202,45 @@ def test_union_all_inside_cte_rolls_up_every_branch():
     } <= _edge_set(data)
 
 
+def test_cte_declared_column_aliases_map_by_projection_position():
+    data = _analyze(
+        "with renamed(x, y) as ("
+        "select a.id, a.name from source_a a"
+        ") select x, y from renamed"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        ("physical_column:source_a.id", "output_column:x", "column_lineage"),
+        ("physical_column:source_a.name", "output_column:y", "column_lineage"),
+    } <= _edge_set(data)
+
+
+def test_recursive_cte_declared_columns_survive_physical_table_join():
+    data = _analyze(
+        "with recursive hierarchy(node_key, parent_key) as ("
+        "select a.id, a.parent_id from source_a a where a.parent_id is null "
+        "union all "
+        "select b.id, b.parent_id from source_a b "
+        "join hierarchy h on b.parent_id = h.node_key"
+        ") select node_key, parent_key from hierarchy"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        (
+            "physical_column:source_a.id",
+            "output_column:node_key",
+            "column_lineage",
+        ),
+        (
+            "physical_column:source_a.parent_id",
+            "output_column:parent_key",
+            "column_lineage",
+        ),
+    } <= _edge_set(data)
+
+
 def test_union_all_inside_inline_subquery_rolls_up_every_branch():
     data = _analyze(
         """
@@ -224,6 +263,20 @@ def test_union_all_inside_inline_subquery_rolls_up_every_branch():
         for edge in _edge_set(data)
         if edge[2] == "column_lineage"
     )
+
+
+def test_inline_subquery_declared_column_aliases_map_by_projection_position():
+    data = _analyze(
+        "select x, y from ("
+        "select a.id, a.name from source_a a"
+        ") renamed(x, y)"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        ("physical_column:source_a.id", "output_column:x", "column_lineage"),
+        ("physical_column:source_a.name", "output_column:y", "column_lineage"),
+    } <= _edge_set(data)
 
 
 def test_nested_inline_expression_rolls_up_to_root_physical_column():
