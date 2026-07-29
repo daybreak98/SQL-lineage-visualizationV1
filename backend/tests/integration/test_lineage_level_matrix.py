@@ -258,6 +258,42 @@ def test_nested_inline_expression_rolls_up_to_root_physical_column():
     } == {"output_column:z"}
 
 
+def test_nested_inline_stars_expand_through_every_derived_layer():
+    data = _analyze(
+        "select * from ("
+        "select * from (select a.id, a.name from source_a a) inner_q"
+        ") outer_q"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        ("physical_column:source_a.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_a.name", "output_column:name", "column_lineage"),
+    } <= _edge_set(data)
+    assert not any(
+        diagnostic["code"] in {"METADATA_MISSING", "SELECT_STAR_METADATA_REQUIRED"}
+        for diagnostic in data["diagnostics"]
+    )
+
+
+def test_nested_union_stars_merge_all_branch_columns_by_position():
+    data = _analyze(
+        "select * from ("
+        "select * from (select a.id, a.name from source_a a) left_q "
+        "union all "
+        "select * from (select b.id, b.name from source_b b) right_q"
+        ") union_q"
+    )
+
+    assert data["status"] == "success"
+    assert {
+        ("physical_column:source_a.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_b.id", "output_column:id", "column_lineage"),
+        ("physical_column:source_a.name", "output_column:name", "column_lineage"),
+        ("physical_column:source_b.name", "output_column:name", "column_lineage"),
+    } <= _edge_set(data)
+
+
 def test_lateral_view_output_rolls_up_to_explode_input():
     data = _analyze(
         """

@@ -264,6 +264,15 @@ def _build_single_schema(
         select_node, relation_name, relation_kind, resolved_columns, schema)
 
     if is_set_operation(select_node):
+        _merge_set_operation_branch_schemas(
+            select_node,
+            relation_name,
+            relation_kind,
+            cte_names,
+            existing_schemas,
+            dialect,
+            schema,
+        )
         return schema
 
     # Path B: ExpressionDependencyExtractor for complex expressions
@@ -279,6 +288,73 @@ def _build_single_schema(
         select_node, relation_name, relation_kind, cte_names, resolved_columns, schema)
 
     return schema
+
+
+def _merge_set_operation_branch_schemas(
+    query: exp.Query,
+    relation_name: str,
+    relation_kind: str,
+    cte_names: Set[str],
+    existing_schemas: Dict[str, DerivedRelationSchema],
+    dialect: str,
+    target: DerivedRelationSchema,
+) -> None:
+    branch_schemas = [
+        _build_single_schema(
+            branch,
+            relation_name,
+            relation_kind,
+            cte_names,
+            existing_schemas,
+            dialect,
+        )
+        for branch in _query_selects(query)
+    ]
+    if not branch_schemas:
+        return
+
+    first_dependencies = list(branch_schemas[0].output_columns.values())
+    for index, canonical_dependency in enumerate(first_dependencies):
+        branch_dependencies = [
+            dependencies[index]
+            for branch_schema in branch_schemas
+            if index < len(dependencies := list(branch_schema.output_columns.values()))
+        ]
+        existing_dependency = target.get_dependency(
+            canonical_dependency.output.column_name
+        )
+        inputs = _dedupe_column_refs(
+            ([*existing_dependency.inputs] if existing_dependency is not None else [])
+            + [
+                input_ref
+                for dependency in branch_dependencies
+                for input_ref in dependency.inputs
+            ]
+        )
+        target.add_dependency(ColumnDependency(
+            output=canonical_dependency.output,
+            inputs=inputs,
+            transform_type=(
+                "constant"
+                if branch_dependencies
+                and all(dependency.is_constant() for dependency in branch_dependencies)
+                else canonical_dependency.transform_type
+            ),
+            expression=canonical_dependency.expression,
+            confidence=(
+                "medium"
+                if any(
+                    dependency.confidence != canonical_dependency.confidence
+                    for dependency in branch_dependencies
+                )
+                else canonical_dependency.confidence
+            ),
+            diagnostics=[
+                diagnostic
+                for dependency in branch_dependencies
+                for diagnostic in dependency.diagnostics
+            ],
+        ))
 
 
 def _extract_complex_dependencies(
@@ -433,11 +509,21 @@ def _expand_star_from_schemas(
 def _get_from_table_names(select_node: exp.Select) -> List[str]:
     names: List[str] = []
     from_expr = select_node.args.get("from_") or select_node.args.get("from")
-    if from_expr is not None and isinstance(from_expr.this, exp.Table):
-        parts = [p for p in [from_expr.this.catalog, from_expr.this.db, from_expr.this.name] if p]
-        names.append(".".join(parts) if parts else (from_expr.this.name or ""))
+    if from_expr is not None:
+        name = _relation_source_name(from_expr.this)
+        if name:
+            names.append(name)
     for join in select_node.args.get("joins") or []:
-        if isinstance(join.this, exp.Table):
-            parts = [p for p in [join.this.catalog, join.this.db, join.this.name] if p]
-            names.append(".".join(parts) if parts else (join.this.name or ""))
+        name = _relation_source_name(join.this)
+        if name:
+            names.append(name)
     return names
+
+
+def _relation_source_name(source: exp.Expression | None) -> str:
+    if isinstance(source, exp.Table):
+        parts = [part for part in [source.catalog, source.db, source.name] if part]
+        return ".".join(parts) if parts else (source.name or "")
+    if isinstance(source, exp.Subquery):
+        return source.alias_or_name or ""
+    return ""
