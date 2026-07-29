@@ -568,6 +568,114 @@ def test_multi_measure_pivot_maps_each_output_to_its_measure():
     ) not in edges
 
 
+def test_inline_arrays_zip_maps_outputs_by_argument_position():
+    data = _analyze(
+        "select t.id, item, qty from source_a t "
+        "lateral view inline(arrays_zip(t.items, t.quantities)) z as item, qty"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:source_a.items", "output_column:item", "column_lineage"),
+        ("physical_column:source_a.quantities", "output_column:qty", "column_lineage"),
+    } <= edges
+    assert (
+        "physical_column:source_a.quantities",
+        "output_column:item",
+        "column_lineage",
+    ) not in edges
+    assert (
+        "physical_column:source_a.items",
+        "output_column:qty",
+        "column_lineage",
+    ) not in edges
+
+
+def test_inline_named_struct_maps_outputs_by_field_position():
+    data = _analyze(
+        "select t.id, item, qty from source_a t "
+        "lateral view inline("
+        "array(named_struct('item', t.item_id, 'qty', t.quantity))"
+        ") s as item, qty"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:source_a.item_id", "output_column:item", "column_lineage"),
+        ("physical_column:source_a.quantity", "output_column:qty", "column_lineage"),
+    } <= edges
+    assert (
+        "physical_column:source_a.quantity",
+        "output_column:item",
+        "column_lineage",
+    ) not in edges
+    assert (
+        "physical_column:source_a.item_id",
+        "output_column:qty",
+        "column_lineage",
+    ) not in edges
+
+
+def test_stack_maps_each_output_position_across_rows():
+    data = _analyze(
+        "select t.id, k, v from source_a t "
+        "lateral view stack(2, 'a', t.col_a, 'b', t.col_b) s as k, v"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:source_a.col_a", "output_column:v", "column_lineage"),
+        ("physical_column:source_a.col_b", "output_column:v", "column_lineage"),
+    } <= edges
+    assert not any(
+        target == "output_column:k" and edge_type == "column_lineage"
+        for _, target, edge_type in edges
+    )
+
+
+def test_cte_stack_constant_output_does_not_become_a_physical_column():
+    data = _analyze(
+        "with expanded as ("
+        "select t.id, k, v from source_a t "
+        "lateral view stack(2, 'a', t.col_a, 'b', t.col_b) s as k, v"
+        ") select id, k, v from expanded"
+    )
+
+    edges = _edge_set(data)
+    assert {
+        ("physical_column:source_a.col_a", "output_column:v", "column_lineage"),
+        ("physical_column:source_a.col_b", "output_column:v", "column_lineage"),
+    } <= edges
+    assert not any(
+        target == "output_column:k" and edge_type == "column_lineage"
+        for _, target, edge_type in edges
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            "select t.id, k, v from source_a t "
+            "lateral view inline(map_entries(t.attributes)) e as k, v"
+        ),
+        (
+            "select t.id, k, v from source_a t "
+            "lateral view stack(2, 'a', t.col_a, 'b', t.col_b) s as k, v"
+        ),
+    ],
+)
+def test_known_row_expanding_functions_are_not_reported_as_black_box_udfs(sql):
+    data = _analyze(sql)
+
+    assert data["status"] == "success"
+    assert data["confidence_level"] == "high"
+    assert not any(
+        feature.startswith("udf:")
+        for feature in data["unsupported_features"]
+    )
+
+
 def test_nested_cte_lateral_view_does_not_block_final_select_lineage():
     data = _analyze(
         """

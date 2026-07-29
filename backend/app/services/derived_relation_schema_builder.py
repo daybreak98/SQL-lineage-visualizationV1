@@ -525,13 +525,15 @@ def _apply_lateral_view_dependencies(
 
     for dependency in extract_lateral_view_dependencies(select_node):
         output_key = dependency.output_column.lower().strip("`")
-        source_relation = scope.resolve_relation(dependency.source_table_alias)
-        grouped_inputs.setdefault(output_key, []).append(ColumnRef(
-            relation_name=source_relation.relation_name,
-            column_name=dependency.source_column,
-            relation_kind=source_relation.relation_kind,
-            table_alias=source_relation.alias,
-        ))
+        inputs = grouped_inputs.setdefault(output_key, [])
+        if dependency.source_column is not None:
+            source_relation = scope.resolve_relation(dependency.source_table_alias)
+            inputs.append(ColumnRef(
+                relation_name=source_relation.relation_name,
+                column_name=dependency.source_column,
+                relation_kind=source_relation.relation_kind,
+                table_alias=source_relation.alias,
+            ))
         output_names[output_key] = dependency.output_column
         expressions[output_key] = dependency.transform
 

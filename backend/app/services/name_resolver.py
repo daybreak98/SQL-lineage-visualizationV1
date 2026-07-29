@@ -207,6 +207,8 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
         if lateral_sources:
             output_column = select_item.alias_or_name
             for dependency in lateral_sources:
+                if dependency.source_column is None:
+                    continue
                 source_table = alias_to_table.get(dependency.source_table_alias or "")
                 if source_table is None and len(tables) == 1:
                     source_table = tables[0].table_name

@@ -25,7 +25,9 @@ class FunctionRegistry:
 
 @dataclass(frozen=True)
 class UdtfRegistry:
-    row_expanding_functions: tuple[str, ...] = ("explode", "posexplode", "inline")
+    row_expanding_functions: tuple[str, ...] = (
+        "explode", "posexplode", "inline", "map_entries", "stack",
+    )
 
 
 @dataclass(frozen=True)
