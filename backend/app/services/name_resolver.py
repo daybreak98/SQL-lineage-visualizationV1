@@ -120,17 +120,6 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
         lateral_by_output.setdefault(
             dependency.output_column.lower().strip("`"), []
         ).append(dependency)
-    if lateral_by_output:
-        diagnostics.append(Diagnostic(
-            code=diag_codes.UNSUPPORTED_LATERAL_VIEW,
-            level="warning",
-            message=(
-                "LATERAL VIEW column dependencies were extracted with medium confidence; "
-                "row-expansion semantics remain defensive."
-            ),
-        ))
-        unsupported_features.append("lateral_view")
-
     # Build metadata lookup: {table_name: set(column_names)}
     metadata_cols: dict[str, set[str]] = {}
     if metadata:

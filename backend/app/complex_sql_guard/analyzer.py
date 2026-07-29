@@ -106,15 +106,6 @@ class ComplexSqlAnalyzer:
             original_sql=text_bundle.original_sql,
             offset_mapping=text_bundle.offset_mapping,
         )
-        if any(segment.segment_type == "lateral_view" for segment in segments):
-            diagnostics.append(Diagnostic(
-                code=diag_codes.UNSUPPORTED_LATERAL_VIEW,
-                severity=Severity.WARNING,
-                message="lateral view is detected; lineage will use defensive mode.",
-                stage="segment",
-                confidence=0.65,
-            ))
-            unsupported_features.append("lateral_view")
         stage_statuses.append(self._stage_status(
             "segment",
             stage_started,
@@ -380,16 +371,6 @@ class ComplexSqlAnalyzer:
             from sqlglot import exp
         except Exception:
             return
-
-        if any(tree.find_all(exp.Lateral)):
-            diagnostics.append(Diagnostic(
-                code=diag_codes.UNSUPPORTED_LATERAL_VIEW,
-                severity=Severity.WARNING,
-                message="lateral view is parsed but downstream lineage only has defensive support.",
-                stage="analyze",
-                confidence=0.6,
-            ))
-            unsupported_features.append("lateral_view")
 
         known_functions = {
             *profile.function_registry.transparent_functions,

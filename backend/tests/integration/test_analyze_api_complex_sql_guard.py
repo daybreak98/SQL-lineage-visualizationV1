@@ -21,7 +21,7 @@ def test_template_sql_response_includes_guard_fields():
     assert any(diagnostic["code"] == "TEMPLATE_SQL_DETECTED" for diagnostic in data["diagnostics_report"]["diagnostics"])
 
 
-def test_lateral_view_response_returns_guard_diagnostics():
+def test_resolved_lateral_view_returns_lineage_without_unsupported_warning():
     response = client.post(
         "/api/sql/analyze",
         json={
@@ -35,9 +35,43 @@ def test_lateral_view_response_returns_guard_diagnostics():
     )
     data = response.json()
 
+    assert data["status"] == "success"
+    assert "lateral_view" not in data["unsupported_features"]
+    assert not any(
+        diagnostic["code"] == "UNSUPPORTED_LATERAL_VIEW"
+        for diagnostic in data["diagnostics_report"]["diagnostics"]
+    )
+    assert {
+        (edge["source"], edge["target"], edge["edge_type"])
+        for edge in data["graph_view_model"]["edges"]
+    } >= {
+        (
+            "physical_column:ods_order_log.refund_amount",
+            "output_column:amount_item",
+            "column_lineage",
+        )
+    }
+
+
+def test_lateral_view_without_source_column_remains_partial():
+    response = client.post(
+        "/api/sql/analyze",
+        json={
+            "sql": (
+                "select item from seed_table "
+                "lateral view explode(array(1, 2)) e as item"
+            ),
+            "dialect": "spark",
+        },
+    )
+    data = response.json()
+
     assert data["status"] == "partial"
     assert "lateral_view" in data["unsupported_features"]
-    assert any(diagnostic["code"] == "UNSUPPORTED_LATERAL_VIEW" for diagnostic in data["diagnostics_report"]["diagnostics"])
+    assert any(
+        diagnostic["code"] == "UNSUPPORTED_LATERAL_VIEW"
+        for diagnostic in data["diagnostics_report"]["diagnostics"]
+    )
 
 
 def test_partial_fallback_response_exposes_segments_and_parse_attempts():

@@ -411,6 +411,34 @@ def test_correlated_exists_is_visible_in_subquery_structure():
     } <= _edge_set(data)
 
 
+def test_inline_scalar_and_exists_subqueries_have_source_locations():
+    data = _analyze(
+        """
+        select
+          nested.order_id,
+          (select max(p.pay_amount) from payment p) as max_pay
+        from (
+          select order_id from fact_order
+        ) nested
+        where exists (
+          select 1 from audit_log a where a.order_id = nested.order_id
+        )
+        """
+    )
+
+    expected_ids = {
+        "subquery:nested",
+        "subquery:max_pay",
+        "subquery:exists_subquery_1",
+    }
+    assert expected_ids <= set(data["source_locations"])
+    for entity_id in expected_ids:
+        location = data["source_locations"][entity_id]
+        assert location["entityType"] == "subquery"
+        assert location["startOffset"] >= 0
+        assert location["endOffset"] > location["startOffset"]
+
+
 def test_ddl_only_script_returns_partial_empty_graph_instead_of_server_error():
     data = _analyze(
         "drop table t; create table t(a int); msck repair table t"

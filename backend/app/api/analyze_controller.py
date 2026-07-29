@@ -302,6 +302,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
         "source_location_output_column": True,
         "source_location_physical_table": True,
         "source_location_cte": True,
+        "source_location_subquery": True,
     })
 
     confidence = _adjust_confidence(confidence, status, unsupported_features)
@@ -584,7 +585,7 @@ def _target_entities(graph_view_model: GraphViewModel) -> list[dict[str, str]]:
         "table": "physical_table",
         "physical_table": "physical_table",
         "cte": "cte",
-        "subquery": "cte",
+        "subquery": "subquery",
     }
     entities: list[dict[str, str]] = []
     seen: set[str] = set()

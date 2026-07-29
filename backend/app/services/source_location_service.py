@@ -102,6 +102,13 @@ def build_source_locations(
         if "cte" in entity_ids_by_type and entity_id in entity_ids_by_type["cte"]:
             locations[entity_id] = loc.to_dict()
 
+    # ── Inline / scalar / predicate subquery locations ──
+    if "subquery" in entity_ids_by_type:
+        for entity_id in entity_ids_by_type["subquery"]:
+            location = _find_subquery_location(sql, masked_sql, entity_id)
+            if location is not None:
+                locations[entity_id] = location.to_dict()
+
     # ── Table locations (FROM/JOIN, exclude CTE names) ──
     if "physical_table" in entity_ids_by_type:
         tbl_set = entity_ids_by_type["physical_table"]
@@ -336,6 +343,85 @@ def _find_table_spans(
         else:
             i = after
     return results
+
+
+def _find_subquery_location(
+    original_sql: str,
+    masked_sql: str,
+    entity_id: str,
+) -> SourceLocation | None:
+    name = entity_id.split(":", 1)[1] if ":" in entity_id else entity_id
+    generated = re.fullmatch(r"(exists_subquery|in_subquery|subquery)_(\d+)", name)
+    if generated is not None:
+        kind, raw_index = generated.groups()
+        index = int(raw_index) - 1
+        if kind == "exists_subquery":
+            pattern = r"\bexists\s*\(\s*select\b"
+            token = "exists"
+        elif kind == "in_subquery":
+            pattern = r"\bin\s*\(\s*select\b"
+            token = "in"
+        else:
+            pattern = r"\(\s*select\b"
+            token = "select"
+        matches = list(re.finditer(pattern, masked_sql, flags=re.IGNORECASE))
+        if 0 <= index < len(matches):
+            match = matches[index]
+            token_match = re.search(token, match.group(0), flags=re.IGNORECASE)
+            token_start = match.start() + (token_match.start() if token_match else 0)
+            token_end = token_start + len(token)
+            return _source_location_from_span(
+                original_sql,
+                entity_id,
+                "subquery",
+                token_start,
+                token_end,
+                "approximate",
+            )
+        return None
+
+    escaped_name = re.escape(name)
+    alias_pattern = re.compile(
+        rf"\)\s+(?:as\s+)?(?P<alias>`{escaped_name}`|\b{escaped_name}\b)",
+        flags=re.IGNORECASE,
+    )
+    alias_match = alias_pattern.search(masked_sql)
+    if alias_match is None:
+        return None
+    return _source_location_from_span(
+        original_sql,
+        entity_id,
+        "subquery",
+        alias_match.start("alias"),
+        alias_match.end("alias"),
+        "exact",
+    )
+
+
+def _source_location_from_span(
+    sql: str,
+    entity_id: str,
+    entity_type: str,
+    start: int,
+    end: int,
+    range_type: str,
+) -> SourceLocation:
+    start_line, start_col = _line_col(sql, start)
+    end_line, end_col = _line_col(sql, end)
+    return SourceLocation(
+        entityId=entity_id,
+        entityType=entity_type,
+        rawText=sql[start:end],
+        rangeType=range_type,
+        occurrences=[Occurrence(
+            line=start_line,
+            col=start_col,
+            end_line=end_line,
+            end_col=end_col,
+            offset=start,
+            end_offset=end,
+        )],
+    )
 
 
 # ── Keyword helpers ──
