@@ -25,6 +25,16 @@ describe('predicate edge normalization', () => {
             label: 'JOIN: orders.customer_id = customers.id',
           },
           {
+            id: 'clause:group_by:query_result:final:1',
+            node_type: 'expression',
+            label: 'GROUP BY: region',
+          },
+          {
+            id: 'clause:order_by:query_result:final:1',
+            node_type: 'expression',
+            label: 'ORDER BY: created_at',
+          },
+          {
             id: 'query_result:final',
             node_type: 'output',
             label: 'Query Result',
@@ -55,6 +65,30 @@ describe('predicate edge normalization', () => {
             target: 'query_result:final',
             edge_type: 'join_effect',
           },
+          {
+            id: 'group-input',
+            source: 'physical_column:orders.status',
+            target: 'clause:group_by:query_result:final:1',
+            edge_type: 'group_dependency',
+          },
+          {
+            id: 'group-effect',
+            source: 'clause:group_by:query_result:final:1',
+            target: 'query_result:final',
+            edge_type: 'group_effect',
+          },
+          {
+            id: 'order-input',
+            source: 'physical_column:orders.status',
+            target: 'clause:order_by:query_result:final:1',
+            edge_type: 'order_dependency',
+          },
+          {
+            id: 'order-effect',
+            source: 'clause:order_by:query_result:final:1',
+            target: 'query_result:final',
+            edge_type: 'order_effect',
+          },
         ],
       },
     };
@@ -69,6 +103,10 @@ describe('predicate edge normalization', () => {
       'predicate-effect': 'expr',
       'join-input': 'join',
       'join-effect': 'join',
+      'group-input': 'expr',
+      'group-effect': 'expr',
+      'order-input': 'expr',
+      'order-effect': 'expr',
     });
     expect(graph.invalidEdges).toEqual([]);
   });

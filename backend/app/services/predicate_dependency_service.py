@@ -10,6 +10,9 @@ from app.domain.cte_rollup_models import (
     DerivedRelationSchema,
 )
 from app.services.cte_column_rollup_service import CteColumnRollupService
+from app.services.expression_dependency_extractor import (
+    source_columns_with_named_windows,
+)
 from app.services.sqlglot_compat import get_from_expression
 
 
@@ -69,8 +72,13 @@ def analyze_predicate_dependencies(
 
             counter_key = (owner_id, predicate_kind)
             counters[counter_key] = counters.get(counter_key, 0) + 1
+            id_prefix = (
+                "clause"
+                if predicate_kind in {"group_by", "order_by"}
+                else "predicate"
+            )
             predicate_id = (
-                f"predicate:{predicate_kind}:{owner_id}:"
+                f"{id_prefix}:{predicate_kind}:{owner_id}:"
                 f"{counters[counter_key]}"
             )
             dependency = ColumnDependency(
@@ -119,6 +127,13 @@ def _select_conditions(
         condition = getattr(wrapper, "this", None)
         if isinstance(condition, exp.Expression):
             conditions.append((predicate_kind, condition))
+    for argument_name, clause_kind in (
+        ("group", "group_by"),
+        ("order", "order_by"),
+    ):
+        clause = select.args.get(argument_name)
+        if isinstance(clause, exp.Expression):
+            conditions.append((clause_kind, clause))
     return conditions
 
 
@@ -135,6 +150,15 @@ def _condition_inputs(
         for projection in select.expressions
         if projection.alias_or_name
     }
+    if predicate_kind in {"group_by", "order_by"}:
+        inputs.extend(
+            _ordinal_projection_inputs(
+                condition,
+                select,
+                cte_names,
+                subquery_ids,
+            )
+        )
     for column in condition.find_all(exp.Column):
         if isinstance(column.this, exp.Star):
             continue
@@ -142,7 +166,8 @@ def _condition_inputs(
             continue
         if (
             not column.table
-            and predicate_kind in {"having", "qualify"}
+            and predicate_kind
+            in {"having", "qualify", "group_by", "order_by"}
             and (
                 alias_projection := projection_aliases.get(
                     column.name.lower().strip("`")
@@ -150,7 +175,9 @@ def _condition_inputs(
             )
             is not None
         ):
-            for source_column in alias_projection.find_all(exp.Column):
+            for source_column in source_columns_with_named_windows(
+                alias_projection
+            ):
                 if source_column.find_ancestor(exp.Select) is not select:
                     continue
                 ref = _resolved_column_ref(
@@ -166,6 +193,38 @@ def _condition_inputs(
         if ref is not None:
             inputs.append(ref)
     return _dedupe_refs(inputs)
+
+
+def _ordinal_projection_inputs(
+    clause: exp.Expression,
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    for item in clause.expressions:
+        expression = item.this if isinstance(item, exp.Ordered) else item
+        if not isinstance(expression, exp.Literal) or expression.is_string:
+            continue
+        ordinal_text = str(expression.this)
+        if not ordinal_text.isdigit():
+            continue
+        ordinal = int(ordinal_text)
+        if ordinal < 1 or ordinal > len(select.expressions):
+            continue
+        projection = select.expressions[ordinal - 1]
+        for column in source_columns_with_named_windows(projection):
+            if column.find_ancestor(exp.Select) is not select:
+                continue
+            ref = _resolved_column_ref(
+                column,
+                select,
+                cte_names,
+                subquery_ids,
+            )
+            if ref is not None:
+                inputs.append(ref)
+    return inputs
 
 
 def _resolved_column_ref(

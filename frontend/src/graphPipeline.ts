@@ -66,6 +66,10 @@ function normalizeEdgeType(type?: string): GraphEdge['type'] {
   if (type === 'predicate_effect') return 'expr';
   if (type === 'join_dependency') return 'join';
   if (type === 'join_effect') return 'join';
+  if (type === 'group_dependency') return 'expr';
+  if (type === 'group_effect') return 'expr';
+  if (type === 'order_dependency') return 'expr';
+  if (type === 'order_effect') return 'expr';
   if (type === 'output_column_to_result') return 'output';
   if (type === 'table_to_result') return 'table';
   if (type === 'table_to_cte') return 'table';

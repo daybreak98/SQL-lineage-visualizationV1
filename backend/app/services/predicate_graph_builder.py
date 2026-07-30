@@ -30,15 +30,8 @@ def build_predicate_dependency_graph(
             ),
         )
 
-        dependency_type = (
-            "join_dependency"
-            if predicate.predicate_kind == "join"
-            else "predicate_dependency"
-        )
-        effect_type = (
-            "join_effect"
-            if predicate.predicate_kind == "join"
-            else "predicate_effect"
+        dependency_type, effect_type = _predicate_edge_types(
+            predicate.predicate_kind
         )
         for root in predicate.root_columns:
             source_id = f"physical_column:{root.display()}"
@@ -71,12 +64,23 @@ def build_predicate_dependency_graph(
     return graph
 
 
+def _predicate_edge_types(predicate_kind: str) -> tuple[str, str]:
+    prefixes = {
+        "join": "join",
+        "group_by": "group",
+        "order_by": "order",
+    }
+    prefix = prefixes.get(predicate_kind, "predicate")
+    return f"{prefix}_dependency", f"{prefix}_effect"
+
+
 def _predicate_label(predicate: PredicateDependency) -> str:
     normalized = " ".join(predicate.expression.split())
     limit = 180
     if len(normalized) > limit:
         normalized = f"{normalized[:limit - 3]}..."
-    return f"{predicate.predicate_kind.upper()}: {normalized}"
+    kind_label = predicate.predicate_kind.upper().replace("_", " ")
+    return f"{kind_label}: {normalized}"
 
 
 def _predicate_owner(owner_id: str) -> tuple[str, str]:
