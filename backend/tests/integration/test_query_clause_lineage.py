@@ -109,3 +109,85 @@ def test_cte_group_field_rolls_up_to_physical_column():
         ),
         (group_clause, "cte:grouped", "group_effect"),
     } <= _edges(graph)
+
+
+def test_distribute_and_sort_fields_are_explicit_clause_dependencies():
+    graph = _graph(
+        "select id from events "
+        "distribute by tenant_id sort by event_time desc"
+    )
+    distribute = "clause:distribute_by:query_result:final:1"
+    sort = "clause:sort_by:query_result:final:1"
+
+    assert {
+        (
+            "physical_column:events.tenant_id",
+            distribute,
+            "distribute_dependency",
+        ),
+        (distribute, "query_result:final", "distribute_effect"),
+        (
+            "physical_column:events.event_time",
+            sort,
+            "sort_dependency",
+        ),
+        (sort, "query_result:final", "sort_effect"),
+    } <= _edges(graph)
+
+
+def test_cluster_by_field_is_an_explicit_clause_dependency():
+    graph = _graph("select id from events cluster by tenant_id")
+    cluster = "clause:cluster_by:query_result:final:1"
+
+    assert {
+        (
+            "physical_column:events.tenant_id",
+            cluster,
+            "cluster_dependency",
+        ),
+        (cluster, "query_result:final", "cluster_effect"),
+    } <= _edges(graph)
+
+
+def test_sort_by_alias_and_ordinal_expand_projection_inputs():
+    alias_graph = _graph(
+        "select amount * tax_rate as gross_amount "
+        "from order_items sort by gross_amount desc"
+    )
+    ordinal_graph = _graph(
+        "select id, created_at from events sort by 2 desc"
+    )
+    alias_clause = "clause:sort_by:query_result:final:1"
+    ordinal_clause = "clause:sort_by:query_result:final:1"
+
+    assert {
+        (
+            "physical_column:order_items.amount",
+            alias_clause,
+            "sort_dependency",
+        ),
+        (
+            "physical_column:order_items.tax_rate",
+            alias_clause,
+            "sort_dependency",
+        ),
+    } <= _edges(alias_graph)
+    assert (
+        "physical_column:events.created_at",
+        ordinal_clause,
+        "sort_dependency",
+    ) in _edges(ordinal_graph)
+
+
+def test_cte_distribution_field_rolls_up_to_physical_column():
+    graph = _graph(
+        "with prepared as (select id, tenant_id from raw_events) "
+        "select id from prepared distribute by tenant_id"
+    )
+    distribute = "clause:distribute_by:query_result:final:1"
+
+    assert (
+        "physical_column:raw_events.tenant_id",
+        distribute,
+        "distribute_dependency",
+    ) in _edges(graph)

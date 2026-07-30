@@ -69,6 +69,9 @@ def _predicate_edge_types(predicate_kind: str) -> tuple[str, str]:
         "join": "join",
         "group_by": "group",
         "order_by": "order",
+        "distribute_by": "distribute",
+        "sort_by": "sort",
+        "cluster_by": "cluster",
     }
     prefix = prefixes.get(predicate_kind, "predicate")
     return f"{prefix}_dependency", f"{prefix}_effect"

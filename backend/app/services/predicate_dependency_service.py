@@ -16,6 +16,15 @@ from app.services.expression_dependency_extractor import (
 from app.services.sqlglot_compat import get_from_expression
 
 
+QUERY_CLAUSE_KINDS = {
+    "group_by",
+    "order_by",
+    "distribute_by",
+    "sort_by",
+    "cluster_by",
+}
+
+
 @dataclass(frozen=True)
 class PredicateDependency:
     predicate_id: str
@@ -101,7 +110,7 @@ def analyze_predicate_dependencies(
             counters[counter_key] = counters.get(counter_key, 0) + 1
             id_prefix = (
                 "clause"
-                if predicate_kind in {"group_by", "order_by"}
+                if predicate_kind in QUERY_CLAUSE_KINDS
                 else "predicate"
             )
             predicate_id = (
@@ -161,6 +170,9 @@ def _select_conditions(
     for argument_name, clause_kind in (
         ("group", "group_by"),
         ("order", "order_by"),
+        ("distribute", "distribute_by"),
+        ("sort", "sort_by"),
+        ("cluster", "cluster_by"),
     ):
         clause = select.args.get(argument_name)
         if isinstance(clause, exp.Expression):
@@ -301,7 +313,7 @@ def _condition_inputs(
         for projection in select.expressions
         if projection.alias_or_name
     }
-    if predicate_kind in {"group_by", "order_by"}:
+    if predicate_kind in QUERY_CLAUSE_KINDS:
         inputs.extend(
             _ordinal_projection_inputs(
                 condition,
@@ -325,7 +337,7 @@ def _condition_inputs(
         if (
             not column.table
             and predicate_kind
-            in {"having", "qualify", "group_by", "order_by"}
+            in {"having", "qualify", *QUERY_CLAUSE_KINDS}
             and (
                 alias_projection := projection_aliases.get(
                     column.name.lower().strip("`")

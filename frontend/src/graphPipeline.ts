@@ -70,6 +70,12 @@ function normalizeEdgeType(type?: string): GraphEdge['type'] {
   if (type === 'group_effect') return 'expr';
   if (type === 'order_dependency') return 'expr';
   if (type === 'order_effect') return 'expr';
+  if (type === 'distribute_dependency') return 'expr';
+  if (type === 'distribute_effect') return 'expr';
+  if (type === 'sort_dependency') return 'expr';
+  if (type === 'sort_effect') return 'expr';
+  if (type === 'cluster_dependency') return 'expr';
+  if (type === 'cluster_effect') return 'expr';
   if (type === 'output_column_to_result') return 'output';
   if (type === 'table_to_result') return 'table';
   if (type === 'table_to_cte') return 'table';
