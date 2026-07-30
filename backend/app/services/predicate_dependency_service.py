@@ -32,10 +32,18 @@ class _RelationSource:
     alias: str
 
 
+@dataclass(frozen=True)
+class _ConditionSpec:
+    predicate_kind: str
+    expression: exp.Expression
+    explicit_inputs: tuple[ColumnRef, ...] | None = None
+
+
 def analyze_predicate_dependencies(
     tree: exp.Expression | None,
     dialect: str = "spark",
     derived_schemas: dict[str, DerivedRelationSchema] | None = None,
+    relation_columns: dict[str, list[str]] | None = None,
 ) -> list[PredicateDependency]:
     if tree is None:
         return []
@@ -54,18 +62,37 @@ def analyze_predicate_dependencies(
         }
     subquery_ids, query_ids = _subquery_owner_ids(tree)
     rollup = CteColumnRollupService(schemas)
+    normalized_relation_columns = {
+        key.lower().strip("`"): {
+            column.lower().strip("`")
+            for column in columns
+            if column
+        }
+        for key, columns in (relation_columns or {}).items()
+    }
     counters: dict[tuple[str, str], int] = {}
     results: list[PredicateDependency] = []
 
     for select in tree.find_all(exp.Select):
         owner_id = _select_owner_id(select, subquery_ids, query_ids)
-        for predicate_kind, condition in _select_conditions(select):
-            immediate_inputs = _condition_inputs(
-                condition,
-                select,
-                predicate_kind,
-                cte_names,
-                subquery_ids,
+        for condition_spec in _select_conditions(
+            select,
+            cte_names,
+            subquery_ids,
+            normalized_relation_columns,
+        ):
+            predicate_kind = condition_spec.predicate_kind
+            condition = condition_spec.expression
+            immediate_inputs = (
+                list(condition_spec.explicit_inputs)
+                if condition_spec.explicit_inputs is not None
+                else _condition_inputs(
+                    condition,
+                    select,
+                    predicate_kind,
+                    cte_names,
+                    subquery_ids,
+                )
             )
             if not immediate_inputs:
                 continue
@@ -112,12 +139,16 @@ def analyze_predicate_dependencies(
 
 def _select_conditions(
     select: exp.Select,
-) -> list[tuple[str, exp.Expression]]:
-    conditions: list[tuple[str, exp.Expression]] = []
-    for join in select.args.get("joins") or []:
-        on_expression = join.args.get("on")
-        if isinstance(on_expression, exp.Expression):
-            conditions.append(("join", on_expression))
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+    relation_columns: dict[str, set[str]],
+) -> list[_ConditionSpec]:
+    conditions = _join_conditions(
+        select,
+        cte_names,
+        subquery_ids,
+        relation_columns,
+    )
     for argument_name, predicate_kind in (
         ("where", "where"),
         ("having", "having"),
@@ -126,15 +157,135 @@ def _select_conditions(
         wrapper = select.args.get(argument_name)
         condition = getattr(wrapper, "this", None)
         if isinstance(condition, exp.Expression):
-            conditions.append((predicate_kind, condition))
+            conditions.append(_ConditionSpec(predicate_kind, condition))
     for argument_name, clause_kind in (
         ("group", "group_by"),
         ("order", "order_by"),
     ):
         clause = select.args.get(argument_name)
         if isinstance(clause, exp.Expression):
-            conditions.append((clause_kind, clause))
+            conditions.append(_ConditionSpec(clause_kind, clause))
     return conditions
+
+
+def _join_conditions(
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+    relation_columns: dict[str, set[str]],
+) -> list[_ConditionSpec]:
+    conditions: list[_ConditionSpec] = []
+    left_sources: list[_RelationSource] = []
+    from_expression = get_from_expression(select)
+    if from_expression is not None:
+        source = _relation_source(
+            from_expression.this,
+            cte_names,
+            subquery_ids,
+        )
+        if source is not None:
+            left_sources.append(source)
+
+    for join in select.args.get("joins") or []:
+        right_source = _relation_source(
+            join.this,
+            cte_names,
+            subquery_ids,
+        )
+        on_expression = join.args.get("on")
+        if isinstance(on_expression, exp.Expression):
+            conditions.append(_ConditionSpec("join", on_expression))
+        else:
+            using_names = [
+                identifier.name
+                for identifier in join.args.get("using") or []
+                if identifier.name
+            ]
+            if using_names and right_source is not None and left_sources:
+                sources = [*left_sources, right_source]
+                inputs = tuple(
+                    _join_source_ref(source, column_name)
+                    for column_name in using_names
+                    for source in sources
+                )
+                conditions.append(_ConditionSpec(
+                    "join",
+                    exp.Var(this=f"USING ({', '.join(using_names)})"),
+                    inputs,
+                ))
+            elif (
+                str(join.args.get("method") or "").upper() == "NATURAL"
+                and right_source is not None
+                and left_sources
+            ):
+                sources = [*left_sources, right_source]
+                inputs = _natural_join_inputs(
+                    sources,
+                    relation_columns,
+                )
+                conditions.append(_ConditionSpec(
+                    "join",
+                    exp.Var(this="NATURAL JOIN"),
+                    tuple(inputs),
+                ))
+        if right_source is not None:
+            left_sources.append(right_source)
+    return conditions
+
+
+def _join_source_ref(
+    source: _RelationSource,
+    column_name: str,
+) -> ColumnRef:
+    return ColumnRef(
+        relation_name=source.relation_name,
+        column_name=column_name,
+        relation_kind=source.relation_kind,
+        table_alias=source.alias,
+    )
+
+
+def _natural_join_inputs(
+    sources: list[_RelationSource],
+    relation_columns: dict[str, set[str]],
+) -> list[ColumnRef]:
+    columns_by_source: list[set[str]] = []
+    for source in sources:
+        columns = _relation_columns(source, relation_columns)
+        if not columns:
+            return [_join_source_ref(item, "*") for item in sources]
+        columns_by_source.append(columns)
+
+    right_columns = columns_by_source[-1]
+    left_columns: set[str] = set()
+    for columns in columns_by_source[:-1]:
+        left_columns.update(columns)
+    common_columns = sorted(left_columns & right_columns)
+
+    inputs: list[ColumnRef] = []
+    for column_name in common_columns:
+        for source, columns in zip(sources, columns_by_source):
+            if column_name in columns:
+                inputs.append(_join_source_ref(source, column_name))
+    return inputs
+
+
+def _relation_columns(
+    source: _RelationSource,
+    relation_columns: dict[str, set[str]],
+) -> set[str]:
+    relation_key = source.relation_name.lower().strip("`")
+    candidates = [
+        relation_key,
+        relation_key.split(".")[-1],
+    ]
+    if source.relation_kind == "subquery":
+        candidates.insert(0, f"subquery:{relation_key}")
+    for candidate in candidates:
+        columns = relation_columns.get(candidate)
+        if columns:
+            return columns
+    return set()
 
 
 def _condition_inputs(

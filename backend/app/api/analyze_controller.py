@@ -198,6 +198,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
         tree,
         analysis_dialect,
         schema_result.schemas if schema_result is not None else None,
+        metadata,
     )
     pivot_outputs = pivot_star_output_names(tree, metadata)
     if pivot_outputs:

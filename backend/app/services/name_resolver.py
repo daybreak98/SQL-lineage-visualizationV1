@@ -346,6 +346,22 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
             )
             continue
 
+        merged_sources = _merged_join_column_sources(
+            column,
+            tables,
+            metadata_cols,
+        )
+        if merged_sources:
+            lineages.extend(
+                SimpleColumnLineage(
+                    source_table=source.table_name,
+                    source_column=column.name,
+                    output_column=output_column,
+                )
+                for source in merged_sources
+            )
+            continue
+
         # Unqualified + multiple tables: try metadata disambiguation
         tables_with_meta = [t for t in tables if metadata_cols.get(t.table_name)]
         tables_without_meta = [t for t in tables if not metadata_cols.get(t.table_name)]
@@ -506,6 +522,108 @@ def _resolve_set_operation_lineages(
         unsupported_features=list(dict.fromkeys(unsupported_features)),
         stage_status=status,
         alias_to_table=alias_to_table,
+    )
+
+
+def _merged_join_column_sources(
+    column: exp.Column,
+    tables: list[TableReference],
+    metadata_cols: dict[str, set[str]],
+) -> list[TableReference]:
+    select = column.find_ancestor(exp.Select)
+    if select is None:
+        return []
+
+    by_alias = {
+        table.alias.lower().strip("`"): table
+        for table in tables
+    }
+    by_name = {
+        table.table_name.lower().strip("`"): table
+        for table in tables
+    }
+    left_sources: list[TableReference] = []
+    from_expression = get_from_expression(select)
+    if from_expression is not None:
+        source = _table_reference_for_expression(
+            from_expression.this,
+            by_alias,
+            by_name,
+        )
+        if source is not None:
+            left_sources.append(source)
+
+    merged: list[TableReference] = []
+    for join in select.args.get("joins") or []:
+        right_source = _table_reference_for_expression(
+            join.this,
+            by_alias,
+            by_name,
+        )
+        if right_source is None:
+            continue
+        using_names = {
+            identifier.name.lower().strip("`")
+            for identifier in join.args.get("using") or []
+            if identifier.name
+        }
+        column_key = column.name.lower().strip("`")
+        if column_key in using_names:
+            merged.extend([*left_sources, right_source])
+        elif (
+            str(join.args.get("method") or "").upper() == "NATURAL"
+            and _is_known_natural_join_column(
+                column_key,
+                left_sources,
+                right_source,
+                metadata_cols,
+            )
+        ):
+            merged.extend([
+                source
+                for source in [*left_sources, right_source]
+                if column_key in metadata_cols.get(source.table_name, set())
+            ])
+        left_sources.append(right_source)
+
+    result: list[TableReference] = []
+    seen: set[tuple[str, str]] = set()
+    for source in merged:
+        key = (source.table_name, source.alias)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(source)
+    return result
+
+
+def _table_reference_for_expression(
+    expression: exp.Expression,
+    by_alias: dict[str, TableReference],
+    by_name: dict[str, TableReference],
+) -> TableReference | None:
+    alias = expression.alias_or_name.lower().strip("`")
+    if alias in by_alias:
+        return by_alias[alias]
+    if not isinstance(expression, exp.Table):
+        return None
+    parts = [part for part in (expression.catalog, expression.db, expression.name) if part]
+    name = (".".join(parts) if parts else expression.name).lower().strip("`")
+    return by_name.get(name) or by_name.get(name.split(".")[-1])
+
+
+def _is_known_natural_join_column(
+    column_name: str,
+    left_sources: list[TableReference],
+    right_source: TableReference,
+    metadata_cols: dict[str, set[str]],
+) -> bool:
+    right_columns = metadata_cols.get(right_source.table_name)
+    if not right_columns or column_name not in right_columns:
+        return False
+    return any(
+        column_name in metadata_cols.get(source.table_name, set())
+        for source in left_sources
     )
 
 
