@@ -284,6 +284,11 @@ def _build_single_schema(
     dialect: str,
 ) -> DerivedRelationSchema:
     schema = DerivedRelationSchema(relation_name=relation_name, relation_kind=relation_kind)
+    schema.rowset_inputs = _query_rowset_inputs(
+        select_node,
+        cte_names,
+        existing_schemas,
+    )
 
     # Path A: name_resolver for simple column projections
     derived_metadata: Dict[str, List[str]] = {}
@@ -476,6 +481,9 @@ def _merge_derived_schema(
     incoming: DerivedRelationSchema,
 ) -> None:
     """Merge same-alias schemas from separate set-operation branches."""
+    target.rowset_inputs = _dedupe_column_refs(
+        target.rowset_inputs + incoming.rowset_inputs
+    )
     for column_key, incoming_dependency in incoming.output_columns.items():
         existing_dependency = target.output_columns.get(column_key)
         if existing_dependency is None:
@@ -604,3 +612,32 @@ def _relation_source_name(source: exp.Expression | None) -> str:
     if isinstance(source, exp.Subquery):
         return source.alias_or_name or ""
     return ""
+
+
+def _query_rowset_inputs(
+    query: exp.Query,
+    cte_names: Set[str],
+    existing_schemas: Dict[str, DerivedRelationSchema],
+) -> List[ColumnRef]:
+    inputs: List[ColumnRef] = []
+    for select_node in _query_selects(query):
+        for source_name in _get_from_table_names(select_node):
+            key = source_name.lower().strip("`")
+            source_schema = existing_schemas.get(key)
+            if key in cte_names:
+                source_kind = "cte"
+            elif (
+                source_schema is not None
+                and source_schema.relation_kind == "subquery"
+            ):
+                source_kind = "subquery"
+            else:
+                source_kind = "table"
+            inputs.append(
+                ColumnRef(
+                    relation_name=source_name,
+                    column_name="*",
+                    relation_kind=source_kind,
+                )
+            )
+    return _dedupe_column_refs(inputs)

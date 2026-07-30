@@ -120,6 +120,15 @@ class ExpressionDependencyExtractor:
         self, expression: Any, scope: ResolveScope,
     ) -> List[ColumnRef]:
         refs: List[ColumnRef] = []
+        for relation in _rowset_aggregate_relations(expression, scope):
+            refs.append(
+                ColumnRef(
+                    relation_name=relation.relation_name,
+                    column_name="*",
+                    relation_kind=relation.relation_kind,
+                    table_alias=relation.alias,
+                )
+            )
         for col in source_columns_with_named_windows(expression):
             if isinstance(col.this, exp.Star):
                 continue  # skip star references inside qualified stars
@@ -169,6 +178,49 @@ class ExpressionDependencyExtractor:
                 seen.add(key)
                 result.append(ref)
         return result
+
+
+def _rowset_aggregate_relations(
+    expression: Any,
+    scope: ResolveScope,
+) -> List[RelationInScope]:
+    projection_select = expression.find_ancestor(exp.Select)
+    result: List[RelationInScope] = []
+    seen: Set[tuple[str, str, str]] = set()
+
+    for aggregate in expression.find_all(exp.AggFunc):
+        if aggregate.find_ancestor(exp.Select) is not projection_select:
+            continue
+        columns = list(aggregate.find_all(exp.Column))
+        if any(not isinstance(column.this, exp.Star) for column in columns):
+            continue
+
+        qualifiers = {
+            column.table.lower().strip("`")
+            for column in columns
+            if isinstance(column.this, exp.Star) and column.table
+        }
+        if qualifiers:
+            relations = [scope.resolve_relation(name) for name in qualifiers]
+        else:
+            relations = list(scope.relations_by_alias.values())
+            if not relations and scope.default_relation is not None:
+                relations = [scope.default_relation]
+
+        for relation in relations:
+            if relation.relation_kind == "unknown" or not relation.relation_name:
+                continue
+            key = (
+                relation.relation_kind,
+                relation.relation_name.lower().strip("`"),
+                (relation.alias or "").lower().strip("`"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(relation)
+
+    return result
 
 
 def source_columns_with_named_windows(expression: Any) -> List[exp.Column]:

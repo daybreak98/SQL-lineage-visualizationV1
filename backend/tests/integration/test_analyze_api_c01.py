@@ -63,12 +63,15 @@ def test_analyze_count_star():
         json={"sql": "select count(*) as cnt from t"},
     )
     data = response.json()
-    assert data["status"] == "partial"
+    assert data["status"] == "success"
     assert data["output_fields"][0]["name"] == "cnt"
     assert data["output_fields"][0]["expression"] == "COUNT(*)"
+    assert data["diagnostics_report"]["warning_count"] == 0
     assert any(
-        diagnostic["code"] == "UNSUPPORTED_COMPLEX_QUERY"
-        for diagnostic in data["diagnostics_report"]["diagnostics"]
+        edge["source"] == "physical_column:t.*"
+        and edge["target"] == "output_column:cnt"
+        and edge["edge_type"] == "column_lineage"
+        for edge in data["graph_view_model"]["edges"]
     )
 
 

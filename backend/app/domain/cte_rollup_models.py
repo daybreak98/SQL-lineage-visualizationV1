@@ -72,6 +72,7 @@ class DerivedRelationSchema:
     relation_kind: RelationKind
     output_columns: Dict[str, ColumnDependency] = field(default_factory=dict)
     scope_id: str = ""
+    rowset_inputs: List[ColumnRef] = field(default_factory=list)
 
     @property
     def relation_key(self) -> str:

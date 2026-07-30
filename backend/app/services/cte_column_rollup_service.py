@@ -113,6 +113,9 @@ class CteColumnRollupService:
             self.diagnostics.append(diag)
             return [ref], [self._make_path(state, ref, [diag])]
 
+        if ref.column_key == "*":
+            return self._expand_rowset(schema, state, visited)
+
         inner_dep = schema.get_dependency(ref.column_name)
         if inner_dep is None:
             diag = LineageDiagnostic(
@@ -150,6 +153,28 @@ class CteColumnRollupService:
             roots.extend(child_roots)
             paths.extend(child_paths)
 
+        return self._dedupe_refs(roots), paths
+
+    def _expand_rowset(
+        self,
+        schema: DerivedRelationSchema,
+        state: _ExpandState,
+        visited: Set[Tuple[str, str, str, str]],
+    ) -> Tuple[List[ColumnRef], List[LineagePath]]:
+        roots: List[ColumnRef] = []
+        paths: List[LineagePath] = []
+        for input_ref in schema.rowset_inputs:
+            child_roots, child_paths = self._expand_ref(
+                input_ref,
+                _ExpandState(
+                    output=state.output,
+                    visited=visited,
+                    path=state.path + [input_ref],
+                    transform_types=state.transform_types + ["star"],
+                ),
+            )
+            roots.extend(child_roots)
+            paths.extend(child_paths)
         return self._dedupe_refs(roots), paths
 
     def _make_path(

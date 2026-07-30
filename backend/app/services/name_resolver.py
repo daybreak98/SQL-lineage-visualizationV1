@@ -101,6 +101,13 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
 
     tables = _table_references(tree, dialect, is_cte_context=is_cte_context, context=context)
     if not tables:
+        if _is_valid_source_free_query(tree):
+            return _result(
+                started=started,
+                status="success",
+                confidence_level="high",
+                stage_status="success",
+            )
         return _result(
             started=started,
             status="partial",
@@ -240,7 +247,10 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
             if not expression_lineages and not expression_diagnostics:
                 if (
                     _source_columns_in_expression(select_item)
-                    or select_item.find(exp.Star) is not None
+                    or (
+                        select_item.find(exp.Star) is not None
+                        and not _all_stars_are_aggregate_rowset(select_item)
+                    )
                 ):
                     diagnostics.append(
                         Diagnostic(
@@ -621,6 +631,23 @@ def _expression_column_lineages(
     diagnostics: list[Diagnostic] = []
     seen_lineages: set[tuple[str, str, str]] = set()
 
+    for source_table in _rowset_aggregate_source_tables(
+        select_item,
+        outer_tables,
+        dialect,
+    ):
+        key = (source_table, "*", output_column)
+        if key in seen_lineages:
+            continue
+        seen_lineages.add(key)
+        lineages.append(
+            SimpleColumnLineage(
+                source_table=source_table,
+                source_column="*",
+                output_column=output_column,
+            )
+        )
+
     for column in source_columns:
         table_scopes = _table_scopes_for_column(
             column=column,
@@ -652,6 +679,89 @@ def _expression_column_lineages(
         )
 
     return lineages, diagnostics
+
+
+def _rowset_aggregate_source_tables(
+    select_item: exp.Expression,
+    outer_tables: list[TableReference],
+    dialect: str,
+) -> list[str]:
+    expression = (
+        select_item.this if isinstance(select_item, exp.Alias) else select_item
+    )
+    projection_select = select_item.find_ancestor(exp.Select)
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for aggregate in expression.find_all(exp.AggFunc):
+        columns = list(aggregate.find_all(exp.Column))
+        if any(not isinstance(column.this, exp.Star) for column in columns):
+            continue
+
+        owner_select = aggregate.find_ancestor(exp.Select)
+        tables = (
+            outer_tables
+            if owner_select is None or owner_select is projection_select
+            else _table_references_from_final_select(owner_select, dialect)
+        )
+        qualifiers = {
+            column.table.lower().strip("`")
+            for column in columns
+            if isinstance(column.this, exp.Star) and column.table
+        }
+        for table in tables:
+            if qualifiers and not _table_matches_qualifier(table, qualifiers):
+                continue
+            if table.table_name in seen:
+                continue
+            seen.add(table.table_name)
+            result.append(table.table_name)
+
+    return result
+
+
+def _table_matches_qualifier(
+    table: TableReference,
+    qualifiers: set[str],
+) -> bool:
+    names = {
+        table.alias.lower().strip("`"),
+        table.table_name.lower().strip("`"),
+        table.table_name.split(".")[-1].lower().strip("`"),
+    }
+    return bool(names & qualifiers)
+
+
+def _all_stars_are_aggregate_rowset(
+    select_item: exp.Expression,
+) -> bool:
+    stars = list(select_item.find_all(exp.Star))
+    return bool(stars) and all(
+        star.find_ancestor(exp.AggFunc) is not None for star in stars
+    )
+
+
+def _is_valid_source_free_query(tree: exp.Expression) -> bool:
+    selects = list(tree.find_all(exp.Select))
+    if isinstance(tree, exp.Select):
+        selects.insert(0, tree)
+    if not selects:
+        return False
+
+    for select in dict.fromkeys(selects):
+        if get_from_expression(select) is not None:
+            return False
+        if select.args.get("joins"):
+            return False
+        for projection in select.expressions:
+            if _source_columns_in_expression(projection):
+                return False
+            if (
+                projection.find(exp.Star) is not None
+                and not _all_stars_are_aggregate_rowset(projection)
+            ):
+                return False
+    return True
 
 
 def _source_columns_in_expression(select_item: exp.Expression) -> list[exp.Column]:
