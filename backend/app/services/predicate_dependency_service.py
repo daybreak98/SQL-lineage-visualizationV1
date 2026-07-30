@@ -159,6 +159,13 @@ def _condition_inputs(
                 subquery_ids,
             )
         )
+    inputs.extend(
+        _value_subquery_inputs(
+            condition,
+            cte_names,
+            subquery_ids,
+        )
+    )
     for column in condition.find_all(exp.Column):
         if isinstance(column.this, exp.Star):
             continue
@@ -193,6 +200,104 @@ def _condition_inputs(
         if ref is not None:
             inputs.append(ref)
     return _dedupe_refs(inputs)
+
+
+def _value_subquery_inputs(
+    condition: exp.Expression,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    for subquery in condition.find_all(exp.Subquery):
+        if _is_nested_value_subquery(subquery, condition):
+            continue
+        if subquery.find_ancestor(exp.Exists) is not None:
+            continue
+        for inner_select in _query_selects(subquery.this):
+            for projection in inner_select.expressions:
+                for column in source_columns_with_named_windows(projection):
+                    if column.find_ancestor(exp.Select) is not inner_select:
+                        continue
+                    ref = _resolved_column_ref(
+                        column,
+                        inner_select,
+                        cte_names,
+                        subquery_ids,
+                    )
+                    if ref is not None:
+                        inputs.append(ref)
+                inputs.extend(
+                    _projection_rowset_inputs(
+                        projection,
+                        inner_select,
+                        cte_names,
+                        subquery_ids,
+                    )
+                )
+    return inputs
+
+
+def _projection_rowset_inputs(
+    projection: exp.Expression,
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    sources = _scope_sources(select, cte_names, subquery_ids)
+    for aggregate in projection.find_all(exp.AggFunc):
+        if aggregate.find_ancestor(exp.Select) is not select:
+            continue
+        columns = list(aggregate.find_all(exp.Column))
+        if any(not isinstance(column.this, exp.Star) for column in columns):
+            continue
+        qualifiers = {
+            column.table.lower().strip("`")
+            for column in columns
+            if isinstance(column.this, exp.Star) and column.table
+        }
+        candidates = (
+            [sources[name] for name in qualifiers if name in sources]
+            if qualifiers
+            else list(sources.values())
+        )
+        seen_sources: set[tuple[str, str]] = set()
+        for source in candidates:
+            key = (source.relation_kind, source.relation_name.lower())
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+            inputs.append(
+                ColumnRef(
+                    relation_name=source.relation_name,
+                    column_name="*",
+                    relation_kind=source.relation_kind,
+                    table_alias=source.alias,
+                )
+            )
+    return inputs
+
+
+def _is_nested_value_subquery(
+    subquery: exp.Subquery,
+    condition: exp.Expression,
+) -> bool:
+    parent = subquery.parent
+    while parent is not None and parent is not condition:
+        if isinstance(parent, exp.Subquery):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _query_selects(query: exp.Expression) -> list[exp.Select]:
+    if isinstance(query, exp.Subquery):
+        return _query_selects(query.this)
+    if isinstance(query, exp.Select):
+        return [query]
+    if isinstance(query, exp.SetOperation):
+        return _query_selects(query.this) + _query_selects(query.expression)
+    return []
 
 
 def _ordinal_projection_inputs(
