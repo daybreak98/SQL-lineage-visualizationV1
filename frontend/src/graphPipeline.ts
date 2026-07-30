@@ -62,6 +62,10 @@ function canonicalEntityId(node: RawApiNode, index: number): string {
 
 function normalizeEdgeType(type?: string): GraphEdge['type'] {
   if (type === 'column_lineage') return 'projection';
+  if (type === 'predicate_dependency') return 'expr';
+  if (type === 'predicate_effect') return 'expr';
+  if (type === 'join_dependency') return 'join';
+  if (type === 'join_effect') return 'join';
   if (type === 'output_column_to_result') return 'output';
   if (type === 'table_to_result') return 'table';
   if (type === 'table_to_cte') return 'table';

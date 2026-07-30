@@ -36,6 +36,8 @@ from app.services.parse_recovery_pipeline import ParseRecoveryPipeline
 from app.services.partial_lineage_engine import PartialLineageEngine
 from app.services.relation_transform_dependency_extractor import pivot_star_output_names
 from app.domain.lineage_model import SimpleColumnLineage
+from app.services.predicate_dependency_service import analyze_predicate_dependencies
+from app.services.predicate_graph_builder import build_predicate_dependency_graph
 
 router = APIRouter()
 
@@ -192,6 +194,11 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     )
     if schema_result is not None and schema_result.schemas:
         metadata.update(_derived_schema_metadata(schema_result.schemas))
+    predicate_dependencies = analyze_predicate_dependencies(
+        tree,
+        analysis_dialect,
+        schema_result.schemas if schema_result is not None else None,
+    )
     pivot_outputs = pivot_star_output_names(tree, metadata)
     if pivot_outputs:
         parse_result.output_fields = [
@@ -280,6 +287,8 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
             lineage_result.lineages,
             _output_field_names(parse_result.output_fields),
         ))
+    if predicate_dependencies:
+        graphs.append(build_predicate_dependency_graph(predicate_dependencies))
 
     if graphs:
         graph = merge_graphs(
@@ -322,6 +331,7 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
         "source_location_physical_table": True,
         "source_location_cte": True,
         "source_location_subquery": True,
+        "predicate_column_lineage": bool(predicate_dependencies),
     })
 
     confidence = _adjust_confidence(confidence, status, unsupported_features)
