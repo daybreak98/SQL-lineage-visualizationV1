@@ -82,66 +82,94 @@ def analyze_predicate_dependencies(
     counters: dict[tuple[str, str], int] = {}
     results: list[PredicateDependency] = []
 
+    def append_condition(
+        owner_id: str,
+        condition_spec: _ConditionSpec,
+        select: exp.Select | None = None,
+    ) -> None:
+        predicate_kind = condition_spec.predicate_kind
+        condition = condition_spec.expression
+        if condition_spec.explicit_inputs is not None:
+            immediate_inputs = list(condition_spec.explicit_inputs)
+        elif select is not None:
+            immediate_inputs = _condition_inputs(
+                condition,
+                select,
+                predicate_kind,
+                cte_names,
+                subquery_ids,
+            )
+        else:
+            return
+        if not immediate_inputs:
+            return
+
+        counter_key = (owner_id, predicate_kind)
+        counters[counter_key] = counters.get(counter_key, 0) + 1
+        id_prefix = (
+            "clause" if predicate_kind in QUERY_CLAUSE_KINDS else "predicate"
+        )
+        predicate_id = (
+            f"{id_prefix}:{predicate_kind}:{owner_id}:"
+            f"{counters[counter_key]}"
+        )
+        expression_sql = condition.sql(dialect=dialect)
+        dependency = ColumnDependency(
+            output=ColumnRef(
+                relation_name=predicate_id,
+                column_name="condition",
+                relation_kind="output",
+            ),
+            inputs=immediate_inputs,
+            transform_type="expression",
+            expression=expression_sql,
+        )
+        rolled = rollup.rollup([dependency]).root_dependencies[0]
+        roots = _dedupe_refs(
+            root
+            for root in rolled.inputs
+            if root.relation_kind == "table" and root.relation_name
+        )
+        if not roots:
+            return
+        results.append(PredicateDependency(
+            predicate_id=predicate_id,
+            predicate_kind=predicate_kind,
+            owner_id=owner_id,
+            expression=expression_sql,
+            root_columns=tuple(roots),
+        ))
+
     for select in tree.find_all(exp.Select):
-        owner_id = _select_owner_id(select, subquery_ids, query_ids)
+        owner_id = _query_owner_id(select, subquery_ids, query_ids)
         for condition_spec in _select_conditions(
             select,
             cte_names,
             subquery_ids,
             normalized_relation_columns,
         ):
-            predicate_kind = condition_spec.predicate_kind
-            condition = condition_spec.expression
-            immediate_inputs = (
-                list(condition_spec.explicit_inputs)
-                if condition_spec.explicit_inputs is not None
-                else _condition_inputs(
-                    condition,
-                    select,
-                    predicate_kind,
-                    cte_names,
-                    subquery_ids,
-                )
-            )
-            if not immediate_inputs:
-                continue
+            append_condition(owner_id, condition_spec, select)
 
-            counter_key = (owner_id, predicate_kind)
-            counters[counter_key] = counters.get(counter_key, 0) + 1
-            id_prefix = (
-                "clause"
-                if predicate_kind in QUERY_CLAUSE_KINDS
-                else "predicate"
-            )
-            predicate_id = (
-                f"{id_prefix}:{predicate_kind}:{owner_id}:"
-                f"{counters[counter_key]}"
-            )
-            dependency = ColumnDependency(
-                output=ColumnRef(
-                    relation_name=predicate_id,
-                    column_name="condition",
-                    relation_kind="output",
-                ),
-                inputs=immediate_inputs,
-                transform_type="expression",
-                expression=condition.sql(dialect=dialect),
-            )
-            rolled = rollup.rollup([dependency]).root_dependencies[0]
-            roots = _dedupe_refs(
-                root
-                for root in rolled.inputs
-                if root.relation_kind == "table" and root.relation_name
-            )
-            if not roots:
-                continue
-            results.append(PredicateDependency(
-                predicate_id=predicate_id,
-                predicate_kind=predicate_kind,
-                owner_id=owner_id,
-                expression=condition.sql(dialect=dialect),
-                root_columns=tuple(roots),
-            ))
+    set_operations = list(tree.find_all(exp.SetOperation))
+    if isinstance(tree, exp.SetOperation) and not any(
+        operation is tree for operation in set_operations
+    ):
+        set_operations.insert(0, tree)
+    for operation in set_operations:
+        order = operation.args.get("order")
+        if not isinstance(order, exp.Order):
+            continue
+        inputs = _set_operation_order_inputs(
+            operation,
+            order,
+            cte_names,
+            subquery_ids,
+        )
+        owner_id = _query_owner_id(operation, subquery_ids, query_ids)
+        append_condition(
+            owner_id,
+            _ConditionSpec("order_by", order, tuple(inputs)),
+        )
 
     return results
 
@@ -463,6 +491,91 @@ def _query_selects(query: exp.Expression) -> list[exp.Select]:
     return []
 
 
+def _set_operation_order_inputs(
+    operation: exp.SetOperation,
+    order: exp.Order,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    branches = _query_selects(operation)
+    if not branches:
+        return []
+    canonical_projections = branches[0].expressions
+    aliases = {
+        projection.alias_or_name.lower().strip("`"): index
+        for index, projection in enumerate(canonical_projections)
+        if projection.alias_or_name
+    }
+    projection_indexes: set[int] = set()
+
+    for ordered in order.expressions:
+        expression = (
+            ordered.this if isinstance(ordered, exp.Ordered) else ordered
+        )
+        if (
+            isinstance(expression, exp.Literal)
+            and not expression.is_string
+            and str(expression.this).isdigit()
+        ):
+            ordinal = int(str(expression.this))
+            if 1 <= ordinal <= len(canonical_projections):
+                projection_indexes.add(ordinal - 1)
+            continue
+        for column in expression.find_all(exp.Column):
+            if column.table:
+                continue
+            index = aliases.get(column.name.lower().strip("`"))
+            if index is not None:
+                projection_indexes.add(index)
+
+    inputs: list[ColumnRef] = []
+    for index in sorted(projection_indexes):
+        canonical_name = (
+            (canonical_projections[index].alias_or_name or "")
+            .lower()
+            .strip("`")
+        )
+        for branch in branches:
+            if operation.args.get("by_name"):
+                projection = next(
+                    (
+                        item
+                        for item in branch.expressions
+                        if (item.alias_or_name or "").lower().strip("`")
+                        == canonical_name
+                    ),
+                    None,
+                )
+            else:
+                projection = (
+                    branch.expressions[index]
+                    if index < len(branch.expressions)
+                    else None
+                )
+            if projection is None:
+                continue
+            for column in source_columns_with_named_windows(projection):
+                if column.find_ancestor(exp.Select) is not branch:
+                    continue
+                ref = _resolved_column_ref(
+                    column,
+                    branch,
+                    cte_names,
+                    subquery_ids,
+                )
+                if ref is not None:
+                    inputs.append(ref)
+            inputs.extend(
+                _projection_rowset_inputs(
+                    projection,
+                    branch,
+                    cte_names,
+                    subquery_ids,
+                )
+            )
+    return _dedupe_refs(inputs)
+
+
 def _ordinal_projection_inputs(
     clause: exp.Expression,
     select: exp.Select,
@@ -650,15 +763,15 @@ def _expression_source_offset(
     return min(offsets) if offsets else None
 
 
-def _select_owner_id(
-    select: exp.Select,
+def _query_owner_id(
+    query: exp.Expression,
     subquery_ids: dict[int, str],
     query_ids: dict[int, str],
 ) -> str:
-    direct_owner = query_ids.get(id(select))
+    direct_owner = query_ids.get(id(query))
     if direct_owner:
         return direct_owner
-    parent = select.parent
+    parent = query.parent
     while parent is not None:
         if isinstance(parent, exp.Subquery):
             owner_id = subquery_ids.get(id(parent))
