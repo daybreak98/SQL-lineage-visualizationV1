@@ -34,7 +34,6 @@ export function TopBar({ state, dialect, setDialect, onAnalyze, onFormat, onLoad
         <div className="logo">SQL</div>
         <div>
           <div className="title">SQL Lineage</div>
-          <div className="sub">v1.4 merged final · Subquery first · P0-Core</div>
         </div>
         <select className="select" value={dialect} onChange={(event) => setDialect(event.target.value)}>
           <option>Hive</option>

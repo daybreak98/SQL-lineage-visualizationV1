@@ -1,0 +1,12 @@
+{
+  "tables": [
+    {
+      "name": "dwd_order_di",
+      "columns": ["order_no", "user_id", "dt"]
+    },
+    {
+      "name": "dim_user",
+      "columns": ["user_id"]
+    }
+  ]
+}

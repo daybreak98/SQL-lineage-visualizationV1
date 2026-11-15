@@ -61,6 +61,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    collapsedRelationIds: {},
+    columnContainerMode: 'relation_rows',
     backendSearchItems,
     ...overrides,
   };
@@ -100,26 +102,13 @@ describe('SearchBar', () => {
     expect(select).toBeDisabled();
   });
 
-  it('shows output capsule with path status', () => {
+  it('does not render the removed choose output capsule', () => {
     const state = baseState();
     const setState = vi.fn();
     render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
 
-    // Output capsule shows idle status when no output selected
-    const capsule = document.querySelector('.output-capsule');
-    expect(capsule).toBeInTheDocument();
-
-    const nameEl = capsule?.querySelector('.name');
-    expect(nameEl?.textContent).toBe('Choose output');
-  });
-
-  it('shows output capsule with selected output name', () => {
-    const state = baseState({ selectedOutput: 'out:order_cnt' });
-    const setState = vi.fn();
-    render(<SearchBar state={state} setState={setState} onSelectResult={onSelectResult} />);
-
-    const nameEl = document.querySelector('.output-capsule .name');
-    expect(nameEl?.textContent).toBe('order_cnt');
+    expect(document.querySelector('.output-capsule')).toBeNull();
+    expect(screen.queryByText('Choose output')).toBeNull();
   });
 
   it('shows stale pill when trustStatus is stale', () => {
@@ -166,6 +155,21 @@ describe('SearchBar', () => {
 
     fireEvent.click(resultButtons[0]);
     expect(onSelect).toHaveBeenCalled();
+  });
+
+  it('keeps the selected search term in the input after choosing a result', () => {
+    const state = baseState();
+    const setState = vi.fn();
+    render(<SearchBar state={state} setState={setState} onSelectResult={vi.fn()} />);
+
+    const input = screen.getByPlaceholderText(/Search field/i);
+    fireEvent.focus(input);
+
+    const resultButtons = document.querySelectorAll('.popover .result');
+    fireEvent.click(resultButtons[0]);
+
+    const nextStates = setState.mock.calls.map(([updater]) => (updater as (s: WorkbenchState) => WorkbenchState)(state));
+    expect(nextStates.some((next) => next.query === 'order_cnt')).toBe(true);
   });
 
   it('shows empty state when backend returned no searchable items', () => {

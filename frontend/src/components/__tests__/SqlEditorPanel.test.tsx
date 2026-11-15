@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { SqlEditorPanel } from '../SqlEditorPanel';
+
+const mock = vi.hoisted(() => ({ mount: undefined as ((active: any, monaco: any) => void) | undefined }));
+vi.mock('../SqlEditor/providers', () => ({
+  bindModelDialect: vi.fn(), configureSqlMonacoLoader: vi.fn(),
+  registerSqlLanguageProviders: vi.fn(), unbindModelDialect: vi.fn(),
+}));
+vi.mock('../SqlEditor/decorations', () => ({ createCursorHandler: () => vi.fn() }));
 
 // Mock Monaco Editor — avoid loading the full editor in jsdom
 vi.mock('@monaco-editor/react', () => ({
@@ -8,12 +15,15 @@ vi.mock('@monaco-editor/react', () => ({
     value,
     onChange,
     loading,
+    onMount,
   }: {
     value?: string;
     onChange?: (v: string) => void;
     loading?: React.ReactNode;
-  }) => (
-    <div data-testid="monaco-editor">
+    onMount?: typeof mock.mount;
+  }) => {
+    mock.mount = onMount;
+    return <div data-testid="monaco-editor">
       <textarea
         data-testid="monaco-textarea"
         value={value ?? ''}
@@ -23,6 +33,18 @@ vi.mock('@monaco-editor/react', () => ({
         readOnly
       />
       {loading}
+    </div>;
+  },
+  DiffEditor: ({
+    original,
+    modified,
+  }: {
+    original?: string;
+    modified?: string;
+  }) => (
+    <div data-testid="monaco-diff-editor">
+      <textarea data-testid="monaco-diff-original" value={original ?? ''} readOnly />
+      <textarea data-testid="monaco-diff-modified" value={modified ?? ''} readOnly />
     </div>
   ),
   loader: {
@@ -72,10 +94,21 @@ describe('SqlEditorPanel', () => {
     expect(foot?.textContent).toMatch(/hive/);
   });
 
-  it('shows line count in footer', () => {
+  it('shows the live cursor position instead of the total SQL line count', () => {
     const multiLineSql = 'SELECT 1\nSELECT 2\nSELECT 3';
     render(<SqlEditorPanel {...baseProps} sql={multiLineSql} />);
-    expect(screen.getByText(/Ln 3/)).toBeInTheDocument();
+    const dispose = vi.fn();
+    let notify: ((event: { position: { lineNumber: number; column: number } }) => void) | undefined;
+    const active = {
+      getPosition: () => ({ lineNumber: 1, column: 1 }),
+      onDidChangeCursorPosition: (fn: typeof notify) => { notify = fn; return { dispose }; },
+      getModel: () => null,
+      onDidDispose: vi.fn(),
+    };
+    act(() => mock.mount?.(active, {}));
+    expect(screen.getByText(/Ln 1, Col 1/)).toBeInTheDocument();
+    act(() => notify?.({ position: { lineNumber: 2, column: 5 } }));
+    expect(screen.getByText(/Ln 2, Col 5/)).toBeInTheDocument();
   });
 
   it('shows pageMode in footer', () => {

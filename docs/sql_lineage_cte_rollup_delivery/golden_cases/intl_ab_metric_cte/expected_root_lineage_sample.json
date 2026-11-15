@@ -1,0 +1,92 @@
+{
+  "case_id": "intl_ab_metric_cte_001",
+  "description": "Subset expected root lineage for the uploaded AB metric SQL. This is not the full exhaustive lineage; it is a stable smoke-test set.",
+  "expected_root_lineage_subset": [
+    {
+      "output_column": "单UV收益",
+      "immediate_inputs": [
+        "order_result.total_order_commission",
+        "search_result.show_uv"
+      ],
+      "root_inputs": [
+        "mdw_order_v3_international.init_commission_after",
+        "mdw_order_v3_international.coupon_info",
+        "mdw_order_v3_international.ext_plat_certificate",
+        "mdw_order_v3_international.batch_series",
+        "default.dwd_ihotel_flow_app_searchlist_di.orig_device_id",
+        "default.dwd_ihotel_flow_app_searchlist_di.is_display",
+        "default.dwd_ihotel_flow_app_searchlist_di.hotel_seq"
+      ]
+    },
+    {
+      "output_column": "S2D",
+      "immediate_inputs": [
+        "search_result.click_uv",
+        "search_result.show_uv"
+      ],
+      "root_inputs": [
+        "default.dwd_ihotel_flow_app_searchlist_di.orig_device_id",
+        "default.dwd_ihotel_flow_app_searchlist_di.is_display",
+        "default.dwd_ihotel_flow_app_searchlist_di.hotel_seq",
+        "default.dwd_ihotel_flow_app_searchlist_di.detail_log_id"
+      ]
+    },
+    {
+      "output_column": "搜索预定率_pv",
+      "immediate_inputs": [
+        "search_result.order_pv",
+        "search_result.show_pv"
+      ],
+      "root_inputs": [
+        "default.dwd_ihotel_flow_app_searchlist_di.order_info_order_no",
+        "default.dwd_ihotel_flow_app_searchlist_di.search_request_uid",
+        "default.dwd_ihotel_flow_app_searchlist_di.is_display"
+      ]
+    },
+    {
+      "output_column": "订单ADR",
+      "immediate_inputs": [
+        "order_result.order_adr"
+      ],
+      "root_inputs": [
+        "mdw_order_v3_international.init_gmv",
+        "mdw_order_v3_international.room_night"
+      ]
+    },
+    {
+      "output_column": "曝光ADR",
+      "immediate_inputs": [
+        "search_result.show_adr"
+      ],
+      "root_inputs": [
+        "default.dwd_ihotel_flow_app_searchlist_di.qpayprice",
+        "default.dwd_ihotel_flow_app_searchlist_di.is_display",
+        "default.dwd_ihotel_flow_app_searchlist_di.hotel_seq"
+      ]
+    },
+    {
+      "output_column": "曝光与订单adr_gap",
+      "immediate_inputs": [
+        "search_result.show_adr",
+        "order_result.order_adr"
+      ],
+      "root_inputs": [
+        "default.dwd_ihotel_flow_app_searchlist_di.qpayprice",
+        "default.dwd_ihotel_flow_app_searchlist_di.is_display",
+        "default.dwd_ihotel_flow_app_searchlist_di.hotel_seq",
+        "mdw_order_v3_international.init_gmv",
+        "mdw_order_v3_international.room_night"
+      ]
+    }
+  ],
+  "required_diagnostics_behavior": [
+    {
+      "scenario": "select star without metadata",
+      "expected": "Return partial lineage and STAR_EXPANSION_REQUIRES_METADATA diagnostic, not crash."
+    },
+    {
+      "scenario": "unknown CTE column",
+      "expected": "Keep current derived column and return UNKNOWN_DERIVED_COLUMN diagnostic."
+    }
+  ]
+}

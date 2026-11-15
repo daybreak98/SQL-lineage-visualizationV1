@@ -1,9 +1,9 @@
-import type { BackendAnalysisResult, FormatSqlResponse, MetadataImportResult, MetadataListResponse, MetadataPayload } from '../types/lineage';
+import type { BackendAnalysisResult, ConvertSqlResponse, FormatSqlResponse, MetadataImportResult, MetadataListResponse, MetadataPayload, MetadataUploadResponse } from '../types/lineage';
 
 function normalizeDialect(dialect: string) {
   const value = dialect.trim().toLowerCase();
-  if (['spark', 'hive', 'mysql', 'starrocks', 'doris'].includes(value)) return value;
-  return 'spark';
+  if (value === 'sr') return 'starrocks';
+  return value || 'spark';
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -11,10 +11,28 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = payload?.detail;
-    const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${response.status}`;
+    const message = typeof detail === 'string' ? detail
+      : Array.isArray(detail) ? detail.map((issue) => issue.msg).filter(Boolean).join('；') || `HTTP ${response.status}`
+      : detail?.message || `HTTP ${response.status}`;
     throw new Error(message);
   }
   return payload as T;
+}
+
+interface SubfieldAnalysisRequest {
+  sql: string;
+  dialect: string;
+  source_schemas?: Record<string, unknown>;
+  protected_outputs?: { statement: number; scope: string; slot: number }[];
+  candidate_keys?: { source: string; column: string; keys: string[] }[];
+}
+
+export function analyzeSubfieldSql(payload: SubfieldAnalysisRequest) {
+  return request<unknown>('/api/sql/subfield-lineage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ ...payload, dialect: normalizeDialect(payload.dialect) }),
+  });
 }
 
 export function formatSql(sql: string, dialect: string) {
@@ -22,6 +40,19 @@ export function formatSql(sql: string, dialect: string) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sql, dialect: normalizeDialect(dialect) }),
+  });
+}
+
+export function convertSql(sql: string, sourceDialect: string, targetDialect: string) {
+  return request<ConvertSqlResponse>('/api/sql/convert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sql,
+      source_dialect: normalizeDialect(sourceDialect),
+      target_dialect: normalizeDialect(targetDialect),
+      pretty: true,
+    }),
   });
 }
 
@@ -75,4 +106,13 @@ export function listMetadataTables() {
 export function listMetadataColumns(table = '') {
   const params = table ? `?table=${encodeURIComponent(table)}` : '';
   return request<MetadataListResponse>(`/api/metadata/columns${params}`);
+}
+
+export function uploadMetadataDb(file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<MetadataUploadResponse>('/api/metadata/upload-db', {
+    method: 'POST',
+    body: formData,
+  });
 }

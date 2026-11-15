@@ -116,6 +116,51 @@ def test_star_and_regular_mixed():
     assert "order_amount" in output_cols
 
 
+def test_expression_projection_degrades_to_column_dependencies():
+    _commit()
+    resp = client.post("/api/sql/analyze", json={
+        "sql": (
+            "SELECT "
+            "SUM(order_amount) AS gmv, "
+            "COUNT(DISTINCT order_no) AS order_cnt, "
+            "SUM(order_amount) / COUNT(DISTINCT order_no) AS adr "
+            "FROM dwd_order_di"
+        )
+    })
+    data = resp.json()
+
+    assert data["status"] == "success"
+    output_cols = {
+        n["label"]
+        for n in data["graph_view_model"]["nodes"]
+        if n["node_type"] == "output_column"
+    }
+    assert output_cols == {"gmv", "order_cnt", "adr"}
+
+    edges = {
+        (e["source"], e["target"])
+        for e in data["graph_view_model"]["edges"]
+        if e["edge_type"] == "column_lineage"
+    }
+    assert edges == {
+        ("physical_column:dwd_order_di.order_amount", "output_column:gmv"),
+        ("physical_column:dwd_order_di.order_no", "output_column:order_cnt"),
+        ("physical_column:dwd_order_di.order_amount", "output_column:adr"),
+        ("physical_column:dwd_order_di.order_no", "output_column:adr"),
+    }
+
+    result_edges = {
+        (e["source"], e["target"])
+        for e in data["graph_view_model"]["edges"]
+        if e["edge_type"] == "output_column_to_result"
+    }
+    assert result_edges == {
+        ("output_column:gmv", "query_result:final"),
+        ("output_column:order_cnt", "query_result:final"),
+        ("output_column:adr", "query_result:final"),
+    }
+
+
 def test_partial_metadata_no_false_disambiguation():
     """select user_id from t1 join t2 — t1 has metadata, t2 does not → must not guess"""
     version = f"c07-partial-{uuid4().hex[:8]}"

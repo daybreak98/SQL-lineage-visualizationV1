@@ -1,0 +1,15 @@
+{
+  "expected_status": "success_or_partial",
+  "must_have_nodes": [
+    "table:dwd_order_di",
+    "table:dim_user",
+    "subquery:x"
+  ],
+  "must_have_column_dependencies": [
+    ["output:user_id", "dwd_order_di.user_id"],
+    ["output:order_no", "dwd_order_di.order_no"]
+  ],
+  "must_have_diagnostics_when_partial": [
+    "PARTIAL_LINEAGE_RESULT"
+  ]
+}

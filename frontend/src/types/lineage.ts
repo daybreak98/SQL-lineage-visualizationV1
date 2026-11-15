@@ -5,6 +5,7 @@ export type GraphRenderMode = 'subquery_dependency' | 'current_field_path' | 'fo
 export type GraphViewMode = 'table' | 'subquery' | 'column' | 'expression' | 'semantics' | 'diagnostics';
 export type DetailTab = 'summary' | 'mapping' | 'source' | 'diagnostics' | 'semantics';
 export type DetailMode = 'collapsed' | 'compact' | 'expanded';
+export type CanvasCommand = { type: 'fit' | 'center' | 'reset'; id: number };
 
 export interface Entity {
   id: string;
@@ -51,6 +52,22 @@ export interface SearchItem {
   warning?: boolean;
 }
 
+export type GraphColumnRole = 'source' | 'output' | 'derived' | 'unknown';
+
+export interface GraphColumnRow {
+  entityId: string;
+  label: string;
+  ownerEntityId: string;
+  role: GraphColumnRole;
+  ordinal?: number;
+  dataType?: string;
+  comment?: string;
+  expression?: string;
+  connected?: boolean;
+  warning?: boolean;
+  confidence?: 'high' | 'medium' | 'low' | 'unknown';
+}
+
 export interface GraphNode {
   id: string;
   entityId: string;
@@ -61,15 +78,30 @@ export interface GraphNode {
   y: number;
   pinned?: boolean;
   ordinal?: number;
+  rank?: number;
+  lane?: string;
+  semanticRole?: string;
+  orderInRank?: number;
+  columns?: GraphColumnRow[];
+  collapsed?: boolean;
+  hiddenColumnCount?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface GraphEdge {
   id: string;
   source: string;
   target: string;
+  sourcePort?: string;
+  targetPort?: string;
+  originalSourceEntityId?: string;
+  originalTargetEntityId?: string;
   type: 'table' | 'cte' | 'subq' | 'output' | 'expr' | 'join' | 'projection' | 'alias' | 'unknown';
   mapping?: string;
   synthetic?: boolean;
+  sourcePortOrder?: number;
+  targetPortOrder?: number;
 }
 
 export interface BackendDiagnostic {
@@ -77,15 +109,26 @@ export interface BackendDiagnostic {
   code: string;
   level: 'info' | 'warning' | 'error';
   message: string;
+  location?: Record<string, unknown> | null;
   suggestion?: string | null;
   related_entity_ids?: string[];
   details?: Record<string, unknown>;
+  extra?: Record<string, unknown>;
 }
 
 export interface FormatSqlResponse {
   status: 'success' | 'partial' | 'failed';
   dialect: string;
   formatted_sql: string | null;
+  diagnostics: BackendDiagnostic[];
+}
+
+export interface ConvertSqlResponse {
+  status: 'success' | 'partial' | 'failed';
+  source_dialect: string;
+  target_dialect: string;
+  converted_sql: string | null;
+  elapsed_ms: number;
   diagnostics: BackendDiagnostic[];
 }
 
@@ -127,6 +170,10 @@ export interface BackendAnalysisResult {
       x?: number;
       y?: number;
       data?: Record<string, unknown>;
+      rank?: number;
+      lane?: string;
+      semantic_role?: string;
+      order_in_rank?: number;
     }>;
     edges?: Array<{
       id?: string;
@@ -135,7 +182,10 @@ export interface BackendAnalysisResult {
       edge_type?: string;
       type?: string;
       mapping?: string;
+      source_port_order?: number;
+      target_port_order?: number;
     }>;
+    layout_hint?: Record<string, unknown>;
   };
   source_locations?: Record<string, SourceLocation>;
   semantics_report?: SemanticsReport;
@@ -203,6 +253,13 @@ export interface MetadataListResponse {
   total: number;
 }
 
+export interface MetadataUploadResponse {
+  status: 'success' | 'failed';
+  message?: string;
+  table_count?: number;
+  column_count?: number;
+}
+
 export interface PathContext {
   status: 'idle' | 'ready' | 'partial' | 'stale' | 'low_confidence';
   display: string;
@@ -230,7 +287,10 @@ export interface WorkbenchState {
   scope: string;
   large: boolean;
   lastTransition?: string;
+  canvasCommand?: CanvasCommand;
   positions: Record<string, { x: number; y: number }>;
+  collapsedRelationIds: Record<string, true>;
+  columnContainerMode: 'legacy' | 'relation_rows';
   sourceLocations?: Record<string, SourceLocation>;
   semanticsReport?: SemanticsReport;
   backendGraph?: { nodes: GraphNode[]; edges: GraphEdge[] };
@@ -241,4 +301,6 @@ export interface WorkbenchState {
   metadataStatus?: string;
   colToTables?: Record<string, string[]>;
   backendInvalidEdges?: GraphEdge[];
+  lastAnalysisResult?: BackendAnalysisResult;
+  lastApiError?: string;
 }

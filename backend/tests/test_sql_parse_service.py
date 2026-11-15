@@ -9,6 +9,15 @@ def test_simple_select_a():
     assert result.output_fields[0].name == "a"
 
 
+def test_qualified_column_uses_result_column_name_without_table_prefix():
+    result = parse_sql("select t.a from t")
+
+    assert result.success is True
+    assert result.output_fields[0].name == "a"
+    assert result.output_fields[0].display_name == "a"
+    assert result.output_fields[0].expression == "t.a"
+
+
 def test_select_a_as_aa():
     result = parse_sql("select a as aa from t")
     assert result.success is True
@@ -50,6 +59,13 @@ def test_parse_error_returns_failed():
     assert result.success is False
     assert result.status == "failed"
     assert len(result.output_fields) == 0
+
+
+def test_ddl_only_script_parses_without_assuming_select_projection():
+    result = parse_sql("drop table t; create table t(a int); msck repair table t")
+
+    assert result.success is True
+    assert result.output_fields == []
 
 
 def test_parse_error_has_diagnostic():

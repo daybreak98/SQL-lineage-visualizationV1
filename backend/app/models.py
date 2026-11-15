@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.middleware.local_delivery import MAX_SQL_CHARS
+
 
 # ─── 请求体 ────────────────────────────────────────────────────────
 
@@ -16,7 +18,7 @@ class AnalysisOptions(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    sql: str
+    sql: str = Field(max_length=MAX_SQL_CHARS)
     dialect: str = "spark"
     analysis_level: str = "column"
     default_catalog: str = "default"
@@ -28,7 +30,7 @@ class AnalyzeRequest(BaseModel):
 
 
 class FormatSqlRequest(BaseModel):
-    sql: str
+    sql: str = Field(max_length=MAX_SQL_CHARS)
     dialect: str = "spark"
 
 
@@ -36,6 +38,22 @@ class FormatSqlResponse(BaseModel):
     status: str = "success"
     dialect: str = "spark"
     formatted_sql: str | None = None
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
+
+
+class ConvertSqlRequest(BaseModel):
+    sql: str = Field(max_length=MAX_SQL_CHARS)
+    source_dialect: str = "spark"
+    target_dialect: str = "spark"
+    pretty: bool = True
+
+
+class ConvertSqlResponse(BaseModel):
+    status: str = "success"
+    source_dialect: str = "spark"
+    target_dialect: str = "spark"
+    converted_sql: str | None = None
+    elapsed_ms: int = 0
     diagnostics: list[Diagnostic] = Field(default_factory=list)
 
 
@@ -67,6 +85,7 @@ class GraphViewModel(BaseModel):
     view_mode: str = "column"
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     edges: list[dict[str, Any]] = Field(default_factory=list)
+    layout_hint: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutputField(BaseModel):

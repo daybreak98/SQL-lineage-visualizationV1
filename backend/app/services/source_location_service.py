@@ -1,5 +1,6 @@
 import re
 import time
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -90,8 +91,10 @@ def build_source_locations(
 
     entities = _normalize_targets(target_entities, output_column_names)
     entity_ids_by_type: Dict[str, Set[str]] = {}
+    source_names_by_id: Dict[str, str] = {}
     for e in entities:
         entity_ids_by_type.setdefault(e["entityType"], set()).add(e["entityId"])
+        source_names_by_id[e["entityId"]] = str(e.get("sourceName") or "")
 
     # ── CTE locations ──
     cte_names: Set[str] = set()
@@ -102,12 +105,31 @@ def build_source_locations(
         if "cte" in entity_ids_by_type and entity_id in entity_ids_by_type["cte"]:
             locations[entity_id] = loc.to_dict()
 
+    # ── Inline / scalar / predicate subquery locations ──
+    if "subquery" in entity_ids_by_type:
+        for entity_id in entity_ids_by_type["subquery"]:
+            location = _find_subquery_location(
+                sql,
+                masked_sql,
+                entity_id,
+                source_name=source_names_by_id.get(entity_id),
+            )
+            if location is not None:
+                locations[entity_id] = location.to_dict()
+
     # ── Table locations (FROM/JOIN, exclude CTE names) ──
     if "physical_table" in entity_ids_by_type:
+        tbl_set = entity_ids_by_type["physical_table"]
         for loc in _find_table_spans(sql, masked_sql, offset_map, cte_names, sql_len):
-            entity_id = f"physical_table:{loc.rawText}"
-            if entity_id in entity_ids_by_type["physical_table"]:
-                _append_occurrence(locations, entity_id, loc)
+            full_name = loc.rawText
+            short_name = full_name.split(".")[-1] if "." in full_name else full_name
+            # Try full name first, then short name
+            entity_id_full = f"physical_table:{full_name}"
+            entity_id_short = f"physical_table:{short_name}"
+            if entity_id_full in tbl_set:
+                _append_occurrence(locations, entity_id_full, loc)
+            elif entity_id_short in tbl_set:
+                _append_occurrence(locations, entity_id_short, loc)
 
     # ── Output column locations (SELECT) ──
     if "output_column" in entity_ids_by_type:
@@ -130,6 +152,37 @@ def build_source_locations(
                 _add_column_location(
                     locations, sql, span, span.output_name,
                     "exact" if not span.approximate else "approximate")
+
+    # ── Physical column locations (source columns in SELECT) ──
+    if "physical_column" in entity_ids_by_type:
+        col_set = entity_ids_by_type["physical_column"]
+        alias_bindings_by_table = _table_alias_bindings(masked_sql)
+        qualified_references, unqualified_references = _physical_column_reference_index(masked_sql)
+        line_starts = [0] + [match.end() for match in re.finditer(r"\n", sql)]
+        target_count_by_column: Dict[str, int] = {}
+        for entity_id in col_set:
+            column_name = entity_id.rsplit(".", 1)[-1].lower().strip("`")
+            target_count_by_column[column_name] = target_count_by_column.get(column_name, 0) + 1
+        for ent_id in col_set:
+            relation_and_column = ent_id.split(":", 1)[-1]
+            if "." not in relation_and_column:
+                continue
+            table_name, column_name = relation_and_column.rsplit(".", 1)
+            location = _find_physical_column_location(
+                sql,
+                ent_id,
+                table_name,
+                column_name,
+                alias_bindings_by_table,
+                qualified_references,
+                unqualified_references,
+                line_starts,
+                allow_unqualified=(
+                    target_count_by_column.get(column_name.lower().strip("`"), 0) == 1
+                ),
+            )
+            if location is not None:
+                locations[ent_id] = location.to_dict()
 
     elapsed_ms = int((time.time() - started) * 1000)
     return SourceLocationResult(
@@ -156,20 +209,23 @@ def _normalize_targets(
 # ── Masking ──
 
 def _mask_comments_and_strings(sql: str) -> Tuple[str, List[Optional[int]]]:
-    length = sum(1 for _ in sql)
-    mask = bytearray(sql, "utf-8")
+    length = len(sql)
+    chars = list(sql)  # character-level, safe for multi-byte
     offset_map: List[Optional[int]] = list(range(length))
 
     def replace_with_spaces(start: int, end: int) -> None:
         for _i in range(start, min(end, length)):
-            mask[_i] = 0x20
+            chars[_i] = " "
             offset_map[_i] = None
 
+    # Multi-line comments /* ... */
     for m in re.finditer(r"/\*[\s\S]*?\*/", sql):
         replace_with_spaces(m.start(), m.end())
+    # Single-line comments -- ...
     for m in re.finditer(r"--[^\n]*", sql):
         replace_with_spaces(m.start(), m.end())
 
+    # Single-quoted strings
     in_string = False
     string_start = 0
     i = 0
@@ -185,7 +241,7 @@ def _mask_comments_and_strings(sql: str) -> Tuple[str, List[Optional[int]]]:
         else:
             if ch == "'":
                 if i + 1 < length and sql[i + 1] == "'":
-                    i += 1
+                    i += 1  # escaped quote
                 else:
                     replace_with_spaces(string_start, i + 1)
                     in_string = False
@@ -193,7 +249,7 @@ def _mask_comments_and_strings(sql: str) -> Tuple[str, List[Optional[int]]]:
     if in_string:
         replace_with_spaces(string_start, length)
 
-    return mask.decode("utf-8"), offset_map
+    return "".join(chars), offset_map
 
 
 # ── CTE extraction ──
@@ -280,25 +336,301 @@ def _find_table_spans(
 
         m = re.match(r"(`[^`]+`|\w+(?:\.\w+)*)", masked_sql[after:])
         if m:
-            name = m.group(1).split(".")[-1].strip("`")
-            if name.lower() not in {"on", "as", "where", "join", "left", "right", "inner",
+            full_name = m.group(1).strip("`")
+            short_name = full_name.split(".")[-1]
+            if short_name.lower() not in {"on", "as", "where", "join", "left", "right", "inner",
                                      "outer", "full", "cross", "select", "group", "order",
                                      "having", "union", "limit", "with"}:
-                if name.lower() not in {cte.lower() for cte in cte_names}:
+                if short_name.lower() not in {cte.lower() for cte in cte_names}:
                     tbl_start = after + m.start(1)
                     tbl_end = after + m.end(1)
                     if all(offset_map[idx] is not None for idx in range(tbl_start, tbl_end)):
                         sl, sc = _line_col(original_sql, tbl_start)
                         el, ec = _line_col(original_sql, tbl_end)
                         results.append(SourceLocation(
-                            entityId=f"physical_table:{name}", entityType="physical_table",
-                            rawText=name, rangeType="exact",
+                            entityId=f"physical_table:{short_name}", entityType="physical_table",
+                            rawText=full_name, rangeType="exact",
                             occurrences=[Occurrence(line=sl, col=sc, end_line=el, end_col=ec,
                                                       offset=tbl_start, end_offset=tbl_end)]))
             i = after + m.end()
         else:
             i = after
     return results
+
+
+def _find_subquery_location(
+    original_sql: str,
+    masked_sql: str,
+    entity_id: str,
+    source_name: str | None = None,
+) -> SourceLocation | None:
+    name = entity_id.split(":", 1)[1] if ":" in entity_id else entity_id
+    generated = re.fullmatch(r"(exists_subquery|in_subquery|subquery)_(\d+)", name)
+    if generated is not None:
+        kind, raw_index = generated.groups()
+        index = int(raw_index) - 1
+        if kind == "exists_subquery":
+            pattern = r"\bexists\s*\(\s*select\b"
+            token = "exists"
+            matches = list(re.finditer(pattern, masked_sql, flags=re.IGNORECASE))
+            if not 0 <= index < len(matches):
+                return None
+            match = matches[index]
+            token_match = re.search(token, match.group(0), flags=re.IGNORECASE)
+            token_start = match.start() + (token_match.start() if token_match else 0)
+            token_end = token_start + len(token)
+            return _source_location_from_span(
+                original_sql,
+                entity_id,
+                "subquery",
+                token_start,
+                token_end,
+                "approximate",
+            )
+
+        openings = _generated_subquery_openings(masked_sql)
+        if not 0 <= index < len(openings):
+            return None
+        opening_kind, token_start, token_end = openings[index]
+        if opening_kind != kind:
+            return None
+        return _source_location_from_span(
+            original_sql,
+            entity_id,
+            "subquery",
+            token_start,
+            token_end,
+            "approximate",
+        )
+
+    occurrence_match = re.fullmatch(r"(?P<name>.+)__occurrence_(?P<index>[2-9]\d*)", name)
+    is_generated_duplicate = (
+        occurrence_match is not None
+        and bool(source_name)
+        and source_name == occurrence_match.group("name")
+    )
+    lookup_name = source_name or name
+    occurrence_index = (
+        int(occurrence_match.group("index")) - 1
+        if is_generated_duplicate and occurrence_match is not None
+        else 0
+    )
+    escaped_name = re.escape(lookup_name)
+    alias_pattern = re.compile(
+        rf"\)\s+(?:as\s+)?(?P<alias>`{escaped_name}`|\b{escaped_name}\b)",
+        flags=re.IGNORECASE,
+    )
+    alias_matches = list(alias_pattern.finditer(masked_sql))
+    if not 0 <= occurrence_index < len(alias_matches):
+        return None
+    alias_match = alias_matches[occurrence_index]
+    return _source_location_from_span(
+        original_sql,
+        entity_id,
+        "subquery",
+        alias_match.start("alias"),
+        alias_match.end("alias"),
+        "exact",
+    )
+
+
+def _generated_subquery_openings(masked_sql: str) -> List[Tuple[str, int, int]]:
+    """Return SQLGlot Subquery openings in lexical order, excluding CTE and EXISTS bodies."""
+    openings: List[Tuple[str, int, int]] = []
+    for match in re.finditer(r"\(\s*(?P<select>select)\b", masked_sql, flags=re.IGNORECASE):
+        prefix_match = re.search(r"(?P<keyword>[A-Za-z_]+)\s*$", masked_sql[:match.start()])
+        prefix = prefix_match.group("keyword").lower() if prefix_match else ""
+        if prefix in {"as", "exists"}:
+            continue
+        if prefix == "in" and prefix_match is not None:
+            openings.append(("in_subquery", prefix_match.start("keyword"), prefix_match.end("keyword")))
+        else:
+            openings.append(("subquery", match.start("select"), match.end("select")))
+    return openings
+
+
+def _table_alias_bindings(masked_sql: str) -> Dict[str, List[Tuple[str, int, int]]]:
+    identifier = r"(?:`[^`]+`|[A-Za-z_][\w$]*)"
+    qualified_identifier = rf"{identifier}(?:\s*\.\s*{identifier})*"
+    pattern = re.compile(
+        rf"\b(?:from|join)\s+(?P<table>{qualified_identifier})"
+        rf"(?:\s+(?:as\s+)?(?P<alias>{identifier}))?",
+        flags=re.IGNORECASE,
+    )
+    reserved = {
+        "on", "where", "join", "left", "right", "inner", "outer", "full",
+        "cross", "group", "order", "having", "union", "limit", "lateral",
+    }
+    depth_at = [0] * (len(masked_sql) + 1)
+    depth = 0
+    for index, char in enumerate(masked_sql):
+        depth_at[index] = depth
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(depth - 1, 0)
+        depth_at[index + 1] = depth
+
+    selects_by_depth: Dict[int, List[int]] = {}
+    unions_by_depth: Dict[int, List[int]] = {}
+    closes_by_depth: Dict[int, List[int]] = {}
+    for token in re.finditer(r"\bselect\b|\bunion\b|\)", masked_sql, flags=re.IGNORECASE):
+        token_depth = depth_at[token.start()]
+        value = token.group().lower()
+        if value == "select":
+            selects_by_depth.setdefault(token_depth, []).append(token.start())
+        elif value == "union":
+            unions_by_depth.setdefault(token_depth, []).append(token.start())
+        else:
+            closes_by_depth.setdefault(token_depth, []).append(token.start())
+
+    bindings: Dict[str, List[Tuple[str, int, int]]] = {}
+    for match in pattern.finditer(masked_sql):
+        table_name = _normalize_qualified_identifier(match.group("table"))
+        alias = _clean_identifier(match.group("alias") or "")
+        if not table_name or not alias or alias.lower() in reserved:
+            continue
+        query_depth = depth_at[match.start()]
+        select_positions = selects_by_depth.get(query_depth, [])
+        select_index = bisect_right(select_positions, match.start()) - 1
+        scope_start = select_positions[select_index] if select_index >= 0 else match.start()
+        possible_ends: List[int] = []
+        for positions in (unions_by_depth.get(query_depth, []), closes_by_depth.get(query_depth, [])):
+            end_index = bisect_left(positions, match.end())
+            if end_index < len(positions):
+                possible_ends.append(positions[end_index])
+        scope_end = min(possible_ends, default=len(masked_sql))
+        binding = (alias, scope_start, scope_end)
+        bindings.setdefault(table_name.lower(), []).append(binding)
+        bindings.setdefault(table_name.split(".")[-1].lower(), []).append(binding)
+    return bindings
+
+
+def _find_physical_column_location(
+    original_sql: str,
+    entity_id: str,
+    table_name: str,
+    column_name: str,
+    alias_bindings_by_table: Dict[str, List[Tuple[str, int, int]]],
+    qualified_references: Dict[Tuple[str, str], List[Tuple[int, int]]],
+    unqualified_references: Dict[str, List[Tuple[int, int]]],
+    line_starts: List[int],
+    *,
+    allow_unqualified: bool,
+) -> SourceLocation | None:
+    normalized_table = _normalize_qualified_identifier(table_name)
+    short_table = normalized_table.split(".")[-1]
+    normalized_column = _clean_identifier(column_name).lower()
+    spans: Set[Tuple[int, int]] = set()
+    for qualifier in (normalized_table, short_table):
+        spans.update(qualified_references.get((qualifier.lower(), normalized_column), []))
+    bindings = {
+        *alias_bindings_by_table.get(normalized_table.lower(), []),
+        *alias_bindings_by_table.get(short_table.lower(), []),
+    }
+    for alias, scope_start, scope_end in bindings:
+        for span in qualified_references.get((alias.lower(), normalized_column), []):
+            if scope_start <= span[0] < scope_end:
+                spans.add(span)
+
+    range_type = "exact"
+    if not spans and allow_unqualified:
+        spans.update(unqualified_references.get(normalized_column, []))
+        range_type = "approximate"
+    if not spans:
+        return None
+
+    occurrences: List[Occurrence] = []
+    ordered_spans = sorted(spans)
+    for start, end in ordered_spans:
+        start_line, start_col = _line_col_from_starts(line_starts, start)
+        end_line, end_col = _line_col_from_starts(line_starts, end)
+        occurrences.append(Occurrence(
+            line=start_line,
+            col=start_col,
+            end_line=end_line,
+            end_col=end_col,
+            offset=start,
+            end_offset=end,
+        ))
+    first_start, first_end = ordered_spans[0]
+    return SourceLocation(
+        entityId=entity_id,
+        entityType="physical_column",
+        rawText=original_sql[first_start:first_end],
+        rangeType=range_type,
+        occurrences=occurrences,
+    )
+
+
+def _physical_column_reference_index(
+    masked_sql: str,
+) -> Tuple[
+    Dict[Tuple[str, str], List[Tuple[int, int]]],
+    Dict[str, List[Tuple[int, int]]],
+]:
+    """Index column references once so large SQL does not rescan per graph entity."""
+    identifier = r"(?:`[^`\r\n]+`|[A-Za-z_][\w$]*)"
+    qualified_pattern = re.compile(
+        rf"(?<![\w$])(?P<qualifier>{identifier}(?:\s*\.\s*{identifier})*)"
+        rf"\s*\.\s*(?P<column>{identifier})(?![\w$])",
+        flags=re.IGNORECASE,
+    )
+    qualified: Dict[Tuple[str, str], List[Tuple[int, int]]] = {}
+    for match in qualified_pattern.finditer(masked_sql):
+        qualifier = _normalize_qualified_identifier(match.group("qualifier")).lower()
+        column = _clean_identifier(match.group("column")).lower()
+        qualified.setdefault((qualifier, column), []).append(match.span("column"))
+
+    unqualified: Dict[str, List[Tuple[int, int]]] = {}
+    for match in re.finditer(identifier, masked_sql):
+        start, end = match.span()
+        before = start - 1
+        while before >= 0 and masked_sql[before].isspace():
+            before -= 1
+        after = end
+        while after < len(masked_sql) and masked_sql[after].isspace():
+            after += 1
+        if ((before >= 0 and masked_sql[before] == ".")
+                or (after < len(masked_sql) and masked_sql[after] == ".")):
+            continue
+        name = _clean_identifier(match.group()).lower()
+        unqualified.setdefault(name, []).append((start, end))
+    return qualified, unqualified
+
+
+def _normalize_qualified_identifier(identifier: str) -> str:
+    return ".".join(
+        _clean_identifier(part)
+        for part in re.split(r"\s*\.\s*", identifier)
+        if _clean_identifier(part)
+    )
+
+
+def _source_location_from_span(
+    sql: str,
+    entity_id: str,
+    entity_type: str,
+    start: int,
+    end: int,
+    range_type: str,
+) -> SourceLocation:
+    start_line, start_col = _line_col(sql, start)
+    end_line, end_col = _line_col(sql, end)
+    return SourceLocation(
+        entityId=entity_id,
+        entityType=entity_type,
+        rawText=sql[start:end],
+        rangeType=range_type,
+        occurrences=[Occurrence(
+            line=start_line,
+            col=start_col,
+            end_line=end_line,
+            end_col=end_col,
+            offset=start,
+            end_offset=end,
+        )],
+    )
 
 
 # ── Keyword helpers ──
@@ -467,3 +799,8 @@ def _line_col(sql: str, offset: int) -> Tuple[int, int]:
     line_start = sql.rfind("\n", 0, safe_offset) + 1
     col = safe_offset - line_start + 1
     return line, col
+
+
+def _line_col_from_starts(line_starts: List[int], offset: int) -> Tuple[int, int]:
+    line_index = max(0, bisect_right(line_starts, offset) - 1)
+    return line_index + 1, offset - line_starts[line_index] + 1

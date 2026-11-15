@@ -10,6 +10,7 @@ from sqlglot.errors import ParseError as SqlglotParseError
 from app.domain import diagnostics_model as diag_codes
 from app.models import Diagnostic
 from app.services.cte_structure_service import StructureEdge, StructureNode
+from app.services.sqlglot_compat import get_from_expression, get_with_expression
 
 
 @dataclass
@@ -25,10 +26,11 @@ class TableStructureResult:
 
 
 def analyze_table_structure(sql: str, dialect: str = "spark",
-                             tree: exp.Expression | None = None) -> TableStructureResult:
+                             tree: exp.Expression | None = None,
+                             table_names: list[str] | None = None) -> TableStructureResult:
     started = time.time()
 
-    if tree is None:
+    if tree is None and not table_names:
         try:
             tree = sqlglot.parse_one(sql, dialect=dialect)
         except SqlglotParseError as exc:
@@ -46,7 +48,7 @@ def analyze_table_structure(sql: str, dialect: str = "spark",
                 stage_status="failed",
             )
 
-    if tree.args.get("with_") is not None:
+    if tree is not None and get_with_expression(tree) is not None and not table_names:
         return _result(
             started=started,
             status="partial",
@@ -62,7 +64,7 @@ def analyze_table_structure(sql: str, dialect: str = "spark",
             stage_status="partial",
         )
 
-    tables = _query_sources(tree, dialect)
+    tables = table_names if table_names is not None else _query_sources(tree, dialect)
     if not tables:
         return _result(
             started=started,
@@ -114,7 +116,7 @@ def analyze_table_structure(sql: str, dialect: str = "spark",
 
 def _query_sources(tree: exp.Expression, dialect: str) -> list[str]:
     sources: list[str] = []
-    from_expr = tree.args.get("from_")
+    from_expr = get_from_expression(tree)
     if from_expr is not None and isinstance(from_expr.this, exp.Table):
         sources.append(_table_name_without_alias(from_expr.this, dialect))
     for join in tree.args.get("joins") or []:

@@ -1,0 +1,9 @@
+{
+  "required_segment_types": [
+    "main_select",
+    "from_join",
+    "join_block",
+    "join_condition",
+    "where"
+  ]
+}

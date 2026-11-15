@@ -7,6 +7,14 @@ from . import diagnostics as diag_codes
 from .models import Diagnostic, OffsetMapping, Placeholder, Severity, SqlTextBundle
 from .normalizer import OffsetLocator, map_offset, map_span_to_original, normalize_sql_reversible
 
+_SHIELD_SUMMARY_LABELS = {
+    diag_codes.LITERAL_SHIELD_APPLIED: "string literal or quoted identifier occurrences",
+    diag_codes.REGEX_LITERAL_SHIELD_APPLIED: "regular-expression literal occurrences",
+    diag_codes.JSON_PATH_LITERAL_SHIELD_APPLIED: "JSON-path literal occurrences",
+    diag_codes.COMMENT_SHIELD_APPLIED: "comment occurrences",
+    diag_codes.HINT_SHIELD_APPLIED: "optimizer-hint occurrences",
+}
+
 
 @dataclass(frozen=True)
 class ShieldOptions:
@@ -219,7 +227,46 @@ class DirtySqlPreprocessor:
                 analysis_to_original=analysis_to_original,
             ),
         )
-        return bundle, diagnostics
+        return bundle, self._aggregate_info_diagnostics(diagnostics)
+
+    @staticmethod
+    def _aggregate_info_diagnostics(
+        diagnostics: list[Diagnostic],
+    ) -> list[Diagnostic]:
+        grouped: dict[str, list[Diagnostic]] = {}
+        for diagnostic in diagnostics:
+            if (
+                diagnostic.severity == Severity.INFO
+                and diagnostic.code in _SHIELD_SUMMARY_LABELS
+            ):
+                grouped.setdefault(diagnostic.code, []).append(diagnostic)
+
+        result: list[Diagnostic] = []
+        emitted: set[str] = set()
+        for diagnostic in diagnostics:
+            items = grouped.get(diagnostic.code)
+            if not items:
+                result.append(diagnostic)
+                continue
+            if diagnostic.code in emitted:
+                continue
+            emitted.add(diagnostic.code)
+            extra = dict(diagnostic.extra)
+            extra["occurrence_count"] = len(items)
+            summary_label = _SHIELD_SUMMARY_LABELS[diagnostic.code]
+            result.append(Diagnostic(
+                code=diagnostic.code,
+                severity=diagnostic.severity,
+                message=(
+                    f"Shielded {len(items)} {summary_label}; exact locations "
+                    "remain available in sql_text_bundle.placeholders."
+                ),
+                stage=diagnostic.stage,
+                location=diagnostic.location,
+                confidence=diagnostic.confidence,
+                extra=extra,
+            ))
+        return result
 
     def _classify_literal(self, before_text: str, raw_text: str) -> tuple[str, str, str, Severity, str]:
         if "${" in raw_text or "#{" in raw_text or "<#" in raw_text:

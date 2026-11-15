@@ -2,6 +2,12 @@ import type React from 'react';
 import { buildPathContext } from '../data/selectors';
 import type { GraphViewMode, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
+import {
+  issueCanvasCommand,
+  resetViewport,
+  switchGraphViewMode,
+  toggleDetailCollapsed,
+} from '../workbench/actions';
 
 interface Props {
   state: WorkbenchState;
@@ -9,47 +15,74 @@ interface Props {
   onTransition: (event: string) => void;
 }
 
-const VIEW_MODES: { mode: GraphViewMode; label: string; title: string }[] = [
+const PRIMARY_VIEW_MODES: { mode: GraphViewMode; label: string; title: string }[] = [
   { mode: 'subquery', label: 'Subquery', title: 'Subquery/CTE structure view: tables -> subqueries -> Query Result' },
   { mode: 'table', label: 'Table', title: 'Table-level view: physical tables + Query Result' },
   { mode: 'column', label: 'Column', title: 'Column-level view: expanded field nodes' },
-  { mode: 'semantics', label: 'Semantics', title: 'Semantics view: Filter/Join/Aggregate annotations' },
-  { mode: 'diagnostics', label: 'Diag', title: 'Diagnostics view: highlight diagnostic nodes' },
+];
+
+const EXPERIMENTAL_VIEW_MODES: { mode: GraphViewMode; label: string }[] = [
+  { mode: 'semantics', label: 'Semantics' },
+  { mode: 'diagnostics', label: 'Diagnostics' },
 ];
 
 export function CanvasToolbar({ state, setState, onTransition }: Props) {
   const pc = buildPathContext(state);
+  const hasSelection = Boolean(state.selectedOutput || state.selectedMapping || (state.selectedEntity && state.selectedEntity !== 'out:group'));
+  const experimentalView = EXPERIMENTAL_VIEW_MODES.some(({ mode }) => mode === state.graphViewMode)
+    ? state.graphViewMode
+    : '';
+
   return (
     <div className="toolbar">
       <div className="tool-left">
         <span className="tool-title">Canvas</span>
-        <button className="tool-btn">Fit Path</button>
-        <button className="tool-btn">Center</button>
-        <button className="tool-btn" onClick={() => setState((s) => ({ ...s, positions: {} }))}>Reset Viewport</button>
-        <button className="tool-btn" onClick={() => onTransition('CLEAR_SELECTION')}>Clear</button>
-        <button className="tool-btn" onClick={() => state.selectedOutput && onTransition('FOCUS_FIELD')}>Focus</button>
-        <button className="tool-btn" onClick={() => setState((s) => ({ ...s, drawerOpen: true, drawerTab: 'taxonomy' }))}>?</button>
+        <button className="tool-btn" onClick={() => setState((s) => issueCanvasCommand(s, 'fit'))}>Fit Path</button>
+        <button className="tool-btn" onClick={() => setState((s) => issueCanvasCommand(s, 'center'))}>Center</button>
+        <button className="tool-btn" onClick={() => setState((s) => resetViewport(s))}>Reset Viewport</button>
+        <button className="tool-btn" disabled={!hasSelection} onClick={() => onTransition('CLEAR_SELECTION')}>Clear</button>
+        <button className="tool-btn" disabled={!state.selectedOutput} onClick={() => state.selectedOutput && onTransition('FOCUS_FIELD')}>Focus</button>
         <div className="path-inline">
           <span className={cx('dot', pc.status === 'stale' && 'stale', ['partial', 'low_confidence'].includes(pc.status) && 'warn')} />
-          <span id="pathText">{state.selectedOutput ? `${pc.display} · ${pc.status} · ${pc.nodes} nodes · ${pc.mappings} mappings` : 'Subquery dependency view · choose output for field path'}</span>
+          <span id="pathText">
+            {state.selectedOutput
+              ? `${pc.display} | ${pc.status} | ${pc.nodes} nodes | ${pc.mappings} mappings`
+              : 'Subquery dependency view | choose output for field path'}
+          </span>
           <span className="badge">{state.renderMode}</span>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="tool-right">
         <div className="view-toggle">
-          {VIEW_MODES.map(({ mode, label, title }) => (
+          {PRIMARY_VIEW_MODES.map(({ mode, label, title }) => (
             <button
               key={mode}
               className={cx('view-btn', state.graphViewMode === mode && 'active')}
               title={title}
-              onClick={() => setState((s) => ({ ...s, graphViewMode: mode, positions: {} }))}
+              onClick={() => setState((s) => switchGraphViewMode(s, mode))}
             >
               {label}
             </button>
           ))}
         </div>
+        <select
+          aria-label="Experimental lineage view"
+          className={cx('experimental-view-select', experimentalView && 'active')}
+          value={experimentalView}
+          onChange={(event) => {
+            const mode = event.target.value as GraphViewMode;
+            if (mode) setState((s) => switchGraphViewMode(s, mode));
+          }}
+        >
+          <option value="">Experimental</option>
+          {EXPERIMENTAL_VIEW_MODES.map(({ mode, label }) => (
+            <option key={mode} value={mode}>{label}</option>
+          ))}
+        </select>
         <button className="tool-btn" onClick={() => onTransition('OPEN_FULL_PREVIEW')}>Full Preview</button>
-        <button className="tool-btn" onClick={() => setState((s) => ({ ...s, detailMode: s.detailMode === 'collapsed' ? 'compact' : 'collapsed' }))}>{state.detailMode === 'collapsed' ? 'Show Detail' : 'Hide Detail'}</button>
+        <button className="tool-btn" onClick={() => setState((s) => toggleDetailCollapsed(s))}>
+          {state.detailMode === 'collapsed' ? 'Show Detail' : 'Hide Detail'}
+        </button>
       </div>
     </div>
   );

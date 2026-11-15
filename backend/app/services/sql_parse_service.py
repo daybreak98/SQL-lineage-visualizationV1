@@ -3,12 +3,26 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from sqlglot import exp
 from sqlglot.expressions import Expression
 
 from app.adapters.sqlglot_adapter import extract_output_fields_from_tree
 from app.complex_sql_guard import analyze_complex_sql
+from app.complex_sql_guard.dialect import get_dialect_profile
 from app.domain import diagnostics_model as diag_codes
 from app.models import Diagnostic, OutputField
+from app.services.dml_projection_service import build_dml_projection
+from app.services.hive_multi_insert_service import build_hive_multi_insert_projection
+
+
+_MULTI_INSERT_SUPERSEDED_CODES = {
+    "UNKNOWN_STATEMENT_TYPE",
+    diag_codes.SQLGLOT_PARSE_ERROR,
+    diag_codes.SQL_PARSE_ERROR,
+    diag_codes.SEGMENT_PARSE_FALLBACK,
+    diag_codes.PARTIAL_PARSE_RESULT,
+    diag_codes.LOW_CONFIDENCE_LINEAGE,
+}
 
 
 @dataclass
@@ -39,15 +53,21 @@ def parse_sql(
     options: dict[str, object] | None = None,
 ) -> ParseServiceResult:
     started = time.time()
+    parser_dialect = get_dialect_profile(dialect).parser_dialect
     complex_result = analyze_complex_sql(sql, dialect=dialect, options=options or {})
 
+    multi_insert_projection = build_hive_multi_insert_projection(sql, parser_dialect)
     tree = complex_result.selected_tree
+    dml_projection = None if multi_insert_projection else build_dml_projection(tree, parser_dialect)
+    projection = multi_insert_projection or dml_projection
+    if projection is not None:
+        tree = projection.tree
     output_fields = (
-        [
+        projection.output_fields if projection is not None else [
             OutputField(**payload)
             for payload in extract_output_fields_from_tree(
                 tree,
-                dialect=dialect,
+                dialect=parser_dialect,
                 placeholder_map=complex_result.text_bundle.placeholder_lookup(),
             )
         ]
@@ -56,25 +76,84 @@ def parse_sql(
     )
 
     diagnostics = [_to_api_diagnostic(diagnostic) for diagnostic in complex_result.diagnostics]
+    status = complex_result.status.value
+    unsupported_features = list(complex_result.unsupported_features)
+    confidence = dict(complex_result.confidence)
+    capabilities = dict(complex_result.capabilities)
+    if multi_insert_projection is not None:
+        status = "success"
+        unsupported_features = []
+        confidence.update({"parse": 0.95, "segment_parse": 0.9, "lineage": 0.85})
+        capabilities.update({
+            "full_parse": True,
+            "segment_parse": True,
+            "query_projection": True,
+            "hive_multi_insert": True,
+        })
+        diagnostics = [
+            diagnostic
+            for diagnostic in diagnostics
+            if diagnostic.code not in _MULTI_INSERT_SUPERSEDED_CODES
+        ]
+        diagnostics.append(Diagnostic(
+            code=diag_codes.HIVE_MULTI_INSERT_NORMALIZED,
+            level="info",
+            severity="info",
+            stage="sql_parse",
+            message="Hive multi-insert branches were normalized into target-qualified lineage projections.",
+            confidence=0.95,
+        ))
+    if tree is not None and not _has_query_projection(tree):
+        status = "partial"
+        diagnostics.append(Diagnostic(
+            code=diag_codes.UNSUPPORTED_SQL_STRUCTURE,
+            level="warning",
+            severity="warning",
+            stage="sql_parse",
+            message=(
+                "The selected script contains no query projection; "
+                "DDL and execution statements are not rendered as lineage graphs."
+            ),
+        ))
+        unsupported_features.append("non_query_statement")
+        confidence["lineage"] = 0.0
+        capabilities["query_projection"] = False
+    else:
+        capabilities["query_projection"] = tree is not None
     diagnostics = _append_compat_parse_error(
         diagnostics,
-        status=complex_result.status.value,
+        status=status,
         hard_failure=tree is None,
     )
-    diagnostics = _compatibility_filter_diagnostics(complex_result.status.value, diagnostics)
+    diagnostics = _compatibility_filter_diagnostics(status, diagnostics)
     diagnostics = _dedupe_diagnostics(diagnostics)
 
     elapsed_ms = int((time.time() - started) * 1000)
     stage_statuses = [stage.to_dict() for stage in complex_result.stage_statuses]
     stage_statuses = _reorder_stage_statuses(stage_statuses)
-    stage_statuses = _compatibility_filter_stage_statuses(complex_result.status.value, diagnostics, stage_statuses)
+    stage_statuses = _compatibility_filter_stage_statuses(status, diagnostics, stage_statuses)
+    if multi_insert_projection is not None:
+        stage_statuses = [
+            {
+                "stage": "sql_parse",
+                "status": "success",
+                "elapsed_ms": elapsed_ms,
+                "diagnostic_codes": [diag_codes.HIVE_MULTI_INSERT_NORMALIZED],
+                "message": "Hive multi-insert branch parsing completed.",
+            },
+            *[
+                stage
+                for stage in stage_statuses
+                if stage.get("stage") not in {"sql_parse", "statement_clean", "segment_parse"}
+            ],
+        ]
     return ParseServiceResult(
         success=tree is not None,
-        status=complex_result.status.value,
+        status=status,
         output_fields=output_fields,
         diagnostics=diagnostics,
         elapsed_ms=elapsed_ms,
-        dialect=dialect,
+        dialect=parser_dialect,
         stage_statuses=stage_statuses,
         tree=tree,
         normalized_sql=complex_result.text_bundle.normalized_sql,
@@ -83,11 +162,15 @@ def parse_sql(
         preflight_report=complex_result.preflight_report.to_dict(),
         segments=[segment.to_dict() for segment in complex_result.segments],
         parse_attempts=[attempt.to_dict() for attempt in complex_result.parse_attempts],
-        capabilities=complex_result.capabilities,
-        confidence=complex_result.confidence,
-        unsupported_features=complex_result.unsupported_features,
+        capabilities=capabilities,
+        confidence=confidence,
+        unsupported_features=unsupported_features,
         selected_target=complex_result.selected_target,
     )
+
+
+def _has_query_projection(tree: Expression) -> bool:
+    return bool(getattr(tree, "selects", [])) or tree.find(exp.Select) is not None
 
 
 def _to_api_diagnostic(complex_diagnostic) -> Diagnostic:

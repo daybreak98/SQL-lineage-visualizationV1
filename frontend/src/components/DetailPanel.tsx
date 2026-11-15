@@ -2,6 +2,13 @@ import type React from 'react';
 import { buildPathContext, diagnosticsForEntity, entityName, entityOf } from '../data/selectors';
 import type { DetailTab, Diagnostic, GraphEdge, WorkbenchState } from '../types/lineage';
 import { cx } from '../utils/cx';
+import {
+  collapseDetail,
+  expandDetailToMapping,
+  focusSelectedOutputPath,
+  setDetailTab,
+  toggleDetailExpanded,
+} from '../workbench/actions';
 
 interface Props {
   state: WorkbenchState;
@@ -78,9 +85,13 @@ export function DetailPanel({ state, setState, onLocateSql }: Props) {
   let body: React.ReactNode;
   if (state.detailMode !== 'expanded') {
     const first = relatedMappings[0];
-    const line1 = first ? `${displayEntityName(first.source)} -> ${displayEntityName(first.target)} · ${first.relation} · ${first.confidence}` : `${entity.name} · ${entity.type} · ${state.selectedOutput ? pc.confidence : 'structure'}`;
-    const line2 = first ? `source: ${displayEntityName(first.source)} -> target: ${displayEntityName(first.target)} · ${first.relation}` : `Upstream structure · ${diagnosticsForEntity(state, state.selectedEntity).length} diagnostics`;
-    body = <div className="compact-lines"><K label="Selected" value={line1} /><K label="Mapping" value={line2} /><K label="SQL" value={loc ? `line ${loc.line} · ${loc.rangeType}` : 'location unavailable'} /></div>;
+    const line1 = first
+      ? `${displayEntityName(first.source)} -> ${displayEntityName(first.target)} | ${first.relation} | ${first.confidence}`
+      : `${entity.name} | ${entity.type} | ${state.selectedOutput ? pc.confidence : 'structure'}`;
+    const line2 = first
+      ? `source: ${displayEntityName(first.source)} -> target: ${displayEntityName(first.target)} | ${first.relation}`
+      : `Upstream structure | ${diagnosticsForEntity(state, state.selectedEntity).length} diagnostics`;
+    body = <div className="compact-lines"><K label="Selected" value={line1} /><K label="Mapping" value={line2} /><K label="SQL" value={loc ? `line ${loc.line} | ${loc.rangeType}` : 'location unavailable'} /></div>;
   } else if (state.detailTab === 'summary') {
     body = <div className="grid"><K label="entity" value={state.selectedEntity} /><K label="name" value={entity.name} /><K label="comment" value={entity.comment} /></div>;
   } else if (state.detailTab === 'mapping') {
@@ -93,7 +104,7 @@ export function DetailPanel({ state, setState, onLocateSql }: Props) {
   } else {
     const report = state.semanticsReport;
     const metrics = report?.metrics ?? [];
-    const matched = metrics.find((m) => m.entity_id === state.selectedEntity || m.name === entity.name);
+    const matched = metrics.find((metric) => metric.entity_id === state.selectedEntity || metric.name === entity.name);
     if (matched) {
       body = (
         <div className="grid">
@@ -111,23 +122,23 @@ export function DetailPanel({ state, setState, onLocateSql }: Props) {
     }
   }
 
-  const setTab = (tab: DetailTab) => setState((s) => ({ ...s, detailTab: tab }));
+  const updateTab = (tab: DetailTab) => setState((s) => setDetailTab(s, tab));
 
   return (
     <div className={cx('detail', state.detailMode === 'collapsed' && 'collapsed', state.detailMode === 'expanded' && 'expanded')}>
       <div className="detail-head">
         <div className="detail-title"><span className="rail" /><span className="detail-name">{relatedMappings[0]?.id ?? entity.name}</span><span className="badge">{relatedMappings.length ? 'edge_mapping' : entity.type}</span><span className="badge">{state.trustStatus}</span></div>
         <div className="flex items-center gap-1">
-          <button className="btn h-[26px] text-[11px] bg-blue-50 border-blue-200 text-blue-700" onClick={() => { setTab('source'); onLocateSql?.(state.selectedEntity); }}>Locate SQL</button>
-          <button className="btn h-[26px] text-[11px]" onClick={() => state.selectedOutput && setState((s) => ({ ...s, renderMode: 'current_field_path' }))}>Focus Path</button>
-          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => ({ ...s, detailMode: 'expanded', detailTab: 'mapping' }))}>View Mapping</button>
-          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => ({ ...s, detailMode: s.detailMode === 'expanded' ? 'compact' : 'expanded' }))}>{state.detailMode === 'expanded' ? 'Compact' : 'Expand'}</button>
-          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => ({ ...s, detailMode: 'collapsed' }))}>Close</button>
+          <button className="btn h-[26px] text-[11px] bg-blue-50 border-blue-200 text-blue-700" onClick={() => { updateTab('source'); onLocateSql?.(state.selectedEntity); }}>Locate SQL</button>
+          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => focusSelectedOutputPath(s))}>Focus Path</button>
+          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => expandDetailToMapping(s))}>View Mapping</button>
+          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => toggleDetailExpanded(s))}>{state.detailMode === 'expanded' ? 'Compact' : 'Expand'}</button>
+          <button className="btn h-[26px] text-[11px]" onClick={() => setState((s) => collapseDetail(s))}>Close</button>
         </div>
       </div>
       <div className="detail-body">
         <div className="tabs">
-          {(['summary', 'mapping', 'source', 'diagnostics', 'semantics'] as DetailTab[]).map((tab) => <button key={tab} className={cx('tab', state.detailTab === tab && 'active')} onClick={() => setTab(tab)}>{tab}</button>)}
+          {(['summary', 'mapping', 'source', 'diagnostics', 'semantics'] as DetailTab[]).map((tab) => <button key={tab} className={cx('tab', state.detailTab === tab && 'active')} onClick={() => updateTab(tab)}>{tab}</button>)}
         </div>
         <div className="detail-content">{body}</div>
       </div>

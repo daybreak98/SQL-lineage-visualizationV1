@@ -1,12 +1,9 @@
-import type { GraphEdge, GraphNode } from './types/lineage';
-import { COMFORT_CANVAS, getComfortNodeBox } from './nodeVisualTokens';
+﻿import type { GraphEdge, GraphNode } from './types/lineage';
+import { COMFORT_CANVAS, RELATION_NODE_GEOMETRY, getComfortNodeBox } from './nodeVisualTokens';
 
 export type ComfortGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 export type ManualPositions = Record<string, { x: number; y: number }>;
 
-// ============================================================
-// 手动位置应用：layout 之后执行
-// ============================================================
 
 export function applyManualPositions(graph: ComfortGraph, positions: ManualPositions): ComfortGraph {
   return {
@@ -19,9 +16,6 @@ export function applyManualPositions(graph: ComfortGraph, positions: ManualPosit
   };
 }
 
-// ============================================================
-// 邻接表构建
-// ============================================================
 
 function buildAdjacency(nodes: GraphNode[], edges: GraphEdge[]) {
   const ids = new Set(nodes.map((n) => n.entityId));
@@ -50,11 +44,15 @@ function nodeTypeRankSeed(node: GraphNode) {
   return 1;
 }
 
-// ============================================================
-// 最长路径层级计算（DFS + memo）
-// ============================================================
 
 function computeLongestPathLevels(nodes: GraphNode[], edges: GraphEdge[]) {
+  const hinted = nodes.filter((n) => typeof n.rank === 'number');
+  if (hinted.length === nodes.length && nodes.length > 0) {
+    const ranks = Array.from(new Set(nodes.map((n) => n.rank ?? 0))).sort((a, b) => a - b);
+    const denseRank = new Map(ranks.map((rank, index) => [rank, index]));
+    return new Map(nodes.map((n) => [n.entityId, denseRank.get(n.rank ?? 0) ?? 0]));
+  }
+
   const { incoming } = buildAdjacency(nodes, edges);
   const nodeById = new Map(nodes.map((n) => [n.entityId, n]));
   const levels = new Map<string, number>();
@@ -106,9 +104,6 @@ function groupByLevel(nodes: GraphNode[], levels: Map<string, number>) {
   return groups;
 }
 
-// ============================================================
-// barycenter 同层排序
-// ============================================================
 
 function orderWithinLevelsByBarycenter(
   nodes: GraphNode[],
@@ -116,6 +111,14 @@ function orderWithinLevelsByBarycenter(
   levels: Map<string, number>,
 ) {
   const groups = groupByLevel(nodes, levels);
+  const hasCompleteBackendOrder = nodes.every((n) => typeof n.orderInRank === 'number');
+  if (hasCompleteBackendOrder) {
+    for (const list of groups.values()) {
+      list.sort((a, b) => (a.orderInRank ?? 0) - (b.orderInRank ?? 0) || a.label.localeCompare(b.label));
+    }
+    return groups;
+  }
+
   const { incoming, outgoing } = buildAdjacency(nodes, edges);
   const maxLevel = Math.max(0, ...Array.from(groups.keys()));
 
@@ -149,18 +152,50 @@ function orderWithinLevelsByBarycenter(
   return groups;
 }
 
+function calculateLevelContentHeight(nodes: GraphNode[], gap: number) {
+  if (!nodes.length) return 0;
+  const nodeHeight = nodes.reduce((sum, node) => sum + getComfortNodeBox(node).height, 0);
+  return nodeHeight + Math.max(0, nodes.length - 1) * gap;
+}
+
+function packVariableHeightNodes(nodes: GraphNode[], startY: number, gap: number) {
+  let cursor = startY;
+  for (const node of nodes) {
+    const box = getComfortNodeBox(node);
+    node.y = cursor + box.height / 2;
+    cursor += box.height + gap;
+  }
+}
+
 function resolveCollisionsByLevel(groups: Map<number, GraphNode[]>, minGap: number) {
   for (const list of groups.values()) {
     list.sort((a, b) => a.y - b.y);
     for (let i = 1; i < list.length; i++) {
-      if (list[i].y - list[i - 1].y < minGap) list[i].y = list[i - 1].y + minGap;
+      const prev = list[i - 1];
+      const current = list[i];
+      const prevBottom = prev.y + getComfortNodeBox(prev).height / 2;
+      const currentTop = current.y - getComfortNodeBox(current).height / 2;
+      if (currentTop - prevBottom < minGap) {
+        current.y += minGap - (currentTop - prevBottom);
+      }
     }
   }
 }
 
-// ============================================================
-// ★ 舒适布局主入口
-// ============================================================
+export function getColumnPortOffsetY(node: GraphNode, portEntityId: string): number | null {
+  if (node.collapsed || !node.columns?.length) return null;
+  const index = node.columns.findIndex((column) => column.entityId === portEntityId);
+  if (index < 0) return null;
+  const box = getComfortNodeBox(node);
+  return (
+    -box.height / 2 +
+    RELATION_NODE_GEOMETRY.headerHeight +
+    RELATION_NODE_GEOMETRY.bodyPaddingTop +
+    index * RELATION_NODE_GEOMETRY.rowHeight +
+    RELATION_NODE_GEOMETRY.rowHeight / 2
+  );
+}
+
 
 export function layoutComfortGraph(graph: ComfortGraph, options?: {
   minWidth?: number;
@@ -179,19 +214,26 @@ export function layoutComfortGraph(graph: ComfortGraph, options?: {
   const levels = computeLongestPathLevels(nodes, edges);
   const groups = orderWithinLevelsByBarycenter(nodes, edges, levels);
   const maxLevel = Math.max(1, ...Array.from(groups.keys()));
-  const maxGroupSize = Math.max(1, ...Array.from(groups.values()).map((l) => l.length));
 
-  const width = Math.max(cfg.minWidth, cfg.marginX * 2 + maxLevel * cfg.minRankGap + 220);
-  const height = Math.max(cfg.minHeight, cfg.marginY * 2 + maxGroupSize * cfg.minNodeGap);
-  const rankGap = Math.max(cfg.minRankGap, (width - cfg.marginX * 2) / Math.max(maxLevel, 1));
+  const maxLevelHeight = Math.max(0, ...Array.from(groups.values()).map((list) => calculateLevelContentHeight(list, cfg.minNodeGap)));
+  const widestNode = Math.max(0, ...nodes.map((node) => getComfortNodeBox(node).width));
+  const width = Math.max(
+    cfg.marginX * 2 + maxLevel * cfg.minRankGap + widestNode,
+    cfg.marginX * 2 + widestNode,
+  );
+  const height = Math.max(
+    cfg.marginY * 2 + maxLevelHeight,
+    cfg.marginY * 2 + Math.max(0, ...nodes.map((node) => getComfortNodeBox(node).height)),
+  );
+  const rankGap = cfg.minRankGap;
 
   for (const [level, list] of groups.entries()) {
-    const availableHeight = height - cfg.marginY * 2;
-    const yGap = availableHeight / (list.length + 1);
+    const contentHeight = calculateLevelContentHeight(list, cfg.minNodeGap);
+    const startY = cfg.marginY + (height - cfg.marginY * 2 - contentHeight) / 2;
+    packVariableHeightNodes(list, startY, cfg.minNodeGap);
 
-    list.forEach((node, index) => {
+    list.forEach((node) => {
       node.x = Math.min(width - cfg.marginX, cfg.marginX + level * rankGap);
-      node.y = Math.min(height - cfg.marginY, Math.max(cfg.marginY, cfg.marginY + yGap * (index + 1)));
       (node as any).level = level;
     });
   }
@@ -207,11 +249,8 @@ export function layoutComfortGraph(graph: ComfortGraph, options?: {
   return { nodes, edges, width, height };
 }
 
-// ============================================================
-// ★ 舒适边路由：沿中心连线方向 + 柔和曲线
-// ============================================================
 
-function portOffset(index: number, count: number, gap = 8) {
+function portAnchorOffset(index: number, count: number, gap = 8) {
   if (count <= 1) return 0;
   return (index - (count - 1) / 2) * gap;
 }
@@ -231,7 +270,6 @@ export function buildComfortPortIndexes(graph: ComfortGraph) {
 
   for (const list of outgoing.values()) {
     list.sort((a, b) => (nodeById.get(a.target)?.y ?? 0) - (nodeById.get(b.target)?.y ?? 0));
-    list.forEach((_, i) => {});  // no-op, just keeping the template
   }
   for (const list of incoming.values()) {
     list.sort((a, b) => (nodeById.get(a.source)?.y ?? 0) - (nodeById.get(b.source)?.y ?? 0));
@@ -242,13 +280,34 @@ export function buildComfortPortIndexes(graph: ComfortGraph) {
   const targetPortIndex = new Map<string, number>();
   const targetPortCount = new Map<string, number>();
 
+  const sourceKey = (edge: GraphEdge) => `${edge.source}::${edge.sourcePort ?? '__node__'}`;
+  const targetKey = (edge: GraphEdge) => `${edge.target}::${edge.targetPort ?? '__node__'}`;
+
   for (const [source, list] of outgoing.entries()) {
-    sourcePortCount.set(source, list.length);
-    list.forEach((edge, i) => sourcePortIndex.set(edge.id, i));
+    void source;
+    const groups = new Map<string, GraphEdge[]>();
+    list.forEach((edge) => {
+      const key = sourceKey(edge);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(edge);
+    });
+    for (const [key, edges] of groups.entries()) {
+      sourcePortCount.set(key, edges.length);
+      edges.forEach((edge, i) => sourcePortIndex.set(edge.id, i));
+    }
   }
   for (const [target, list] of incoming.entries()) {
-    targetPortCount.set(target, list.length);
-    list.forEach((edge, i) => targetPortIndex.set(edge.id, i));
+    void target;
+    const groups = new Map<string, GraphEdge[]>();
+    list.forEach((edge) => {
+      const key = targetKey(edge);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(edge);
+    });
+    for (const [key, edges] of groups.entries()) {
+      targetPortCount.set(key, edges.length);
+      edges.forEach((edge, i) => targetPortIndex.set(edge.id, i));
+    }
   }
 
   return { sourcePortIndex, sourcePortCount, targetPortIndex, targetPortCount };
@@ -261,30 +320,41 @@ export function routeComfortEdgePath(params: {
   ports?: ReturnType<typeof buildComfortPortIndexes>;
 }) {
   const { edge, sourceNode, targetNode, ports } = params;
-  const sourceBox = getComfortNodeBox(sourceNode.type);
-  const targetBox = getComfortNodeBox(targetNode.type);
+  const sourceBox = getComfortNodeBox(sourceNode);
+  const targetBox = getComfortNodeBox(targetNode);
 
-  const dx = targetNode.x - sourceNode.x;
-  const dy = targetNode.y - sourceNode.y;
-  const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-
-  const sourceCount = ports?.sourcePortCount.get(edge.source) ?? 1;
+  const sourcePortKey = `${edge.source}::${edge.sourcePort ?? '__node__'}`;
+  const targetPortKey = `${edge.target}::${edge.targetPort ?? '__node__'}`;
+  const sourceCount = ports?.sourcePortCount.get(sourcePortKey) ?? 1;
   const sourceIndex = ports?.sourcePortIndex.get(edge.id) ?? 0;
-  const targetCount = ports?.targetPortCount.get(edge.target) ?? 1;
+  const targetCount = ports?.targetPortCount.get(targetPortKey) ?? 1;
   const targetIndex = ports?.targetPortIndex.get(edge.id) ?? 0;
 
-  const sx = sourceNode.x + (dx / dist) * (sourceBox.width * 0.42);
-  const sy = sourceNode.y + (dy / dist) * (sourceBox.height * 0.42) + portOffset(sourceIndex, sourceCount, 7);
-  const tx = targetNode.x - (dx / dist) * (targetBox.width * 0.46);
-  const ty = targetNode.y - (dy / dist) * (targetBox.height * 0.46) + portOffset(targetIndex, targetCount, 7);
+  const rawSourceOffset = portAnchorOffset(sourceIndex, sourceCount, 8);
+  const rawTargetOffset = portAnchorOffset(targetIndex, targetCount, 8);
 
-  const mx = (sx + tx) / 2;
-  const absDx = Math.abs(tx - sx);
+  const maxSourceY = Math.max(0, sourceBox.height / 2 - 10);
+  const maxTargetY = Math.max(0, targetBox.height / 2 - 10);
+  const sourceColumnOffset = edge.sourcePort ? getColumnPortOffsetY(sourceNode, edge.sourcePort) : null;
+  const targetColumnOffset = edge.targetPort ? getColumnPortOffsetY(targetNode, edge.targetPort) : null;
+  const sourceOffsetY = sourceColumnOffset ?? Math.max(-maxSourceY, Math.min(maxSourceY, rawSourceOffset));
+  const targetOffsetY = targetColumnOffset ?? Math.max(-maxTargetY, Math.min(maxTargetY, rawTargetOffset));
 
-  if (absDx < 80) {
-    const loop = 96;
-    return `M ${sx} ${sy} C ${sx + loop} ${sy}, ${tx + loop} ${ty}, ${tx} ${ty}`;
+  const isForward = targetNode.x >= sourceNode.x;
+
+  const sx = isForward ? sourceNode.x + sourceBox.width / 2 : sourceNode.x - sourceBox.width / 2;
+  const sy = sourceNode.y + sourceOffsetY;
+  const tx = isForward ? targetNode.x - targetBox.width / 2 : targetNode.x + targetBox.width / 2;
+  const ty = targetNode.y + targetOffsetY;
+
+  const dx = tx - sx;
+  const absDx = Math.abs(dx);
+
+  if (isForward) {
+    const curve = Math.min(220, Math.max(56, absDx * 0.45));
+    return `M ${sx} ${sy} C ${sx + curve} ${sy}, ${tx - curve} ${ty}, ${tx} ${ty}`;
   }
 
-  return `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty}`;
+  const loop = Math.max(96, absDx + 72);
+  return `M ${sx} ${sy} C ${sx + loop} ${sy}, ${tx + loop} ${ty}, ${tx} ${ty}`;
 }

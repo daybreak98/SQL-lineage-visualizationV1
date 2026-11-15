@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent.parent.parent / "data" / "metadata.db"
+DB_PATH = Path(os.environ.get("SQL_LINEAGE_DB", Path(__file__).parent.parent.parent.parent / "data" / "metadata.db"))
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 

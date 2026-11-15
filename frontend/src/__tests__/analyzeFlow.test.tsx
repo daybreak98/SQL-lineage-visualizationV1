@@ -26,11 +26,33 @@ vi.mock('@monaco-editor/react', () => ({
       />
     </div>
   ),
+  DiffEditor: ({
+    original,
+    modified,
+    onChange,
+  }: {
+    original?: string;
+    modified?: string;
+    onChange?: (v: string) => void;
+  }) => (
+    <div data-testid="monaco-diff-editor">
+      <textarea data-testid="monaco-diff-original" value={original ?? ''} readOnly />
+      <textarea
+        data-testid="monaco-diff-modified"
+        value={modified ?? ''}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          onChange?.(e.target.value)
+        }
+        readOnly
+      />
+    </div>
+  ),
   loader: { config: vi.fn() },
 }));
 
 // API client — control responses from test
 const mockAnalyzeSql = vi.fn();
+const mockConvertSql = vi.fn();
 const mockFormatSql = vi.fn();
 const mockGetHealth = vi.fn();
 const mockListMetadataTables = vi.fn();
@@ -38,6 +60,7 @@ const mockListMetadataColumns = vi.fn();
 
 vi.mock('../api/client', () => ({
   analyzeSql: (...args: unknown[]) => mockAnalyzeSql(...args),
+  convertSql: (...args: unknown[]) => mockConvertSql(...args),
   formatSql: (...args: unknown[]) => mockFormatSql(...args),
   getHealth: (...args: unknown[]) => mockGetHealth(...args),
   listMetadataTables: (...args: unknown[]) => mockListMetadataTables(...args),
@@ -175,6 +198,12 @@ const c05CteStructureResult = {
       { id: 'cte:order_base', node_type: 'cte', label: 'order_base' },
       { id: 'cte:metric_base', node_type: 'cte', label: 'metric_base' },
       { id: 'query_result:final', node_type: 'output', label: 'Query Result' },
+      { id: 'physical_column:dwd_order_di.user_id', node_type: 'physical_column', label: 'dwd_order_di.user_id' },
+      { id: 'physical_column:dwd_order_di.order_no', node_type: 'physical_column', label: 'dwd_order_di.order_no' },
+      { id: 'physical_column:dwd_order_di.order_amount', node_type: 'physical_column', label: 'dwd_order_di.order_amount' },
+      { id: 'output_column:user_id', node_type: 'output_column', label: 'user_id' },
+      { id: 'output_column:order_cnt', node_type: 'output_column', label: 'order_cnt' },
+      { id: 'output_column:gmv', node_type: 'output_column', label: 'gmv' },
     ],
     edges: [
       {
@@ -195,6 +224,42 @@ const c05CteStructureResult = {
         target: 'query_result:final',
         edge_type: 'cte_to_result',
       },
+      {
+        id: 'edge:physical_column:dwd_order_di.user_id->output_column:user_id',
+        source: 'physical_column:dwd_order_di.user_id',
+        target: 'output_column:user_id',
+        edge_type: 'column_lineage',
+      },
+      {
+        id: 'edge:physical_column:dwd_order_di.order_no->output_column:order_cnt',
+        source: 'physical_column:dwd_order_di.order_no',
+        target: 'output_column:order_cnt',
+        edge_type: 'column_lineage',
+      },
+      {
+        id: 'edge:physical_column:dwd_order_di.order_amount->output_column:gmv',
+        source: 'physical_column:dwd_order_di.order_amount',
+        target: 'output_column:gmv',
+        edge_type: 'column_lineage',
+      },
+      {
+        id: 'edge:output_column:user_id->query_result:final',
+        source: 'output_column:user_id',
+        target: 'query_result:final',
+        edge_type: 'output_column_to_result',
+      },
+      {
+        id: 'edge:output_column:order_cnt->query_result:final',
+        source: 'output_column:order_cnt',
+        target: 'query_result:final',
+        edge_type: 'output_column_to_result',
+      },
+      {
+        id: 'edge:output_column:gmv->query_result:final',
+        source: 'output_column:gmv',
+        target: 'query_result:final',
+        edge_type: 'output_column_to_result',
+      },
     ],
   },
   output_fields: [
@@ -203,7 +268,7 @@ const c05CteStructureResult = {
     { name: 'gmv', display_name: 'gmv', expression: 'gmv', source_type: 'unknown' },
   ],
   diagnostics_report: { diagnostics: [] },
-  summary: { node_count: 4, edge_count: 3, output_field_count: 3 },
+  summary: { node_count: 10, edge_count: 9, output_field_count: 3 },
 };
 
 const failedResult = {
@@ -262,7 +327,7 @@ describe('Analyze Flow', () => {
   // ── Initial render ─────────────────────────────────────────
 
   it('renders the app shell without crashing', () => {
-    render(<App />);
+    const { container } = render(<App />);
     expect(screen.getByText('SQL Lineage')).toBeInTheDocument();
   });
 
@@ -333,7 +398,7 @@ describe('Analyze Flow', () => {
   it('renders backend table structure by default and keeps column graph available', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(columnGraphResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.click(screen.getByText('Analyze'));
 
@@ -346,8 +411,10 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('t.a', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('Query Result', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('t', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(screen.queryByText('t.a', { selector: '.title' })).not.toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:a"]')).toBeInTheDocument();
+      expect(screen.getByText('Query Result', { selector: '.relation-node__title' })).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
   });
@@ -355,7 +422,7 @@ describe('Analyze Flow', () => {
   it('stores backend source_locations and shows location in the detail panel', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(columnGraphResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.click(screen.getByText('Analyze'));
 
@@ -366,11 +433,11 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('a', { selector: '.title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:a"]')).toBeInTheDocument();
     });
 
-    const outputTitle = screen.getByText('a', { selector: '.title' });
-    fireEvent.doubleClick(outputTitle.closest('.node') as HTMLElement);
+    const outputRow = container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:a"]') as HTMLElement;
+    fireEvent.doubleClick(outputRow);
 
     await waitFor(() => {
       expect(screen.getByText(/line 1.*exact/)).toBeInTheDocument();
@@ -380,7 +447,7 @@ describe('Analyze Flow', () => {
   it('renders C04 join alias table structure by default and column graph on demand', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(c04JoinColumnGraphResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.click(screen.getByText('Analyze'));
 
@@ -394,18 +461,23 @@ describe('Analyze Flow', () => {
     fireEvent.click(screen.getByText('Column'));
 
     await waitFor(() => {
-      expect(screen.getByText('dim_user_df.country_name', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('dwd_order_di.order_no', { selector: '.title' })).toBeInTheDocument();
-      expect(screen.getByText('Query Result', { selector: '.title' })).toBeInTheDocument();
+      expect(screen.getByText('dim_user_df', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(screen.queryByText('dim_user_df.country_name', { selector: '.title' })).not.toBeInTheDocument();
+      expect(screen.queryByText('dwd_order_di.order_no', { selector: '.title' })).not.toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:country_name"]')).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_no"]')).toBeInTheDocument();
+      expect(screen.getByText('Query Result', { selector: '.relation-node__title' })).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
   });
 
-  it('renders C05 CTE structure graph as the default subquery dependency view', async () => {
+  it('renders C05 CTE structure graph when subquery is the selected view', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(c05CteStructureResult);
 
-    render(<App />);
+    const { container } = render(<App />);
 
+    fireEvent.click(screen.getByText('Subquery', { selector: 'button' }));
     fireEvent.click(screen.getByText('Analyze'));
 
     await waitFor(() => {
@@ -434,18 +506,36 @@ describe('Analyze Flow', () => {
     const tableResultNode = screen.getByText('Query Result', { selector: '.title' }).closest('.node') as HTMLElement;
     expect(parseFloat(tableResultNode.style.left) - parseFloat(tableNode.style.left)).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByText('Column'));
+    fireEvent.click(screen.getByText('Column', { selector: 'button' }));
 
     await waitFor(() => {
       expect(screen.queryByText('order_base', { selector: '.title' })).not.toBeInTheDocument();
       expect(screen.queryByText('metric_base', { selector: '.title' })).not.toBeInTheDocument();
-      expect(screen.queryByText('dwd_order_di', { selector: '.title' })).not.toBeInTheDocument();
-      expect(screen.queryByText('Query Result', { selector: '.title' })).not.toBeInTheDocument();
+      expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(screen.getByText('Query Result', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="source"][data-entity-id="physical_column\\:dwd_order_di\\.order_no"]')).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_cnt"]')).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:gmv"]')).toBeInTheDocument();
       expect(screen.getByText('view: column')).toBeInTheDocument();
     });
   });
 
   // ── Analyze failure ────────────────────────────────────────
+
+  it('keeps the selected graph level when analyze completes', async () => {
+    mockAnalyzeSql.mockResolvedValueOnce(c05CteStructureResult);
+
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByText('Column'));
+    fireEvent.click(screen.getByText('Analyze'));
+
+    await waitFor(() => {
+      expect(screen.getByText('dwd_order_di', { selector: '.relation-node__title' })).toBeInTheDocument();
+      expect(container.querySelector('.column-row[data-role="output"][data-entity-id="output_column\\:order_cnt"]')).toBeInTheDocument();
+      expect(screen.getByText('view: column')).toBeInTheDocument();
+    });
+  });
 
   it('shows error state on analyze failure (backend returns failed)', async () => {
     mockAnalyzeSql.mockResolvedValueOnce(failedResult);

@@ -1,0 +1,17 @@
+{
+  "expected_status": "partial",
+  "must_have_nodes": [
+    "table:dwd_order_di",
+    "table:dim_user",
+    "output:query_result"
+  ],
+  "must_have_edges": [
+    ["table:dwd_order_di", "output:query_result"],
+    ["table:dim_user", "output:query_result"]
+  ],
+  "must_have_diagnostics": [
+    "PARSE_FULL_AST_FAILED",
+    "PARTIAL_LINEAGE_RESULT"
+  ],
+  "minimum_confidence": "low"
+}

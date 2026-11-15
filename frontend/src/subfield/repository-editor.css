@@ -1,0 +1,21 @@
+#repository-sql-editor .editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #d9e5f1;
+  border-radius: 9px;
+  overflow: hidden;
+  background: white;
+}
+#repository-sql-editor .editor-body { flex: 0 0 auto; height: clamp(170px, 29vh, 280px); }
+#repository-sql-editor .panel-head, #repository-sql-editor .editor-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: #4b6077;
+  font-size: 11px;
+}
+#repository-sql-editor .badge { margin-inline-start: 6px; }

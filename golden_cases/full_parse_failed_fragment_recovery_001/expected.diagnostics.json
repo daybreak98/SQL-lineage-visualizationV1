@@ -1,0 +1,8 @@
+{
+  "allowed_status": ["success", "partial"],
+  "required_diagnostics": [
+    "SQLGLOT_PARSE_ERROR",
+    "LOW_CONFIDENCE_LINEAGE",
+    "FREEMARKER_BLOCK_DETECTED"
+  ]
+}

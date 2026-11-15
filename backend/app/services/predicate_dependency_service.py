@@ -1,0 +1,795 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from sqlglot import exp
+
+from app.domain.cte_rollup_models import (
+    ColumnDependency,
+    ColumnRef,
+    DerivedRelationSchema,
+)
+from app.services.cte_column_rollup_service import CteColumnRollupService
+from app.services.expression_dependency_extractor import (
+    source_columns_with_named_windows,
+)
+from app.services.sqlglot_compat import get_from_expression
+
+
+QUERY_CLAUSE_KINDS = {
+    "group_by",
+    "order_by",
+    "distribute_by",
+    "sort_by",
+    "cluster_by",
+}
+
+
+@dataclass(frozen=True)
+class PredicateDependency:
+    predicate_id: str
+    predicate_kind: str
+    owner_id: str
+    expression: str
+    root_columns: tuple[ColumnRef, ...]
+
+
+@dataclass(frozen=True)
+class _RelationSource:
+    relation_name: str
+    relation_kind: str
+    alias: str
+
+
+@dataclass(frozen=True)
+class _ConditionSpec:
+    predicate_kind: str
+    expression: exp.Expression
+    explicit_inputs: tuple[ColumnRef, ...] | None = None
+
+
+def analyze_predicate_dependencies(
+    tree: exp.Expression | None,
+    dialect: str = "spark",
+    derived_schemas: dict[str, DerivedRelationSchema] | None = None,
+    relation_columns: dict[str, list[str]] | None = None,
+) -> list[PredicateDependency]:
+    if tree is None:
+        return []
+
+    schemas = derived_schemas or {}
+    cte_names = {
+        schema.relation_name.lower().strip("`")
+        for schema in schemas.values()
+        if schema.relation_kind == "cte"
+    }
+    if not cte_names:
+        cte_names = {
+            cte.alias_or_name.lower().strip("`")
+            for cte in tree.find_all(exp.CTE)
+            if cte.alias_or_name
+        }
+    subquery_ids, query_ids = _subquery_owner_ids(tree)
+    rollup = CteColumnRollupService(schemas)
+    normalized_relation_columns = {
+        key.lower().strip("`"): {
+            column.lower().strip("`")
+            for column in columns
+            if column
+        }
+        for key, columns in (relation_columns or {}).items()
+    }
+    counters: dict[tuple[str, str], int] = {}
+    results: list[PredicateDependency] = []
+
+    def append_condition(
+        owner_id: str,
+        condition_spec: _ConditionSpec,
+        select: exp.Select | None = None,
+    ) -> None:
+        predicate_kind = condition_spec.predicate_kind
+        condition = condition_spec.expression
+        if condition_spec.explicit_inputs is not None:
+            immediate_inputs = list(condition_spec.explicit_inputs)
+        elif select is not None:
+            immediate_inputs = _condition_inputs(
+                condition,
+                select,
+                predicate_kind,
+                cte_names,
+                subquery_ids,
+            )
+        else:
+            return
+        if not immediate_inputs:
+            return
+
+        counter_key = (owner_id, predicate_kind)
+        counters[counter_key] = counters.get(counter_key, 0) + 1
+        id_prefix = (
+            "clause" if predicate_kind in QUERY_CLAUSE_KINDS else "predicate"
+        )
+        predicate_id = (
+            f"{id_prefix}:{predicate_kind}:{owner_id}:"
+            f"{counters[counter_key]}"
+        )
+        expression_sql = condition.sql(dialect=dialect)
+        dependency = ColumnDependency(
+            output=ColumnRef(
+                relation_name=predicate_id,
+                column_name="condition",
+                relation_kind="output",
+            ),
+            inputs=immediate_inputs,
+            transform_type="expression",
+            expression=expression_sql,
+        )
+        rolled = rollup.rollup([dependency]).root_dependencies[0]
+        roots = _dedupe_refs(
+            root
+            for root in rolled.inputs
+            if root.relation_kind == "table" and root.relation_name
+        )
+        if not roots:
+            return
+        results.append(PredicateDependency(
+            predicate_id=predicate_id,
+            predicate_kind=predicate_kind,
+            owner_id=owner_id,
+            expression=expression_sql,
+            root_columns=tuple(roots),
+        ))
+
+    for select in tree.find_all(exp.Select):
+        owner_id = _query_owner_id(select, subquery_ids, query_ids)
+        for condition_spec in _select_conditions(
+            select,
+            cte_names,
+            subquery_ids,
+            normalized_relation_columns,
+        ):
+            append_condition(owner_id, condition_spec, select)
+
+    set_operations = list(tree.find_all(exp.SetOperation))
+    if isinstance(tree, exp.SetOperation) and not any(
+        operation is tree for operation in set_operations
+    ):
+        set_operations.insert(0, tree)
+    for operation in set_operations:
+        order = operation.args.get("order")
+        if not isinstance(order, exp.Order):
+            continue
+        inputs = _set_operation_order_inputs(
+            operation,
+            order,
+            cte_names,
+            subquery_ids,
+        )
+        owner_id = _query_owner_id(operation, subquery_ids, query_ids)
+        append_condition(
+            owner_id,
+            _ConditionSpec("order_by", order, tuple(inputs)),
+        )
+
+    return results
+
+
+def _select_conditions(
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+    relation_columns: dict[str, set[str]],
+) -> list[_ConditionSpec]:
+    conditions = _join_conditions(
+        select,
+        cte_names,
+        subquery_ids,
+        relation_columns,
+    )
+    for argument_name, predicate_kind in (
+        ("where", "where"),
+        ("having", "having"),
+        ("qualify", "qualify"),
+    ):
+        wrapper = select.args.get(argument_name)
+        condition = getattr(wrapper, "this", None)
+        if isinstance(condition, exp.Expression):
+            conditions.append(_ConditionSpec(predicate_kind, condition))
+    for argument_name, clause_kind in (
+        ("group", "group_by"),
+        ("order", "order_by"),
+        ("distribute", "distribute_by"),
+        ("sort", "sort_by"),
+        ("cluster", "cluster_by"),
+    ):
+        clause = select.args.get(argument_name)
+        if isinstance(clause, exp.Expression):
+            conditions.append(_ConditionSpec(clause_kind, clause))
+    return conditions
+
+
+def _join_conditions(
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+    relation_columns: dict[str, set[str]],
+) -> list[_ConditionSpec]:
+    conditions: list[_ConditionSpec] = []
+    left_sources: list[_RelationSource] = []
+    from_expression = get_from_expression(select)
+    if from_expression is not None:
+        source = _relation_source(
+            from_expression.this,
+            cte_names,
+            subquery_ids,
+        )
+        if source is not None:
+            left_sources.append(source)
+
+    for join in select.args.get("joins") or []:
+        right_source = _relation_source(
+            join.this,
+            cte_names,
+            subquery_ids,
+        )
+        on_expression = join.args.get("on")
+        if isinstance(on_expression, exp.Expression):
+            conditions.append(_ConditionSpec("join", on_expression))
+        else:
+            using_names = [
+                identifier.name
+                for identifier in join.args.get("using") or []
+                if identifier.name
+            ]
+            if using_names and right_source is not None and left_sources:
+                sources = [*left_sources, right_source]
+                inputs = tuple(
+                    _join_source_ref(source, column_name)
+                    for column_name in using_names
+                    for source in sources
+                )
+                conditions.append(_ConditionSpec(
+                    "join",
+                    exp.Var(this=f"USING ({', '.join(using_names)})"),
+                    inputs,
+                ))
+            elif (
+                str(join.args.get("method") or "").upper() == "NATURAL"
+                and right_source is not None
+                and left_sources
+            ):
+                sources = [*left_sources, right_source]
+                inputs = _natural_join_inputs(
+                    sources,
+                    relation_columns,
+                )
+                conditions.append(_ConditionSpec(
+                    "join",
+                    exp.Var(this="NATURAL JOIN"),
+                    tuple(inputs),
+                ))
+        if right_source is not None:
+            left_sources.append(right_source)
+    return conditions
+
+
+def _join_source_ref(
+    source: _RelationSource,
+    column_name: str,
+) -> ColumnRef:
+    return ColumnRef(
+        relation_name=source.relation_name,
+        column_name=column_name,
+        relation_kind=source.relation_kind,
+        table_alias=source.alias,
+    )
+
+
+def _natural_join_inputs(
+    sources: list[_RelationSource],
+    relation_columns: dict[str, set[str]],
+) -> list[ColumnRef]:
+    columns_by_source: list[set[str]] = []
+    for source in sources:
+        columns = _relation_columns(source, relation_columns)
+        if not columns:
+            return [_join_source_ref(item, "*") for item in sources]
+        columns_by_source.append(columns)
+
+    right_columns = columns_by_source[-1]
+    left_columns: set[str] = set()
+    for columns in columns_by_source[:-1]:
+        left_columns.update(columns)
+    common_columns = sorted(left_columns & right_columns)
+
+    inputs: list[ColumnRef] = []
+    for column_name in common_columns:
+        for source, columns in zip(sources, columns_by_source):
+            if column_name in columns:
+                inputs.append(_join_source_ref(source, column_name))
+    return inputs
+
+
+def _relation_columns(
+    source: _RelationSource,
+    relation_columns: dict[str, set[str]],
+) -> set[str]:
+    relation_key = source.relation_name.lower().strip("`")
+    candidates = [
+        relation_key,
+        relation_key.split(".")[-1],
+    ]
+    if source.relation_kind == "subquery":
+        candidates.insert(0, f"subquery:{relation_key}")
+    for candidate in candidates:
+        columns = relation_columns.get(candidate)
+        if columns:
+            return columns
+    return set()
+
+
+def _condition_inputs(
+    condition: exp.Expression,
+    select: exp.Select,
+    predicate_kind: str,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    projection_aliases = {
+        projection.alias_or_name.lower().strip("`"): projection
+        for projection in select.expressions
+        if projection.alias_or_name
+    }
+    if predicate_kind in QUERY_CLAUSE_KINDS:
+        inputs.extend(
+            _ordinal_projection_inputs(
+                condition,
+                select,
+                cte_names,
+                subquery_ids,
+            )
+        )
+    inputs.extend(
+        _value_subquery_inputs(
+            condition,
+            cte_names,
+            subquery_ids,
+        )
+    )
+    for column in condition.find_all(exp.Column):
+        if isinstance(column.this, exp.Star):
+            continue
+        if column.find_ancestor(exp.Select) is not select:
+            continue
+        if (
+            not column.table
+            and predicate_kind
+            in {"having", "qualify", *QUERY_CLAUSE_KINDS}
+            and (
+                alias_projection := projection_aliases.get(
+                    column.name.lower().strip("`")
+                )
+            )
+            is not None
+        ):
+            for source_column in source_columns_with_named_windows(
+                alias_projection
+            ):
+                if source_column.find_ancestor(exp.Select) is not select:
+                    continue
+                ref = _resolved_column_ref(
+                    source_column,
+                    select,
+                    cte_names,
+                    subquery_ids,
+                )
+                if ref is not None:
+                    inputs.append(ref)
+            continue
+        ref = _resolved_column_ref(column, select, cte_names, subquery_ids)
+        if ref is not None:
+            inputs.append(ref)
+    return _dedupe_refs(inputs)
+
+
+def _value_subquery_inputs(
+    condition: exp.Expression,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    for subquery in condition.find_all(exp.Subquery):
+        if _is_nested_value_subquery(subquery, condition):
+            continue
+        if subquery.find_ancestor(exp.Exists) is not None:
+            continue
+        for inner_select in _query_selects(subquery.this):
+            for projection in inner_select.expressions:
+                for column in source_columns_with_named_windows(projection):
+                    if column.find_ancestor(exp.Select) is not inner_select:
+                        continue
+                    ref = _resolved_column_ref(
+                        column,
+                        inner_select,
+                        cte_names,
+                        subquery_ids,
+                    )
+                    if ref is not None:
+                        inputs.append(ref)
+                inputs.extend(
+                    _projection_rowset_inputs(
+                        projection,
+                        inner_select,
+                        cte_names,
+                        subquery_ids,
+                    )
+                )
+    return inputs
+
+
+def _projection_rowset_inputs(
+    projection: exp.Expression,
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    sources = _scope_sources(select, cte_names, subquery_ids)
+    for aggregate in projection.find_all(exp.AggFunc):
+        if aggregate.find_ancestor(exp.Select) is not select:
+            continue
+        columns = list(aggregate.find_all(exp.Column))
+        if any(not isinstance(column.this, exp.Star) for column in columns):
+            continue
+        qualifiers = {
+            column.table.lower().strip("`")
+            for column in columns
+            if isinstance(column.this, exp.Star) and column.table
+        }
+        candidates = (
+            [sources[name] for name in qualifiers if name in sources]
+            if qualifiers
+            else list(sources.values())
+        )
+        seen_sources: set[tuple[str, str]] = set()
+        for source in candidates:
+            key = (source.relation_kind, source.relation_name.lower())
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+            inputs.append(
+                ColumnRef(
+                    relation_name=source.relation_name,
+                    column_name="*",
+                    relation_kind=source.relation_kind,
+                    table_alias=source.alias,
+                )
+            )
+    return inputs
+
+
+def _is_nested_value_subquery(
+    subquery: exp.Subquery,
+    condition: exp.Expression,
+) -> bool:
+    parent = subquery.parent
+    while parent is not None and parent is not condition:
+        if isinstance(parent, exp.Subquery):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _query_selects(query: exp.Expression) -> list[exp.Select]:
+    if isinstance(query, exp.Subquery):
+        return _query_selects(query.this)
+    if isinstance(query, exp.Select):
+        return [query]
+    if isinstance(query, exp.SetOperation):
+        return _query_selects(query.this) + _query_selects(query.expression)
+    return []
+
+
+def _set_operation_order_inputs(
+    operation: exp.SetOperation,
+    order: exp.Order,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    branches = _query_selects(operation)
+    if not branches:
+        return []
+    canonical_projections = branches[0].expressions
+    aliases = {
+        projection.alias_or_name.lower().strip("`"): index
+        for index, projection in enumerate(canonical_projections)
+        if projection.alias_or_name
+    }
+    projection_indexes: set[int] = set()
+
+    for ordered in order.expressions:
+        expression = (
+            ordered.this if isinstance(ordered, exp.Ordered) else ordered
+        )
+        if (
+            isinstance(expression, exp.Literal)
+            and not expression.is_string
+            and str(expression.this).isdigit()
+        ):
+            ordinal = int(str(expression.this))
+            if 1 <= ordinal <= len(canonical_projections):
+                projection_indexes.add(ordinal - 1)
+            continue
+        for column in expression.find_all(exp.Column):
+            if column.table:
+                continue
+            index = aliases.get(column.name.lower().strip("`"))
+            if index is not None:
+                projection_indexes.add(index)
+
+    inputs: list[ColumnRef] = []
+    for index in sorted(projection_indexes):
+        canonical_name = (
+            (canonical_projections[index].alias_or_name or "")
+            .lower()
+            .strip("`")
+        )
+        for branch in branches:
+            if operation.args.get("by_name"):
+                projection = next(
+                    (
+                        item
+                        for item in branch.expressions
+                        if (item.alias_or_name or "").lower().strip("`")
+                        == canonical_name
+                    ),
+                    None,
+                )
+            else:
+                projection = (
+                    branch.expressions[index]
+                    if index < len(branch.expressions)
+                    else None
+                )
+            if projection is None:
+                continue
+            for column in source_columns_with_named_windows(projection):
+                if column.find_ancestor(exp.Select) is not branch:
+                    continue
+                ref = _resolved_column_ref(
+                    column,
+                    branch,
+                    cte_names,
+                    subquery_ids,
+                )
+                if ref is not None:
+                    inputs.append(ref)
+            inputs.extend(
+                _projection_rowset_inputs(
+                    projection,
+                    branch,
+                    cte_names,
+                    subquery_ids,
+                )
+            )
+    return _dedupe_refs(inputs)
+
+
+def _ordinal_projection_inputs(
+    clause: exp.Expression,
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> list[ColumnRef]:
+    inputs: list[ColumnRef] = []
+    for item in clause.expressions:
+        expression = item.this if isinstance(item, exp.Ordered) else item
+        if not isinstance(expression, exp.Literal) or expression.is_string:
+            continue
+        ordinal_text = str(expression.this)
+        if not ordinal_text.isdigit():
+            continue
+        ordinal = int(ordinal_text)
+        if ordinal < 1 or ordinal > len(select.expressions):
+            continue
+        projection = select.expressions[ordinal - 1]
+        for column in source_columns_with_named_windows(projection):
+            if column.find_ancestor(exp.Select) is not select:
+                continue
+            ref = _resolved_column_ref(
+                column,
+                select,
+                cte_names,
+                subquery_ids,
+            )
+            if ref is not None:
+                inputs.append(ref)
+    return inputs
+
+
+def _resolved_column_ref(
+    column: exp.Column,
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> ColumnRef | None:
+    source = _resolve_column_source(column, select, cte_names, subquery_ids)
+    if source is None or source.relation_kind == "unknown":
+        return None
+    return ColumnRef(
+        relation_name=source.relation_name,
+        column_name=column.name,
+        relation_kind=source.relation_kind,
+        table_alias=source.alias,
+    )
+
+
+def _resolve_column_source(
+    column: exp.Column,
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> _RelationSource | None:
+    qualifier = column.table.lower().strip("`") if column.table else ""
+    current: exp.Select | None = select
+    first_scope = True
+    while current is not None:
+        sources = _scope_sources(current, cte_names, subquery_ids)
+        if qualifier:
+            source = sources.get(qualifier)
+            if source is not None:
+                return source
+        elif first_scope:
+            unique_sources = {
+                (source.relation_kind, source.relation_name): source
+                for source in sources.values()
+            }
+            if len(unique_sources) == 1:
+                return next(iter(unique_sources.values()))
+            return None
+        first_scope = False
+        current = current.find_ancestor(exp.Select)
+    return None
+
+
+def _scope_sources(
+    select: exp.Select,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> dict[str, _RelationSource]:
+    result: dict[str, _RelationSource] = {}
+    from_expression = get_from_expression(select)
+    candidates = [from_expression.this] if from_expression is not None else []
+    candidates.extend(
+        join.this
+        for join in select.args.get("joins") or []
+        if isinstance(join.this, exp.Expression)
+    )
+    for candidate in candidates:
+        source = _relation_source(candidate, cte_names, subquery_ids)
+        if source is None:
+            continue
+        keys = {source.alias.lower().strip("`"), source.relation_name.lower().strip("`")}
+        keys.add(source.relation_name.split(".")[-1].lower().strip("`"))
+        for key in keys:
+            if key:
+                result[key] = source
+    return result
+
+
+def _relation_source(
+    expression: exp.Expression,
+    cte_names: set[str],
+    subquery_ids: dict[int, str],
+) -> _RelationSource | None:
+    if isinstance(expression, exp.Table):
+        parts = [
+            part
+            for part in (expression.catalog, expression.db, expression.name)
+            if part
+        ]
+        relation_name = ".".join(parts)
+        normalized = relation_name.split(".")[-1].lower().strip("`")
+        return _RelationSource(
+            relation_name=relation_name,
+            relation_kind="cte" if normalized in cte_names else "table",
+            alias=expression.alias or expression.name,
+        )
+    if isinstance(expression, exp.Subquery):
+        owner_id = subquery_ids.get(id(expression))
+        alias = expression.alias_or_name
+        if not owner_id or not alias:
+            return None
+        return _RelationSource(
+            relation_name=owner_id.split(":", 1)[1],
+            relation_kind="subquery",
+            alias=alias,
+        )
+    return None
+
+
+def _subquery_owner_ids(
+    tree: exp.Expression,
+) -> tuple[dict[int, str], dict[int, str]]:
+    subquery_ids: dict[int, str] = {}
+    query_ids: dict[int, str] = {}
+    alias_counts: dict[str, int] = {}
+    subqueries = list(tree.find_all(exp.Subquery))
+    subqueries.sort(key=_subquery_source_offset)
+    for index, subquery in enumerate(subqueries, start=1):
+        alias = subquery.alias_or_name
+        if not alias:
+            prefix = "in_subquery" if isinstance(subquery.parent, exp.In) else "subquery"
+            alias = f"{prefix}_{index}"
+        alias_counts[alias] = alias_counts.get(alias, 0) + 1
+        occurrence = alias_counts[alias]
+        unique_alias = alias if occurrence == 1 else f"{alias}__occurrence_{occurrence}"
+        subquery_ids[id(subquery)] = f"subquery:{unique_alias}"
+
+    exists_index = 0
+    for exists in tree.find_all(exp.Exists):
+        query = exists.this
+        if not isinstance(query, exp.Query) or isinstance(query, exp.Subquery):
+            continue
+        exists_index += 1
+        query_ids[id(query)] = f"subquery:exists_subquery_{exists_index}"
+    return subquery_ids, query_ids
+
+
+def _subquery_source_offset(subquery: exp.Subquery) -> float:
+    """Order subqueries by original SQL position, matching the structure graph."""
+    query = subquery.this
+    if isinstance(query, exp.Select):
+        projection_offsets = [
+            offset
+            for projection in query.expressions
+            if (offset := _expression_source_offset(projection)) is not None
+        ]
+        if projection_offsets:
+            return min(projection_offsets)
+    offset = _expression_source_offset(subquery)
+    return float(offset) if offset is not None else float("inf")
+
+
+def _expression_source_offset(
+    expression: exp.Expression,
+) -> int | None:
+    offsets = [
+        int(start)
+        for node in expression.walk()
+        if (start := node.meta.get("start")) is not None
+    ]
+    return min(offsets) if offsets else None
+
+
+def _query_owner_id(
+    query: exp.Expression,
+    subquery_ids: dict[int, str],
+    query_ids: dict[int, str],
+) -> str:
+    direct_owner = query_ids.get(id(query))
+    if direct_owner:
+        return direct_owner
+    parent = query.parent
+    while parent is not None:
+        if isinstance(parent, exp.Subquery):
+            owner_id = subquery_ids.get(id(parent))
+            if owner_id:
+                return owner_id
+        if isinstance(parent, exp.CTE) and parent.alias_or_name:
+            return f"cte:{parent.alias_or_name}"
+        parent = parent.parent
+    return "query_result:final"
+
+
+def _dedupe_refs(refs) -> list[ColumnRef]:
+    result: list[ColumnRef] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for ref in refs:
+        key = ref.lookup_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(ref)
+    return result

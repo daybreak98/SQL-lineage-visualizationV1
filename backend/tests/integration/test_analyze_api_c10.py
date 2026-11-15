@@ -186,10 +186,28 @@ def test_c10_diagnostic_golden_cases_do_not_create_column_lineage():
     ]
 
 
-def test_c10_expression_metric_golden_freezes_current_partial_behavior():
+def test_c10_expression_metric_golden_degrades_to_column_dependencies():
     _commit_metadata()
     data = _analyze("c09_expression_metric.sql")
 
-    assert data["status"] == "partial"
+    assert data["status"] == "success"
     assert {field["name"] for field in data["output_fields"]} == {"gmv", "order_cnt", "adr"}
-    assert "UNSUPPORTED_COMPLEX_QUERY" in _diagnostic_codes(data)
+    assert "UNSUPPORTED_COMPLEX_QUERY" not in _diagnostic_codes(data)
+
+    column_edges = {
+        (edge["source"], edge["target"])
+        for edge in data["graph_view_model"]["edges"]
+        if edge["edge_type"] == "column_lineage"
+    }
+    assert column_edges == {
+        ("physical_column:dwd_order_di.order_amount", "output_column:gmv"),
+        ("physical_column:dwd_order_di.order_no", "output_column:order_cnt"),
+        ("physical_column:dwd_order_di.order_amount", "output_column:adr"),
+        ("physical_column:dwd_order_di.order_no", "output_column:adr"),
+    }
+
+    assert not [
+        node
+        for node in data["graph_view_model"]["nodes"]
+        if node["node_type"] == "expression"
+    ]

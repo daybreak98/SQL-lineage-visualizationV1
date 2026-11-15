@@ -3,11 +3,15 @@ backend/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+backend/.tmp-tests/
 *.egg-info/
+*.log
 
 # Node
+node_modules/
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # IDE
 .idea/
@@ -21,6 +25,12 @@ Thumbs.db
 *.db-journal
 *.db-wal
 data/metadata.db
+/data/subfield-workbench-local/
 
 # env
 .env
+
+# PyInstaller
+dist/
+build/
+*.db.bak

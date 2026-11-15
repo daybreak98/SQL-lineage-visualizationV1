@@ -73,6 +73,45 @@ def test_analyze_c05_cte_nodes_are_not_physical_tables():
     assert all(node["node_type"] == "cte" for node in cte_nodes)
 
 
+def test_analyze_c05_golden_cte_returns_column_lineage_nodes():
+    response = client.post(
+        "/api/sql/analyze",
+        json={"sql": GOLDEN_CTE_SQL, "dialect": "spark"},
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    node_ids = {node["id"] for node in data["graph_view_model"]["nodes"]}
+    assert {
+        "physical_column:dwd_order_di.user_id",
+        "physical_column:dwd_order_di.order_no",
+        "physical_column:dwd_order_di.order_amount",
+        "output_column:user_id",
+        "output_column:order_cnt",
+        "output_column:gmv",
+    }.issubset(node_ids)
+
+    edges = {
+        (edge["source"], edge["target"], edge["edge_type"])
+        for edge in data["graph_view_model"]["edges"]
+    }
+    assert (
+        "physical_column:dwd_order_di.user_id",
+        "output_column:user_id",
+        "column_lineage",
+    ) in edges
+    assert (
+        "physical_column:dwd_order_di.order_no",
+        "output_column:order_cnt",
+        "column_lineage",
+    ) in edges
+    assert (
+        "physical_column:dwd_order_di.order_amount",
+        "output_column:gmv",
+        "column_lineage",
+    ) in edges
+
+
 def test_analyze_c05_include_graph_false_keeps_graph_empty():
     response = client.post(
         "/api/sql/analyze",

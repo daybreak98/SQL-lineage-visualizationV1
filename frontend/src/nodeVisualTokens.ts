@@ -18,14 +18,26 @@ export const COMFORT_CANVAS = {
 };
 
 export const COMFORT_NODE_BOX: Record<string, { width: number; height: number; radius: number }> = {
-  table: { width: 220, height: 55, radius: 18 },
-  column: { width: 230, height: 52, radius: 16 },
-  cte: { width: 138, height: 56, radius: 14 },
-  subquery: { width: 138, height: 56, radius: 14 },
-  expression: { width: 245, height: 55, radius: 16 },
-  output: { width: 230, height: 58, radius: 20 },
-  output_field: { width: 238, height: 52, radius: 16 },
-  unknown: { width: 220, height: 52, radius: 16 },
+  table: { width: 207, height: 45, radius: 12 },
+  column: { width: 138, height: 45, radius: 12 },
+  cte: { width: 110, height: 45, radius: 12 },
+  subquery: { width: 110, height: 45, radius: 12 },
+  expression: { width: 138, height: 45, radius: 12 },
+  output: { width: 138, height: 45, radius: 12 },
+  output_field: { width: 138, height: 45, radius: 12 },
+  unknown: { width: 138, height: 45, radius: 12 },
+};
+
+export const RELATION_NODE_GEOMETRY = {
+  tableWidth: 236,
+  outputWidth: 236,
+  headerHeight: 48,
+  rowHeight: 26,
+  bodyPaddingTop: 5,
+  bodyPaddingBottom: 5,
+  hiddenBadgeHeight: 24,
+  collapsedHeight: 48,
+  radius: 12,
 };
 
 export const COMFORT_EDGE = {
@@ -36,11 +48,83 @@ export const COMFORT_EDGE = {
   activeOpacity: 1,
 };
 
-export function getComfortNodeBox(type: string) {
+export function getComfortNodeBox(nodeOrType: string | { type: string; columns?: unknown[]; collapsed?: boolean; hiddenColumnCount?: number }) {
+  const type = typeof nodeOrType === 'string' ? nodeOrType : nodeOrType.type;
+
+  if (typeof nodeOrType !== 'string') {
+    const node = nodeOrType;
+    const isRelationContainer = ['table', 'cte', 'subquery', 'output'].includes(node.type);
+    if (isRelationContainer && node.columns) {
+      const width = node.type === 'output' ? RELATION_NODE_GEOMETRY.outputWidth : RELATION_NODE_GEOMETRY.tableWidth;
+      if (node.collapsed) {
+        return { width, height: RELATION_NODE_GEOMETRY.collapsedHeight, radius: RELATION_NODE_GEOMETRY.radius };
+      }
+
+      const hiddenBadgeHeight = node.hiddenColumnCount ? RELATION_NODE_GEOMETRY.hiddenBadgeHeight : 0;
+      return {
+        width,
+        height:
+          RELATION_NODE_GEOMETRY.headerHeight +
+          RELATION_NODE_GEOMETRY.bodyPaddingTop +
+          node.columns.length * RELATION_NODE_GEOMETRY.rowHeight +
+          RELATION_NODE_GEOMETRY.bodyPaddingBottom +
+          hiddenBadgeHeight,
+        radius: RELATION_NODE_GEOMETRY.radius,
+      };
+    }
+  }
+
   return COMFORT_NODE_BOX[type] ?? COMFORT_NODE_BOX.unknown;
 }
 
 export function nodeBoxComfort(type: string): { width: number; height: number } {
   const box = getComfortNodeBox(type);
   return { width: box.width, height: box.height };
+}
+
+export type NodeGeometry = {
+  node: { id: string; entityId: string; type: string; x: number; y: number };
+  box: { width: number; height: number };
+  cx: number;
+  cy: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+export function buildNodeGeometryIndex(nodes: { id: string; entityId: string; type: string; x: number; y: number }[]) {
+  const geometryByEntity = new Map<string, NodeGeometry>();
+  for (const node of nodes) {
+    const box = getComfortNodeBox(node.type);
+    geometryByEntity.set(node.entityId, {
+      node,
+      box,
+      cx: node.x,
+      cy: node.y,
+      left: node.x - box.width / 2,
+      right: node.x + box.width / 2,
+      top: node.y - box.height / 2,
+      bottom: node.y + box.height / 2,
+    });
+  }
+  return geometryByEntity;
+}
+
+export function clampPortOffset(offset: number, nodeType: string, margin = 10) {
+  const box = getComfortNodeBox(nodeType);
+  const maxOffset = Math.max(0, box.height / 2 - margin);
+  return Math.max(-maxOffset, Math.min(maxOffset, offset));
+}
+
+export function validateRenderableGraph(params: {
+  nodes: { entityId: string }[];
+  edges: { id: string; source: string; target: string }[];
+}) {
+  const nodeIds = new Set(params.nodes.map((n) => n.entityId));
+  const missingEdges: { id: string; source: string; target: string }[] = [];
+  for (const edge of params.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) missingEdges.push(edge);
+  }
+  return { nodeCount: params.nodes.length, edgeCount: params.edges.length, missingEndpointEdgeCount: missingEdges.length, missingEndpointEdges: missingEdges };
 }

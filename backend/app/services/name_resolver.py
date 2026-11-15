@@ -8,9 +8,25 @@ from sqlglot import exp
 from sqlglot.errors import ParseError as SqlglotParseError
 
 from app.domain import diagnostics_model as diag_codes
+from app.domain.lineage_context import LineageResolveContext
 from app.models import Diagnostic
 from app.domain.lineage_model import SimpleColumnLineage
+from app.services.lateral_view_dependency_extractor import (
+    extract_lateral_view_dependencies,
+    matching_lateral_outputs,
+)
+from app.services.expression_dependency_extractor import source_columns_with_named_windows
+from app.services.relation_transform_dependency_extractor import (
+    extract_pivot_star_dependencies,
+    extract_pivot_transforms,
+    extract_relation_transform_dependencies,
+)
 from app.services.star_expansion_service import _detect_star, expand_star_items
+from app.services.sqlglot_compat import (
+    get_from_expression,
+    get_with_expression,
+    is_set_operation,
+)
 
 
 @dataclass(frozen=True)
@@ -37,7 +53,12 @@ class NameResolverResult:
 
 def resolve_column_lineage_names(sql: str, dialect: str = "spark",
                                   tree: exp.Expression | None = None,
-                                  metadata: dict[str, list[str]] | None = None) -> NameResolverResult:
+                                  metadata: dict[str, list[str]] | None = None,
+                                  is_cte_context: bool = False,
+                                  context: LineageResolveContext | None = None) -> NameResolverResult:
+    # Derive scope from context (takes precedence over is_cte_context)
+    if context is not None:
+        is_cte_context = context.has_cte or context.allow_cte
     started = time.time()
 
     if tree is None:
@@ -58,7 +79,18 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
                 stage_status="failed",
             )
 
-    unsupported = _detect_unsupported(tree, has_metadata=metadata is not None)
+    if is_set_operation(tree):
+        return _resolve_set_operation_lineages(
+            tree=tree,
+            dialect=dialect,
+            metadata=metadata,
+            context=context,
+            started=started,
+        )
+
+    unsupported = _detect_unsupported(
+        tree, has_metadata=metadata is not None,
+        is_cte_context=is_cte_context, context=context)
     if unsupported is not None:
         code, message, feature = unsupported
         return _result(
@@ -70,8 +102,15 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
             stage_status="partial",
         )
 
-    tables = _table_references(tree, dialect)
+    tables = _table_references(tree, dialect, is_cte_context=is_cte_context, context=context)
     if not tables:
+        if _is_valid_source_free_query(tree):
+            return _result(
+                started=started,
+                status="success",
+                confidence_level="high",
+                stage_status="success",
+            )
         return _result(
             started=started,
             status="partial",
@@ -92,14 +131,22 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     diagnostics: list[Diagnostic] = []
     lineages: list[SimpleColumnLineage] = []
     unsupported_features: list[str] = []
-
+    relation_transform_by_output: dict[tuple[str, str], list] = {}
+    for dependency in extract_relation_transform_dependencies(tree):
+        key = (
+            (dependency.output_table_alias or "").lower().strip("`"),
+            dependency.output_column.lower().strip("`"),
+        )
+        relation_transform_by_output.setdefault(key, []).append(dependency)
+    pivot_transforms = extract_pivot_transforms(tree)
+    pivot_star_dependencies = extract_pivot_star_dependencies(tree, metadata)
     # Build metadata lookup: {table_name: set(column_names)}
     metadata_cols: dict[str, set[str]] = {}
     if metadata:
         metadata_cols = {tname: set(cols) for tname, cols in metadata.items()}
 
     # -- Handle SELECT * via star_expansion_service --
-    if metadata and _has_any_star(tree.selects):
+    if metadata and _has_any_star(tree.selects) and not pivot_transforms:
         source_table_names = list(table_names)
         columns_by_table = {tname: [{"name": c} for c in cols] for tname, cols in (metadata or {}).items()}
         star_result = expand_star_items(tree.selects, source_table_names, alias_to_table, columns_by_table)
@@ -110,17 +157,93 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     for select_item in tree.selects:
         is_star, _qualifier = _detect_star(select_item)
         if is_star:
+            if pivot_transforms:
+                for dependency in pivot_star_dependencies:
+                    source_table = alias_to_table.get(
+                        dependency.source_table_alias or ""
+                    )
+                    if source_table is None:
+                        continue
+                    lineages.append(SimpleColumnLineage(
+                        source_table=source_table,
+                        source_column=dependency.source_column,
+                        output_column=dependency.output_column,
+                    ))
             continue  # handled above
 
         column = _simple_column_from_select_item(select_item)
-        if column is None:
-            diagnostics.append(
-                Diagnostic(
-                    code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
-                    level="warning",
-                    message="C04 only supports direct column projections, not complex expressions.",
-                )
+        relation_transform_sources = []
+        if column is not None:
+            transform_key = (
+                column.table.lower().strip("`") if column.table else "",
+                column.name.lower().strip("`"),
             )
+            relation_transform_sources = relation_transform_by_output.get(
+                transform_key,
+                relation_transform_by_output.get(("", transform_key[1]), []),
+            )
+        if relation_transform_sources:
+            output_column = select_item.alias_or_name
+            for dependency in relation_transform_sources:
+                source_table = alias_to_table.get(dependency.source_table_alias or "")
+                if source_table is None and len(tables) == 1:
+                    source_table = tables[0].table_name
+                if source_table is None:
+                    diagnostics.append(Diagnostic(
+                        code=diag_codes.UNKNOWN_TABLE_ALIAS,
+                        level="warning",
+                        message=(
+                            f"{dependency.transform_type.upper()} source alias "
+                            f"{dependency.source_table_alias or '<unknown>'} cannot be resolved."
+                        ),
+                    ))
+                    continue
+                lineages.append(SimpleColumnLineage(
+                    source_table=source_table,
+                    source_column=dependency.source_column,
+                    output_column=output_column,
+                ))
+            continue
+        lateral_sources = (
+            _resolve_lateral_sources(column, tables, metadata_cols, diagnostics)
+            if column is not None else None
+        )
+        if lateral_sources is not None:
+            lineages.extend(
+                SimpleColumnLineage(
+                    source_table=source_table, source_column=source_column,
+                    output_column=select_item.alias_or_name,
+                )
+                for source_table, source_column in lateral_sources
+            )
+            continue
+        if column is None:
+            expression_lineages, expression_diagnostics = _expression_column_lineages(
+                select_item=select_item,
+                outer_tables=tables,
+                metadata_cols=metadata_cols,
+                dialect=dialect,
+            )
+            lineages.extend(expression_lineages)
+            diagnostics.extend(expression_diagnostics)
+            if not expression_lineages and not expression_diagnostics:
+                if (
+                    _source_columns_in_expression(select_item)
+                    or (
+                        select_item.find(exp.Star) is not None
+                        and not _all_stars_are_aggregate_rowset(select_item)
+                    )
+                ):
+                    diagnostics.append(
+                        Diagnostic(
+                            code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                            level="warning",
+                            message=(
+                                "Expression projection has no resolvable source columns. "
+                                "Only source-column dependency extraction is supported."
+                            ),
+                        )
+                    )
             continue
 
         output_column = select_item.alias_or_name
@@ -162,6 +285,28 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
             continue
 
         # Unqualified column
+        physical_tables = [t for t in tables if not t.table_name.startswith("subquery:")]
+        if len(physical_tables) == 1:
+            source_table = physical_tables[0].table_name
+            cols_for_table = metadata_cols.get(source_table)
+            if cols_for_table and column.name not in cols_for_table:
+                diagnostics.append(
+                    Diagnostic(
+                        code=diag_codes.UNKNOWN_COLUMN,
+                        level="warning",
+                        message=f"Column {column.name} not found in table {source_table} metadata.",
+                    )
+                )
+                continue
+            lineages.append(
+                SimpleColumnLineage(
+                    source_table=source_table,
+                    source_column=column.name,
+                    output_column=output_column,
+                )
+            )
+            continue
+
         if len(tables) == 1:
             source_table = tables[0].table_name
             cols_for_table = metadata_cols.get(source_table)
@@ -180,6 +325,22 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
                     source_column=column.name,
                     output_column=output_column,
                 )
+            )
+            continue
+
+        merged_sources = _merged_join_column_sources(
+            column,
+            tables,
+            metadata_cols,
+        )
+        if merged_sources:
+            lineages.extend(
+                SimpleColumnLineage(
+                    source_table=source.table_name,
+                    source_column=column.name,
+                    output_column=output_column,
+                )
+                for source in merged_sources
             )
             continue
 
@@ -241,6 +402,8 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
 
     status = "success" if not diagnostics else "partial"
     confidence_level = "high" if status == "success" else "unknown"
+    if not (context is not None and context.allow_subquery):
+        lineages = _resolve_subquery_lineages_to_physical(lineages, tree, dialect)
     return _result(
         started=started,
         status=status,
@@ -253,13 +416,293 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     )
 
 
-def _table_references(tree: exp.Expression, dialect: str) -> list[TableReference]:
+def _resolve_set_operation_lineages(
+    tree: exp.Expression,
+    dialect: str,
+    metadata: dict[str, list[str]] | None,
+    context: LineageResolveContext | None,
+    started: float,
+) -> NameResolverResult:
+    branches = _set_operation_selects(tree)
+    if not branches:
+        return _result(
+            started=started,
+            status="partial",
+            confidence_level="unknown",
+            diagnostics=[Diagnostic(
+                code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                level="warning",
+                message="Set operation has no resolvable SELECT branches.",
+            )],
+            unsupported_features=["set_operation"],
+            stage_status="partial",
+        )
+
+    canonical_outputs = [
+        projection.alias_or_name or f"_col_{index + 1}"
+        for index, projection in enumerate(branches[0].selects)
+    ]
+    lineages: list[SimpleColumnLineage] = []
+    diagnostics: list[Diagnostic] = []
+    unsupported_features: list[str] = []
+    alias_to_table: dict[str, str] = {}
+    statuses: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for branch in branches:
+        branch_result = resolve_column_lineage_names(
+            branch.sql(dialect=dialect),
+            dialect,
+            tree=branch,
+            metadata=metadata,
+            context=context,
+        )
+        statuses.append(branch_result.status)
+        diagnostics.extend(branch_result.diagnostics)
+        unsupported_features.extend(branch_result.unsupported_features)
+        alias_to_table.update(branch_result.alias_to_table)
+
+        branch_outputs = [
+            projection.alias_or_name or f"_col_{index + 1}"
+            for index, projection in enumerate(branch.selects)
+        ]
+        output_positions = {
+            output.lower().strip("`"): index
+            for index, output in enumerate(branch_outputs)
+        }
+        for lineage in branch_result.lineages:
+            index = output_positions.get(lineage.output_column.lower().strip("`"))
+            if index is None or index >= len(canonical_outputs):
+                diagnostics.append(Diagnostic(
+                    code=diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                    level="warning",
+                    message=(
+                        f"Set-operation output {lineage.output_column} cannot be mapped "
+                        "to the first branch by position."
+                    ),
+                ))
+                continue
+            mapped = SimpleColumnLineage(
+                source_table=lineage.source_table,
+                source_column=lineage.source_column,
+                output_column=canonical_outputs[index],
+            )
+            key = (mapped.source_table, mapped.source_column, mapped.output_column)
+            if key not in seen:
+                seen.add(key)
+                lineages.append(mapped)
+
+    status = "failed" if statuses and all(item == "failed" for item in statuses) else (
+        "partial" if diagnostics or any(item != "success" for item in statuses) else "success"
+    )
+    return _result(
+        started=started,
+        status=status,
+        confidence_level="high" if status == "success" else "unknown",
+        lineages=lineages,
+        diagnostics=diagnostics,
+        unsupported_features=list(dict.fromkeys(unsupported_features)),
+        stage_status=status,
+        alias_to_table=alias_to_table,
+    )
+
+
+def _merged_join_column_sources(
+    column: exp.Column,
+    tables: list[TableReference],
+    metadata_cols: dict[str, set[str]],
+) -> list[TableReference]:
+    select = column.find_ancestor(exp.Select)
+    if select is None:
+        return []
+
+    by_alias = {
+        table.alias.lower().strip("`"): table
+        for table in tables
+    }
+    by_name = {
+        table.table_name.lower().strip("`"): table
+        for table in tables
+    }
+    left_sources: list[TableReference] = []
+    from_expression = get_from_expression(select)
+    if from_expression is not None:
+        source = _table_reference_for_expression(
+            from_expression.this,
+            by_alias,
+            by_name,
+        )
+        if source is not None:
+            left_sources.append(source)
+
+    merged: list[TableReference] = []
+    for join in select.args.get("joins") or []:
+        right_source = _table_reference_for_expression(
+            join.this,
+            by_alias,
+            by_name,
+        )
+        if right_source is None:
+            continue
+        using_names = {
+            identifier.name.lower().strip("`")
+            for identifier in join.args.get("using") or []
+            if identifier.name
+        }
+        column_key = column.name.lower().strip("`")
+        if column_key in using_names:
+            merged.extend([*left_sources, right_source])
+        elif (
+            str(join.args.get("method") or "").upper() == "NATURAL"
+            and _is_known_natural_join_column(
+                column_key,
+                left_sources,
+                right_source,
+                metadata_cols,
+            )
+        ):
+            merged.extend([
+                source
+                for source in [*left_sources, right_source]
+                if column_key in metadata_cols.get(source.table_name, set())
+            ])
+        left_sources.append(right_source)
+
+    result: list[TableReference] = []
+    seen: set[tuple[str, str]] = set()
+    for source in merged:
+        key = (source.table_name, source.alias)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(source)
+    return result
+
+
+def _table_reference_for_expression(
+    expression: exp.Expression,
+    by_alias: dict[str, TableReference],
+    by_name: dict[str, TableReference],
+) -> TableReference | None:
+    alias = expression.alias_or_name.lower().strip("`")
+    if alias in by_alias:
+        return by_alias[alias]
+    if not isinstance(expression, exp.Table):
+        return None
+    parts = [part for part in (expression.catalog, expression.db, expression.name) if part]
+    name = (".".join(parts) if parts else expression.name).lower().strip("`")
+    return by_name.get(name) or by_name.get(name.split(".")[-1])
+
+
+def _is_known_natural_join_column(
+    column_name: str,
+    left_sources: list[TableReference],
+    right_source: TableReference,
+    metadata_cols: dict[str, set[str]],
+) -> bool:
+    right_columns = metadata_cols.get(right_source.table_name)
+    if not right_columns or column_name not in right_columns:
+        return False
+    return any(
+        column_name in metadata_cols.get(source.table_name, set())
+        for source in left_sources
+    )
+
+
+def _set_operation_selects(tree: exp.Expression) -> list[exp.Select]:
+    if is_set_operation(tree):
+        return _set_operation_selects(tree.this) + _set_operation_selects(tree.expression)
+    if isinstance(tree, exp.Subquery):
+        return _set_operation_selects(tree.this)
+    return [tree] if isinstance(tree, exp.Select) else []
+
+
+def _table_references(tree: exp.Expression, dialect: str,
+                       is_cte_context: bool = False,
+                       context: LineageResolveContext | None = None) -> list[TableReference]:
+    if (
+        is_cte_context
+        or (
+            context is not None
+            and (context.has_cte or context.allow_cte or context.allow_subquery)
+        )
+    ):
+        cte_names = set(context.cte_names) if context else set()
+        return _table_references_from_final_select(tree, dialect, cte_names)
     tables: list[TableReference] = []
     for table in tree.find_all(exp.Table):
         table_name = _table_name_without_alias(table, dialect)
         tables.append(TableReference(table_name=table_name, alias=table.alias or table.name))
     return tables
 
+
+def _table_references_from_final_select(tree: exp.Expression, dialect: str,
+                                         cte_names: set[str] | None = None) -> list[TableReference]:
+    cte_names = cte_names or set()
+    tables: list[TableReference] = []
+    from_expr = get_from_expression(tree)
+    _extract_table_or_subquery(from_expr, tables, dialect, cte_names)
+    for join in tree.args.get("joins") or []:
+        _extract_table_or_subquery(join, tables, dialect, cte_names)
+    return tables
+
+
+def _extract_table_or_subquery(node, tables: list[TableReference], dialect: str,
+                                 cte_names: set[str] | None = None) -> None:
+    cte_names = cte_names or set()
+    if node is None:
+        return
+    target = getattr(node, "this", node)
+    if isinstance(target, exp.Table):
+        table_name = _table_name_without_alias(target, dialect)
+        alias = target.alias or target.name
+        if alias in cte_names or table_name.split(".")[-1] in cte_names:
+            tables.append(TableReference(table_name=table_name.split(".")[-1], alias=alias))
+            return
+        tables.append(TableReference(table_name=table_name, alias=alias))
+    elif isinstance(target, exp.Subquery):
+        alias = getattr(node, "alias_or_name", None) or getattr(target, "alias_or_name", None)
+        if alias:
+            tables.append(TableReference(table_name=f"subquery:{alias}", alias=alias))
+
+
+def _resolve_subquery_lineages_to_physical(
+    lineages: list[SimpleColumnLineage],
+    tree: exp.Expression | None,
+    dialect: str,
+) -> list[SimpleColumnLineage]:
+    if tree is None:
+        return lineages
+    subq_map: dict[str, str] = {}
+    for join in tree.args.get("joins") or []:
+        from_expr = get_from_expression(tree)
+        for expr in ([from_expr] if from_expr else []) + list(tree.args.get("joins") or []):
+            if expr is None:
+                continue
+            target = getattr(expr, "this", expr)
+            if isinstance(target, exp.Subquery):
+                alias = getattr(expr, "alias_or_name", None) or getattr(target, "alias_or_name", None)
+                if alias:
+                    tables = set()
+                    for t in target.find_all(exp.Table):
+                        parts = [p for p in [t.catalog, t.db, t.name] if p]
+                        name = ".".join(parts) if parts else t.name
+                        tables.add(name)
+                    if len(tables) == 1:
+                        subq_map[alias] = list(tables)[0]
+    resolved: list[SimpleColumnLineage] = []
+    for lineage in lineages:
+        st = lineage.source_table
+        if st.startswith("subquery:"):
+            subq_alias = st[len("subquery:"):]
+            if subq_alias in subq_map:
+                st = subq_map[subq_alias]
+        resolved.append(SimpleColumnLineage(
+            source_table=st,
+            source_column=lineage.source_column,
+            output_column=lineage.output_column,
+        ))
+    return resolved
 
 def _table_name_without_alias(table: exp.Table, dialect: str) -> str:
     parts = [part for part in [table.catalog, table.db, table.name] if part]
@@ -276,26 +719,428 @@ def _simple_column_from_select_item(select_item: exp.Expression) -> exp.Column |
     return None
 
 
-def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False) -> tuple[str, str, str] | None:
-    if tree.args.get("with_") is not None:
-        return (
-            diag_codes.UNSUPPORTED_COMPLEX_QUERY,
-            "CTE lineage is not supported in C04.",
-            "cte",
+def _resolve_lateral_sources(
+    column: exp.Column,
+    tables: list[TableReference],
+    metadata_cols: dict[str, set[str]],
+    diagnostics: list[Diagnostic],
+    before: exp.Lateral | None = None,
+) -> list[tuple[str, str]] | None:
+    """None allows physical resolution; an empty result claims the generated name."""
+    matches = matching_lateral_outputs(column, before=before)
+    if not matches:
+        return None
+    physical_collision = not column.table and any(
+        column.name.lower() in {name.lower() for name in metadata_cols.get(table.table_name, ())}
+        for table in tables
+    )
+    if len(matches) != 1 or physical_collision:
+        diagnostics.append(Diagnostic(
+            code=diag_codes.AMBIGUOUS_COLUMN, level="warning",
+            message=f"Column {column.sql()} matches multiple sources in LATERAL VIEW scope.",
+        ))
+        return []
+
+    lateral = matches[0]
+    dependencies = [
+        dep for dep in extract_lateral_view_dependencies(lateral)
+        if dep.output_column.lower() == column.name.lower()
+    ]
+    if not dependencies:
+        diagnostics.append(Diagnostic(
+            code=diag_codes.UNSUPPORTED_LATERAL_VIEW, level="warning",
+            message=f"LATERAL VIEW output {column.sql()} has no resolved input.",
+        ))
+        return []
+
+    aliases = {table.alias: table.table_name for table in tables}
+    sources = []
+    for dep in dependencies:
+        if dep.source_column is None:
+            continue  # e.g. a constant STACK slot
+        source = exp.column(dep.source_column, table=dep.source_table_alias)
+        prior = _resolve_lateral_sources(source, tables, metadata_cols, diagnostics, before=lateral)
+        if prior is not None:
+            sources.extend(prior)
+            continue
+        table, diagnostic = _resolve_source_table_for_column(source, tables, aliases, metadata_cols)
+        if diagnostic is not None:
+            diagnostics.append(diagnostic)
+        elif table is not None:
+            sources.append((table, source.name))
+    return list(dict.fromkeys(sources))
+
+
+def _expression_column_lineages(
+    select_item: exp.Expression,
+    outer_tables: list[TableReference],
+    metadata_cols: dict[str, set[str]],
+    dialect: str,
+) -> tuple[list[SimpleColumnLineage], list[Diagnostic]]:
+    output_column = select_item.alias_or_name
+    source_columns = _source_columns_in_expression(select_item)
+    lineages: list[SimpleColumnLineage] = []
+    diagnostics: list[Diagnostic] = []
+    seen_lineages: set[tuple[str, str, str]] = set()
+
+    for source_table in _rowset_aggregate_source_tables(
+        select_item,
+        outer_tables,
+        dialect,
+    ):
+        key = (source_table, "*", output_column)
+        if key in seen_lineages:
+            continue
+        seen_lineages.add(key)
+        lineages.append(
+            SimpleColumnLineage(
+                source_table=source_table,
+                source_column="*",
+                output_column=output_column,
+            )
         )
 
-    if any(isinstance(node, exp.Lateral) for node in tree.find_all(exp.Lateral)):
+    for column in source_columns:
+        table_scopes = _table_scopes_for_column(
+            column=column,
+            select_item=select_item,
+            outer_tables=outer_tables,
+            dialect=dialect,
+        )
+        owner = column.find_ancestor(exp.Select)
+        local_tables = (
+            outer_tables
+            if owner is None or owner is select_item.find_ancestor(exp.Select)
+            else _table_references_from_final_select(owner, dialect)
+        )
+        generated = _resolve_lateral_sources(column, local_tables, metadata_cols, diagnostics)
+        if generated is not None:
+            for source_table, source_column in generated:
+                key = (source_table, source_column, output_column)
+                if key not in seen_lineages:
+                    seen_lineages.add(key)
+                    lineages.append(SimpleColumnLineage(*key))
+            continue
+        source_table, diagnostic = _resolve_source_table_for_column_scopes(
+            column=column,
+            table_scopes=table_scopes,
+            metadata_cols=metadata_cols,
+        )
+        if diagnostic is not None:
+            diagnostics.append(diagnostic)
+            continue
+        if source_table is None:
+            continue
+
+        key = (source_table, column.name, output_column)
+        if key in seen_lineages:
+            continue
+        seen_lineages.add(key)
+        lineages.append(
+            SimpleColumnLineage(
+                source_table=source_table,
+                source_column=column.name,
+                output_column=output_column,
+            )
+        )
+
+    return lineages, diagnostics
+
+
+def _rowset_aggregate_source_tables(
+    select_item: exp.Expression,
+    outer_tables: list[TableReference],
+    dialect: str,
+) -> list[str]:
+    expression = (
+        select_item.this if isinstance(select_item, exp.Alias) else select_item
+    )
+    projection_select = select_item.find_ancestor(exp.Select)
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for aggregate in expression.find_all(exp.AggFunc):
+        columns = list(aggregate.find_all(exp.Column))
+        if any(not isinstance(column.this, exp.Star) for column in columns):
+            continue
+
+        owner_select = aggregate.find_ancestor(exp.Select)
+        tables = (
+            outer_tables
+            if owner_select is None or owner_select is projection_select
+            else _table_references_from_final_select(owner_select, dialect)
+        )
+        qualifiers = {
+            column.table.lower().strip("`")
+            for column in columns
+            if isinstance(column.this, exp.Star) and column.table
+        }
+        for table in tables:
+            if qualifiers and not _table_matches_qualifier(table, qualifiers):
+                continue
+            if table.table_name in seen:
+                continue
+            seen.add(table.table_name)
+            result.append(table.table_name)
+
+    return result
+
+
+def _table_matches_qualifier(
+    table: TableReference,
+    qualifiers: set[str],
+) -> bool:
+    names = {
+        table.alias.lower().strip("`"),
+        table.table_name.lower().strip("`"),
+        table.table_name.split(".")[-1].lower().strip("`"),
+    }
+    return bool(names & qualifiers)
+
+
+def _all_stars_are_aggregate_rowset(
+    select_item: exp.Expression,
+) -> bool:
+    stars = list(select_item.find_all(exp.Star))
+    return bool(stars) and all(
+        star.find_ancestor(exp.AggFunc) is not None for star in stars
+    )
+
+
+def _is_valid_source_free_query(tree: exp.Expression) -> bool:
+    selects = list(tree.find_all(exp.Select))
+    if isinstance(tree, exp.Select):
+        selects.insert(0, tree)
+    if not selects:
+        return False
+
+    for select in dict.fromkeys(selects):
+        if get_from_expression(select) is not None:
+            return False
+        if select.args.get("joins"):
+            return False
+        for projection in select.expressions:
+            if _source_columns_in_expression(projection):
+                return False
+            if (
+                projection.find(exp.Star) is not None
+                and not _all_stars_are_aggregate_rowset(projection)
+            ):
+                return False
+    return True
+
+
+def _source_columns_in_expression(select_item: exp.Expression) -> list[exp.Column]:
+    expression = select_item.this if isinstance(select_item, exp.Alias) else select_item
+    columns: list[exp.Column] = []
+    seen: set[tuple[int, str, str]] = set()
+
+    for column in source_columns_with_named_windows(expression):
+        if isinstance(column.this, exp.Star):
+            continue
+        owner_select = column.find_ancestor(exp.Select)
+        key = (id(owner_select), column.table, column.name)
+        if key in seen:
+            continue
+        seen.add(key)
+        columns.append(column)
+
+    return columns
+
+
+def _table_scopes_for_column(
+    column: exp.Column,
+    select_item: exp.Expression,
+    outer_tables: list[TableReference],
+    dialect: str,
+) -> list[list[TableReference]]:
+    projection_select = select_item.find_ancestor(exp.Select)
+    current_select = column.find_ancestor(exp.Select)
+    scopes: list[list[TableReference]] = []
+    seen_scopes: set[tuple[tuple[str, str], ...]] = set()
+
+    while current_select is not None and current_select is not projection_select:
+        scope = _table_references_from_final_select(current_select, dialect)
+        _append_table_scope(scopes, seen_scopes, scope)
+        current_select = current_select.find_ancestor(exp.Select)
+
+    _append_table_scope(scopes, seen_scopes, outer_tables)
+    return scopes
+
+
+def _append_table_scope(
+    scopes: list[list[TableReference]],
+    seen_scopes: set[tuple[tuple[str, str], ...]],
+    scope: list[TableReference],
+) -> None:
+    if not scope:
+        return
+    identity = tuple((table.table_name, table.alias) for table in scope)
+    if identity in seen_scopes:
+        return
+    seen_scopes.add(identity)
+    scopes.append(scope)
+
+
+def _resolve_source_table_for_column_scopes(
+    column: exp.Column,
+    table_scopes: list[list[TableReference]],
+    metadata_cols: dict[str, set[str]],
+) -> tuple[str | None, Diagnostic | None]:
+    if not table_scopes:
+        return None, None
+
+    if not column.table:
+        scope = table_scopes[0]
+        return _resolve_source_table_for_column(
+            column=column,
+            tables=scope,
+            alias_to_table={table.alias: table.table_name for table in scope},
+            metadata_cols=metadata_cols,
+        )
+
+    qualifier = column.table
+    for scope in table_scopes:
+        alias_to_table = {table.alias: table.table_name for table in scope}
+        table_names = {table.table_name for table in scope}
+        if qualifier not in alias_to_table and qualifier not in table_names:
+            continue
+        return _resolve_source_table_for_column(
+            column=column,
+            tables=scope,
+            alias_to_table=alias_to_table,
+            metadata_cols=metadata_cols,
+        )
+
+    return None, Diagnostic(
+        code=diag_codes.UNKNOWN_TABLE_ALIAS,
+        level="warning",
+        message=f"Table alias {qualifier} cannot be resolved from the FROM/JOIN tables.",
+    )
+
+
+def _resolve_source_table_for_column(
+    column: exp.Column,
+    tables: list[TableReference],
+    alias_to_table: dict[str, str],
+    metadata_cols: dict[str, set[str]],
+) -> tuple[str | None, Diagnostic | None]:
+    table_names = {table.table_name for table in tables}
+    qualifier = column.table
+
+    if qualifier:
+        source_table = alias_to_table.get(qualifier)
+        if source_table is None and qualifier in table_names:
+            source_table = qualifier
+        if source_table is None:
+            return None, Diagnostic(
+                code=diag_codes.UNKNOWN_TABLE_ALIAS,
+                level="warning",
+                message=f"Table alias {qualifier} cannot be resolved from the FROM/JOIN tables.",
+            )
+
+        cols_for_table = metadata_cols.get(source_table)
+        if cols_for_table and column.name not in cols_for_table:
+            return None, Diagnostic(
+                code=diag_codes.UNKNOWN_COLUMN,
+                level="warning",
+                message=f"Column {column.name} not found in table {source_table} metadata.",
+            )
+        return source_table, None
+
+    if len(tables) == 1:
+        source_table = tables[0].table_name
+        cols_for_table = metadata_cols.get(source_table)
+        if cols_for_table and column.name not in cols_for_table:
+            return None, Diagnostic(
+                code=diag_codes.UNKNOWN_COLUMN,
+                level="warning",
+                message=f"Column {column.name} not found in table {source_table} metadata.",
+            )
+        return source_table, None
+
+    physical_tables = [t for t in tables if not t.table_name.startswith("subquery:")]
+    if len(physical_tables) == 1:
+        source_table = physical_tables[0].table_name
+        cols_for_table = metadata_cols.get(source_table)
+        if cols_for_table and column.name not in cols_for_table:
+            return None, Diagnostic(
+                code=diag_codes.UNKNOWN_COLUMN,
+                level="warning",
+                message=f"Column {column.name} not found in table {source_table} metadata.",
+            )
+        return source_table, None
+
+    tables_without_meta = [table for table in tables if not metadata_cols.get(table.table_name)]
+    if tables_without_meta:
+        return None, Diagnostic(
+            code=diag_codes.AMBIGUOUS_COLUMN,
+            level="warning",
+            message=(
+                f"Column {column.name} is not qualified. Metadata missing for: "
+                f"{', '.join(table.table_name for table in tables_without_meta)}. "
+                f"Cannot determine ownership. Qualify with table alias."
+            ),
+        )
+
+    candidates = [table for table in tables if column.name in metadata_cols[table.table_name]]
+    if len(candidates) == 1:
+        return candidates[0].table_name, None
+    if len(candidates) > 1:
+        return None, Diagnostic(
+            code=diag_codes.AMBIGUOUS_COLUMN,
+            level="warning",
+            message=(
+                f"Column {column.name} exists in multiple tables: "
+                f"{', '.join(table.table_name for table in candidates)}. Qualify with table alias."
+            ),
+        )
+
+    return None, Diagnostic(
+        code=diag_codes.UNKNOWN_COLUMN,
+        level="warning",
+        message=(
+            f"Column {column.name} not found in metadata for any source table: "
+            f"{', '.join(table.table_name for table in tables)}."
+        ),
+    )
+
+
+def _detect_unsupported(tree: exp.Expression, has_metadata: bool = False,
+                         is_cte_context: bool = False,
+                         context: LineageResolveContext | None = None) -> tuple[str, str, str] | None:
+    skip_cte_check = is_cte_context or (context is not None and (context.allow_cte or context.has_cte))
+    skip_subq_check = is_cte_context or (context is not None and context.allow_subquery)
+
+    if not skip_cte_check:
+        if get_with_expression(tree) is not None:
+            return (
+                diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                "CTE lineage is not supported in C04.",
+                "cte",
+            )
+
+    if not skip_subq_check:
+        if any(isinstance(node, exp.Subquery) for node in tree.find_all(exp.Subquery)):
+            return (
+                diag_codes.UNSUPPORTED_COMPLEX_QUERY,
+                "Subquery lineage is not supported in C04.",
+                "subquery",
+            )
+
+    has_lateral = any(
+        isinstance(node, exp.Lateral)
+        and (
+            not isinstance(tree, exp.Select)
+            or node.find_ancestor(exp.Select) is tree
+        )
+        for node in tree.find_all(exp.Lateral)
+    )
+    if has_lateral and not extract_lateral_view_dependencies(tree):
         return (
             diag_codes.UNSUPPORTED_LATERAL_VIEW,
-            "lateral view / explode lineage is not supported in the current name resolver.",
+            "lateral view / explode output cannot be resolved to an input column.",
             "lateral_view",
-        )
-
-    if any(isinstance(node, exp.Subquery) for node in tree.find_all(exp.Subquery)):
-        return (
-            diag_codes.UNSUPPORTED_COMPLEX_QUERY,
-            "Subquery lineage is not supported in C04.",
-            "subquery",
         )
 
     if _has_any_star(tree.selects):

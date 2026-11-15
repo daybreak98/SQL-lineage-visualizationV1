@@ -1,5 +1,8 @@
 # SQL Lineage Workbench v1.4 Merged Final Frontend
 
+亚字段血缘解析集成在主工作台左侧导航。它可静态分析 Hive / Spark SQL、查阅 JSON 路径及原文证据，并按所选保护根生成只读评审。内置样例均为合成数据。参见[亚字段工作台使用指南](../SUBFIELD_WORKBENCH.md)。
+
+
 这是当前前端页面的完整可运行项目源码，不是单页 HTML，也不是纯文档。项目基于 **Vite + React + TypeScript + Tailwind CSS**，用于让 opencode + DeepSeek 按当前交付页面继续还原与工程化开发。
 
 ## 当前版本定位

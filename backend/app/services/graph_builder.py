@@ -3,10 +3,14 @@ from __future__ import annotations
 from app.domain.graph_view_model import GraphEdge, GraphModel, GraphNode
 from app.services.cte_structure_service import CteStructureResult
 from app.domain.lineage_model import SimpleColumnLineage
+from app.services.graph_layout_planner import GraphLayoutPlanner
 from app.services.table_structure_service import TableStructureResult
 
 
-def build_column_lineage_graph(lineages: list[SimpleColumnLineage]) -> GraphModel:
+def build_column_lineage_graph(
+    lineages: list[SimpleColumnLineage],
+    output_columns: list[str] | None = None,
+) -> GraphModel:
     graph = GraphModel(view_mode="column")
     seen_node_ids: set[str] = set()
     seen_edge_ids: set[str] = set()
@@ -65,6 +69,27 @@ def build_column_lineage_graph(lineages: list[SimpleColumnLineage]) -> GraphMode
             graph.edges.append(result_edge)
             seen_edge_ids.add(result_edge.id)
 
+    for output_column in output_columns or []:
+        target_id = f"output_column:{output_column}"
+        _add_node_once(
+            graph,
+            seen_node_ids,
+            GraphNode(
+                id=target_id,
+                node_type="output_column",
+                label=output_column,
+            ),
+        )
+        result_edge = GraphEdge(
+            id=f"edge:{target_id}->{result_id}",
+            source=target_id,
+            target=result_id,
+            edge_type="output_column_to_result",
+        )
+        if result_edge.id not in seen_edge_ids:
+            graph.edges.append(result_edge)
+            seen_edge_ids.add(result_edge.id)
+
     validate_graph(graph)
     return graph
 
@@ -97,7 +122,7 @@ def merge_graphs(view_mode: str, *graphs: GraphModel) -> GraphModel:
                 seen_edge_ids.add(edge.id)
 
     validate_graph(merged)
-    return merged
+    return GraphLayoutPlanner().plan_graph_model(merged)
 
 
 def _append_structure_graph(graph: GraphModel, nodes, edges) -> None:

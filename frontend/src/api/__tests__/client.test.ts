@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   analyzeSql,
+  analyzeSubfieldSql,
   commitMetadata,
+  convertSql,
   formatSql,
   getHealth,
   listMetadataColumns,
   listMetadataTables,
   previewMetadata,
+  uploadMetadataDb,
 } from '../client';
 
 const mockFetch = vi.fn();
@@ -17,6 +20,15 @@ beforeEach(() => {
 });
 
 describe('API Client', () => {
+  it('sends subfield review through the shared client and exposes validation detail', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ msg: '无效的保护槽' }] }), { status: 422 }));
+    const payload = { sql: ' SELECT 1 ', dialect: 'Spark', protected_outputs: [{ statement: 1, scope: '1:1', slot: 1 }] };
+    await expect(analyzeSubfieldSql(payload)).rejects.toThrow('无效的保护槽');
+    expect(mockFetch).toHaveBeenCalledWith('/api/sql/subfield-lineage', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ ...payload, dialect: 'spark' }),
+    }));
+  });
+
   // ── formatSql ──────────────────────────────────────────────
 
   describe('formatSql', () => {
@@ -47,14 +59,14 @@ describe('API Client', () => {
       );
     });
 
-    it('defaults to spark dialect for unrecognized dialect', async () => {
+    it('preserves unrecognized dialects so the backend can reject them', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
           Promise.resolve({
             status: 'success',
             formatted_sql: 'SELECT 1',
-            dialect: 'spark',
+            dialect: 'postgresql',
             diagnostics: [],
           }),
       });
@@ -64,7 +76,7 @@ describe('API Client', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         '/api/sql/format',
         expect.objectContaining({
-          body: JSON.stringify({ sql: 'select 1', dialect: 'spark' }),
+          body: JSON.stringify({ sql: 'select 1', dialect: 'postgresql' }),
         }),
       );
     });
@@ -87,6 +99,98 @@ describe('API Client', () => {
         '/api/sql/format',
         expect.objectContaining({
           body: JSON.stringify({ sql: 'select 1', dialect: 'hive' }),
+        }),
+      );
+    });
+  });
+
+  describe('convertSql', () => {
+    it('sends source and target dialects to convert endpoint', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'success',
+            source_dialect: 'hive',
+            target_dialect: 'spark',
+            converted_sql: 'SELECT 1',
+            elapsed_ms: 8,
+            diagnostics: [],
+          }),
+      });
+
+      const result = await convertSql('select 1', 'hive', 'spark');
+
+      expect(result.converted_sql).toBe('SELECT 1');
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/sql/convert',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sql: 'select 1',
+            source_dialect: 'hive',
+            target_dialect: 'spark',
+            pretty: true,
+          }),
+        }),
+      );
+    });
+
+    it('maps sr alias to starrocks', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'success',
+            source_dialect: 'starrocks',
+            target_dialect: 'hive',
+            converted_sql: 'SELECT 1',
+            elapsed_ms: 5,
+            diagnostics: [],
+          }),
+      });
+
+      await convertSql('select 1', 'sr', 'hive');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/sql/convert',
+        expect.objectContaining({
+          body: JSON.stringify({
+            sql: 'select 1',
+            source_dialect: 'starrocks',
+            target_dialect: 'hive',
+            pretty: true,
+          }),
+        }),
+      );
+    });
+
+    it('preserves unsupported dialect values for backend diagnostics', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'failed',
+            source_dialect: 'mysql',
+            target_dialect: 'hive',
+            converted_sql: null,
+            elapsed_ms: 1,
+            diagnostics: [{ code: 'UNSUPPORTED_DIALECT', level: 'error', message: 'Unsupported dialect' }],
+          }),
+      });
+
+      await convertSql('select 1', 'mysql', 'hive');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/sql/convert',
+        expect.objectContaining({
+          body: JSON.stringify({
+            sql: 'select 1',
+            source_dialect: 'mysql',
+            target_dialect: 'hive',
+            pretty: true,
+          }),
         }),
       );
     });
@@ -325,6 +429,37 @@ describe('API Client', () => {
         '/api/metadata/columns?table=my%20table',
         undefined,
       );
+    });
+  });
+
+  // ── uploadMetadataDb ───────────────────────────────────────
+
+  describe('uploadMetadataDb', () => {
+    it('posts multipart form data to /api/metadata/upload-db', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'success',
+            message: 'Metadata database replaced.',
+            table_count: 1,
+            column_count: 2,
+          }),
+      });
+
+      const file = new File(['dummy'], 'test.db', { type: 'application/octet-stream' });
+      const result = await uploadMetadataDb(file);
+
+      expect(result.status).toBe('success');
+      expect(result.table_count).toBe(1);
+      expect(result.column_count).toBe(2);
+
+      const [callUrl, callInit] = mockFetch.mock.calls[0];
+      expect(callUrl).toBe('/api/metadata/upload-db');
+      expect(callInit?.method).toBe('POST');
+      expect(callInit?.body).toBeInstanceOf(FormData);
+      const formData = callInit?.body as FormData;
+      expect(formData.get('file')).toBe(file);
     });
   });
 

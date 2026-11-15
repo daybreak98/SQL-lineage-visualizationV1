@@ -8,8 +8,6 @@ import {
   entityName,
   entityOf,
   deriveAttention,
-  fieldNodes,
-  fieldEdges,
   transitionRenderMode,
 } from '../selectors';
 import type { WorkbenchState } from '../../types/lineage';
@@ -33,6 +31,8 @@ function baseState(overrides: Partial<WorkbenchState> = {}): WorkbenchState {
     scope: 'all',
     large: false,
     positions: {},
+    collapsedRelationIds: {},
+    columnContainerMode: 'relation_rows',
     ...overrides,
   };
 }
@@ -50,8 +50,9 @@ describe('selectors', () => {
       const backendGraph = { nodes: [subqueryNodes[0]], edges: [subqueryEdges[0]] };
       const state = baseState({ graphViewMode: 'semantics', backendGraph });
       const graph = visibleGraph(state);
-      expect(graph.nodes).toEqual(backendGraph.nodes);
-      expect(graph.edges).toEqual(backendGraph.edges);
+      expect(graph.nodes.length).toBe(1);
+      expect(graph.nodes[0].entityId).toBe(subqueryNodes[0].entityId);
+      expect(graph.edges.length).toBe(1);
     });
 
     it('returns an empty graph for column view mode without backendGraph', () => {
@@ -281,9 +282,10 @@ describe('selectors', () => {
   });
 
   describe('transitionRenderMode', () => {
-    it('transitions to subquery_dependency on ANALYZE_SUCCESS', () => {
-      const result = transitionRenderMode('subquery_dependency', 'ANALYZE_SUCCESS');
-      expect(result.mode).toBe('subquery_dependency');
+    it('preserves current render mode on ANALYZE_SUCCESS', () => {
+      const result = transitionRenderMode('full_graph_preview', 'ANALYZE_SUCCESS');
+      expect(result.mode).toBe('full_graph_preview');
+      expect(result.description).toContain('analyze-success-preserve-view');
     });
 
     it('transitions to current_field_path on SELECT_OUTPUT_FIELD', () => {

@@ -1,5 +1,7 @@
 from app.domain import diagnostics_model as diag_codes
 from app.services.name_resolver import resolve_column_lineage_names
+from app.services.name_resolver import _table_references_from_final_select
+import sqlglot
 
 
 def test_join_aliases_resolve_to_physical_tables():
@@ -74,6 +76,19 @@ def test_cte_remains_out_of_scope_for_c04():
     assert "cte" in result.unsupported_features
 
 
+def test_final_select_source_reader_handles_sqlglot_from_key_in_with_query():
+    tree = sqlglot.parse_one(
+        "with metric_base as (select a from t) select a from metric_base",
+        dialect="hive",
+    )
+
+    tables = _table_references_from_final_select(tree, "hive", {"metric_base"})
+
+    assert [(table.table_name, table.alias) for table in tables] == [
+        ("metric_base", "metric_base")
+    ]
+
+
 # -- migrated from test_simple_lineage_service --
 
 
@@ -136,12 +151,26 @@ def test_unqualified_column_in_join_ambiguous():
     assert result.diagnostics[0].code == diag_codes.AMBIGUOUS_COLUMN
 
 
-def test_complex_expression_skipped_with_diagnostic():
-    result = resolve_column_lineage_names("select count(a) as cnt from t")
+def test_complex_expression_degrades_to_source_column_dependencies():
+    result = resolve_column_lineage_names(
+        "select "
+        "sum(order_amount) as gmv, "
+        "count(distinct order_no) as order_cnt, "
+        "sum(order_amount) / count(distinct order_no) as adr "
+        "from dwd_order_di"
+    )
 
-    assert result.status == "partial"
-    assert result.lineages == []
-    assert any(d.code == diag_codes.UNSUPPORTED_COMPLEX_QUERY for d in result.diagnostics)
+    assert result.status == "success"
+    assert result.diagnostics == []
+    assert [
+        (lineage.source_label, lineage.output_column)
+        for lineage in result.lineages
+    ] == [
+        ("dwd_order_di.order_amount", "gmv"),
+        ("dwd_order_di.order_no", "order_cnt"),
+        ("dwd_order_di.order_amount", "adr"),
+        ("dwd_order_di.order_no", "adr"),
+    ]
 
 
 def test_graph_builder_from_name_resolver():
