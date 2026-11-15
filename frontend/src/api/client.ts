@@ -11,10 +11,28 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = payload?.detail;
-    const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${response.status}`;
+    const message = typeof detail === 'string' ? detail
+      : Array.isArray(detail) ? detail.map((issue) => issue.msg).filter(Boolean).join('；') || `HTTP ${response.status}`
+      : detail?.message || `HTTP ${response.status}`;
     throw new Error(message);
   }
   return payload as T;
+}
+
+interface SubfieldAnalysisRequest {
+  sql: string;
+  dialect: string;
+  source_schemas?: Record<string, unknown>;
+  protected_outputs?: { statement: number; scope: string; slot: number }[];
+  candidate_keys?: { source: string; column: string; keys: string[] }[];
+}
+
+export function analyzeSubfieldSql(payload: SubfieldAnalysisRequest) {
+  return request<unknown>('/api/sql/subfield-lineage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ ...payload, dialect: normalizeDialect(payload.dialect) }),
+  });
 }
 
 export function formatSql(sql: string, dialect: string) {

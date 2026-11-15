@@ -11,7 +11,10 @@ from app.domain import diagnostics_model as diag_codes
 from app.domain.lineage_context import LineageResolveContext
 from app.models import Diagnostic
 from app.domain.lineage_model import SimpleColumnLineage
-from app.services.lateral_view_dependency_extractor import extract_lateral_view_dependencies
+from app.services.lateral_view_dependency_extractor import (
+    extract_lateral_view_dependencies,
+    matching_lateral_outputs,
+)
 from app.services.expression_dependency_extractor import source_columns_with_named_windows
 from app.services.relation_transform_dependency_extractor import (
     extract_pivot_star_dependencies,
@@ -128,11 +131,6 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
     diagnostics: list[Diagnostic] = []
     lineages: list[SimpleColumnLineage] = []
     unsupported_features: list[str] = []
-    lateral_by_output: dict[str, list] = {}
-    for dependency in extract_lateral_view_dependencies(tree):
-        lateral_by_output.setdefault(
-            dependency.output_column.lower().strip("`"), []
-        ).append(dependency)
     relation_transform_by_output: dict[tuple[str, str], list] = {}
     for dependency in extract_relation_transform_dependencies(tree):
         key = (
@@ -207,33 +205,17 @@ def resolve_column_lineage_names(sql: str, dialect: str = "spark",
                 ))
             continue
         lateral_sources = (
-            lateral_by_output.get(column.name.lower().strip("`"), [])
-            if column is not None
-            else []
+            _resolve_lateral_sources(column, tables, metadata_cols, diagnostics)
+            if column is not None else None
         )
-        if lateral_sources:
-            output_column = select_item.alias_or_name
-            for dependency in lateral_sources:
-                if dependency.source_column is None:
-                    continue
-                source_table = alias_to_table.get(dependency.source_table_alias or "")
-                if source_table is None and len(tables) == 1:
-                    source_table = tables[0].table_name
-                if source_table is None:
-                    diagnostics.append(Diagnostic(
-                        code=diag_codes.UNKNOWN_TABLE_ALIAS,
-                        level="warning",
-                        message=(
-                            "LATERAL VIEW source alias "
-                            f"{dependency.source_table_alias or '<unknown>'} cannot be resolved."
-                        ),
-                    ))
-                    continue
-                lineages.append(SimpleColumnLineage(
-                    source_table=source_table,
-                    source_column=dependency.source_column,
-                    output_column=output_column,
-                ))
+        if lateral_sources is not None:
+            lineages.extend(
+                SimpleColumnLineage(
+                    source_table=source_table, source_column=source_column,
+                    output_column=select_item.alias_or_name,
+                )
+                for source_table, source_column in lateral_sources
+            )
             continue
         if column is None:
             expression_lineages, expression_diagnostics = _expression_column_lineages(
@@ -737,6 +719,58 @@ def _simple_column_from_select_item(select_item: exp.Expression) -> exp.Column |
     return None
 
 
+def _resolve_lateral_sources(
+    column: exp.Column,
+    tables: list[TableReference],
+    metadata_cols: dict[str, set[str]],
+    diagnostics: list[Diagnostic],
+    before: exp.Lateral | None = None,
+) -> list[tuple[str, str]] | None:
+    """None allows physical resolution; an empty result claims the generated name."""
+    matches = matching_lateral_outputs(column, before=before)
+    if not matches:
+        return None
+    physical_collision = not column.table and any(
+        column.name.lower() in {name.lower() for name in metadata_cols.get(table.table_name, ())}
+        for table in tables
+    )
+    if len(matches) != 1 or physical_collision:
+        diagnostics.append(Diagnostic(
+            code=diag_codes.AMBIGUOUS_COLUMN, level="warning",
+            message=f"Column {column.sql()} matches multiple sources in LATERAL VIEW scope.",
+        ))
+        return []
+
+    lateral = matches[0]
+    dependencies = [
+        dep for dep in extract_lateral_view_dependencies(lateral)
+        if dep.output_column.lower() == column.name.lower()
+    ]
+    if not dependencies:
+        diagnostics.append(Diagnostic(
+            code=diag_codes.UNSUPPORTED_LATERAL_VIEW, level="warning",
+            message=f"LATERAL VIEW output {column.sql()} has no resolved input.",
+        ))
+        return []
+
+    aliases = {table.alias: table.table_name for table in tables}
+    sources = []
+    for dep in dependencies:
+        if dep.source_column is None:
+            continue  # e.g. a constant STACK slot
+        source = exp.column(dep.source_column, table=dep.source_table_alias)
+        prior = _resolve_lateral_sources(source, tables, metadata_cols, diagnostics, before=lateral)
+        if prior is not None:
+            sources.extend(prior)
+            continue
+        table, diagnostic = _resolve_source_table_for_column(source, tables, aliases, metadata_cols)
+        if diagnostic is not None:
+            diagnostics.append(diagnostic)
+        elif table is not None:
+            sources.append((table, source.name))
+    return list(dict.fromkeys(sources))
+
+
 def _expression_column_lineages(
     select_item: exp.Expression,
     outer_tables: list[TableReference],
@@ -773,6 +807,20 @@ def _expression_column_lineages(
             outer_tables=outer_tables,
             dialect=dialect,
         )
+        owner = column.find_ancestor(exp.Select)
+        local_tables = (
+            outer_tables
+            if owner is None or owner is select_item.find_ancestor(exp.Select)
+            else _table_references_from_final_select(owner, dialect)
+        )
+        generated = _resolve_lateral_sources(column, local_tables, metadata_cols, diagnostics)
+        if generated is not None:
+            for source_table, source_column in generated:
+                key = (source_table, source_column, output_column)
+                if key not in seen_lineages:
+                    seen_lineages.add(key)
+                    lineages.append(SimpleColumnLineage(*key))
+            continue
         source_table, diagnostic = _resolve_source_table_for_column_scopes(
             column=column,
             table_scopes=table_scopes,

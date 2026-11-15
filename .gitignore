@@ -25,6 +25,7 @@ Thumbs.db
 *.db-journal
 *.db-wal
 data/metadata.db
+/data/subfield-workbench-local/
 
 # env
 .env

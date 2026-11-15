@@ -14,6 +14,7 @@ MAX_CONCURRENT_SQL_REQUESTS = 1
 
 _SQL_PATHS = {
     "/api/sql/analyze",
+    "/api/sql/subfield-lineage",
     "/api/sql/convert",
     "/api/sql/format",
 }

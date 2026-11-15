@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import type { editor as monacoEditor } from 'monaco-editor';
 import type { SourceLocation, WorkbenchState } from '../types/lineage';
@@ -23,7 +23,15 @@ interface Props {
 }
 
 export function SqlEditorPanel({ sql, setSql, state, dialect, sourceLocations, onEditorMounted, onCursorEntityChange }: Props) {
-  const lines = sql.split('\n');
+  const [active, setActive] = useState<monacoEditor.IStandaloneCodeEditor | null>(null);
+  const [cursor, setCursor] = useState({ lineNumber: 1, column: 1 });
+  useEffect(() => {
+    if (!active) return;
+    const position = active.getPosition();
+    if (position) setCursor(position);
+    const subscription = active.onDidChangeCursorPosition(({ position: next }) => setCursor(next));
+    return () => subscription.dispose();
+  }, [active]);
   const sourceLocsRef = useRef(sourceLocations);
   sourceLocsRef.current = sourceLocations;
   const onCursorRef = useRef(onCursorEntityChange);
@@ -34,6 +42,7 @@ export function SqlEditorPanel({ sql, setSql, state, dialect, sourceLocations, o
   dialectRef.current = dialect;
 
   const handleMount = (editor: monacoEditor.IStandaloneCodeEditor, monaco: any) => {
+    setActive(editor);
     onMountedRef.current?.(editor);
     createCursorHandler(sourceLocsRef, onCursorRef)(editor);
     registerSqlLanguageProviders(monaco);
@@ -78,7 +87,7 @@ export function SqlEditorPanel({ sql, setSql, state, dialect, sourceLocations, o
         />
       </div>
       <div className="editor-foot">
-        <span>Ln {lines.length}, Col 1 | {dialect} | pageMode={state.pageMode}</span>
+        <span>Ln {cursor.lineNumber}, Col {cursor.column} | {dialect} | pageMode={state.pageMode}</span>
         <span>Ctrl+Enter to analyze</span>
       </div>
     </section>

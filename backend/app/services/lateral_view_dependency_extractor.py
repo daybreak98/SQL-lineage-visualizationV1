@@ -80,6 +80,29 @@ def extract_lateral_view_dependencies(tree: Any) -> list[LateralViewDependency]:
     return deps
 
 
+def matching_lateral_outputs(
+    column: exp.Column,
+    before: exp.Lateral | None = None,
+) -> list[exp.Lateral]:
+    """Find declarations in this SELECT, optionally before a generator input."""
+    select = (before if before is not None else column).find_ancestor(exp.Select)
+    if select is None or column.db or column.catalog:
+        return []
+    matches = []
+    for lateral in select.args.get("laterals") or ():
+        if lateral is before:
+            break
+        if not isinstance(lateral, exp.Lateral):
+            continue
+        if column.table and column.table.lower() != lateral.alias_or_name.lower():
+            continue
+        alias = lateral.args.get("alias")
+        if any(identifier.name.lower() == column.name.lower()
+               for identifier in getattr(alias, "columns", [])):
+            matches.append(lateral)
+    return matches
+
+
 def _positional_source_groups(
     expression: exp.Expression | None,
     output_count: int,
@@ -119,29 +142,28 @@ def _positional_source_groups(
                         groups[index].extend(value.find_all(exp.Column))
                 return groups
 
-    if (
+    stack_type = getattr(exp, "Stack", None)
+    if stack_type is not None and isinstance(expression, stack_type):
+        row_count_expression = expression.this
+        values = expression.expressions
+    elif (
         isinstance(expression, exp.Anonymous)
         and expression.name.lower() == "stack"
         and expression.expressions
     ):
-        row_count_expression = expression.expressions[0]
-        try:
-            row_count = int(row_count_expression.this)
-        except (AttributeError, TypeError, ValueError):
-            return None
-        values = expression.expressions[1:]
-        if row_count <= 0:
-            return None
-        inferred_width = (
-            (len(values) + row_count - 1) // row_count
-            if values
-            else 0
-        )
-        if inferred_width != output_count:
-            return None
-        groups = [[] for _ in range(output_count)]
-        for index, value in enumerate(values):
-            groups[index % output_count].extend(value.find_all(exp.Column))
-        return groups
+        row_count_expression, *values = expression.expressions
+    else:
+        return None
 
-    return None
+    if not isinstance(row_count_expression, exp.Literal) or not row_count_expression.is_int:
+        return None
+    row_count = int(row_count_expression.this)
+    if row_count <= 0:
+        return None
+    inferred_width = (len(values) + row_count - 1) // row_count
+    if inferred_width != output_count:
+        return None
+    groups = [[] for _ in range(output_count)]
+    for index, value in enumerate(values):
+        groups[index % output_count].extend(value.find_all(exp.Column))
+    return groups

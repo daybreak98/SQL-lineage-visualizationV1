@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from sqlglot import exp
 
 from app.domain.lineage_context import LineageResolveContext
 from app.models import (
@@ -21,6 +22,7 @@ from app.services.graph_builder import (
     merge_graphs,
 )
 from app.services.name_resolver import resolve_column_lineage_names
+from app.services.lateral_view_dependency_extractor import matching_lateral_outputs
 from app.services.expression_analyzer import ExpressionAnalyzer, metrics_to_semantics_report
 from app.services.cte_column_rollup_service import CteColumnRollupService
 from app.services.derived_relation_schema_builder import (
@@ -305,6 +307,21 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
         analyzer = ExpressionAnalyzer(dialect=analysis_dialect)
         metrics = analyzer.analyze_select(tree)
         if metrics:
+            # Raw expression text sees the generated alias, not a physical column.
+            # Reuse the resolved projection dependencies (after any CTE rollup).
+            generated_outputs = {
+                item.alias_or_name for item in tree.selects
+                if any(matching_lateral_outputs(column) for column in item.find_all(exp.Column))
+            }
+            for metric in metrics:
+                if metric.name in generated_outputs:
+                    metric.depends_on = list(dict.fromkeys(
+                        lineage.source_label for lineage in lineage_result.lineages
+                        if lineage.output_column == metric.name and lineage.source_column != "*"
+                    ))
+                    metric.confidence_level = (
+                        lineage_result.confidence_level if metric.depends_on else "unknown"
+                    )
             semantics_report_val = metrics_to_semantics_report(metrics)
             expr_nodes, expr_edges = build_expression_graph(
                 metrics=[m.to_dict() for m in metrics],

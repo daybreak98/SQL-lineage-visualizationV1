@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { editor as monacoEditor } from 'monaco-editor';
 import { analyzeSql, formatSql, getHealth, listMetadataTables } from './api/client';
 import { CanvasToolbar } from './components/CanvasToolbar';
 import { ConvertTopBar } from './components/ConvertTopBar';
 import { DetailPanel } from './components/DetailPanel';
 import { Drawer } from './components/Drawer';
-import { LeftNav } from './components/LeftNav';
+import { LeftNav, type WorkbenchView } from './components/LeftNav';
 import { LineageCanvas } from './components/LineageCanvas';
 import { revealInEditor } from './components/LineageCanvas/highlight';
 import { MetadataDialog } from './components/MetadataDialog';
@@ -28,12 +28,40 @@ import {
   initialWorkbenchState,
 } from './workbench/state';
 
+const SubfieldWorkbench = lazy(() => import('./subfield/SubfieldWorkbench'));
+
+function readView(): WorkbenchView {
+  const view = new URLSearchParams(window.location.search).get('view');
+  return view === 'subfield' || view === 'convert' ? view : 'workbench';
+}
+
 export default function App() {
   const [sql, setSqlValue] = useState(exampleSql);
   const [dialect, setDialect] = useState('spark');
-  const [activeNav, setActiveNav] = useState('workbench');
+  const [activeNav, setActiveNav] = useState(readView);
+  const [hasOpenedSubfield, setHasOpenedSubfield] = useState(() => readView() === 'subfield');
   const [state, setState] = useState<WorkbenchState>(initialWorkbenchState);
   const [metadataOpen, setMetadataOpen] = useState(false);
+
+  const activateView = useCallback((view: WorkbenchView) => {
+    setActiveNav(view);
+    if (view === 'subfield') setHasOpenedSubfield(true);
+  }, []);
+
+  const openView = (view: WorkbenchView) => {
+    if (view === activeNav) return;
+    const url = new URL(window.location.href);
+    if (view === 'workbench') url.searchParams.delete('view');
+    else url.searchParams.set('view', view);
+    window.history.pushState(null, '', url);
+    activateView(view);
+  };
+
+  useEffect(() => {
+    const syncView = () => activateView(readView());
+    window.addEventListener('popstate', syncView);
+    return () => window.removeEventListener('popstate', syncView);
+  }, [activateView]);
 
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
 
@@ -110,11 +138,19 @@ export default function App() {
   const setSplit = (split: number) => setState((s) => ({ ...s, split }));
   const workspaceStyle = useMemo(() => ({ ['--split' as string]: `${state.split}%` }), [state.split]);
   const isConvertPage = activeNav === 'convert';
+  const isSubfield = activeNav === 'subfield';
 
   return (
     <div className="app" style={workspaceStyle}>
       {isConvertPage ? (
         <ConvertTopBar backendStatus={state.backendStatus} />
+      ) : isSubfield ? (
+        <header className="topbar">
+          <div className="brand">
+            <div className="logo">JSON</div>
+            <h1 className="title">亚字段血缘解析</h1>
+          </div>
+        </header>
       ) : (
         <TopBar
           state={state}
@@ -157,16 +193,18 @@ export default function App() {
         />
       )}
       <div className="body">
-        <LeftNav
-          active={activeNav}
-          onOpen={(tab) => {
-            setActiveNav(tab);
-          }}
-        />
+        <LeftNav active={activeNav} onOpen={openView} />
         <main className="app-main">
+          {hasOpenedSubfield && (
+            <div className="subfield-pane" hidden={!isSubfield}>
+              <Suspense fallback={<p role="status">正在加载亚字段血缘解析…</p>}>
+                <SubfieldWorkbench />
+              </Suspense>
+            </div>
+          )}
           {isConvertPage ? (
             <DialectConvertPage />
-          ) : (
+          ) : !isSubfield && (
             <>
               <div className="workspace" id="workspace">
                 <SqlEditorPanel

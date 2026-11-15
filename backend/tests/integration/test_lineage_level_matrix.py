@@ -1072,3 +1072,49 @@ def test_ddl_only_script_returns_partial_empty_graph_instead_of_server_error():
         diagnostic["code"] == "UNSUPPORTED_SQL_STRUCTURE"
         for diagnostic in data["diagnostics_report"]["diagnostics"]
     )
+
+
+@pytest.mark.parametrize(("dialect", "element_ref"), [
+    ("hive", "e"),
+    ("hive", "items.e"),
+    ("spark", "e"),
+])
+def test_json_reparse_of_explode_output_uses_generator_input(dialect, element_ref):
+    response = client.post("/api/sql/analyze", json={
+        "sql": (
+            f"select get_json_object({element_ref}, '$.id') as id from src "
+            "lateral view explode(from_json(get_json_object(payload, '$.items'), "
+            "'array<string>')) items as e"
+        ),
+        "dialect": dialect,
+        "analysis_options": {"include_expression_lineage": True},
+    })
+    assert response.status_code == 200
+    data = response.json()
+    node_ids = {node["id"] for node in data["graph_view_model"]["nodes"]}
+    assert not {"physical_column:src.e", "physical_column:e", "physical_column:items.e"} & node_ids
+    assert ("physical_column:src.payload", "output_column:id", "column_lineage") in _edge_set(data)
+    assert ("physical_column:src.payload", "expression:id", "expression_dependency") in _edge_set(data)
+
+
+def test_physical_qualifier_does_not_bind_to_same_named_explode_output():
+    data = _analyze(
+        "select s.e as raw_e, items.e as generated_e from src s "
+        "lateral view explode(s.payload) items as e"
+    )
+    edges = _edge_set(data)
+    assert ("physical_column:src.e", "output_column:raw_e", "column_lineage") in edges
+    assert ("physical_column:src.payload", "output_column:generated_e", "column_lineage") in edges
+    assert ("physical_column:src.payload", "output_column:raw_e", "column_lineage") not in edges
+
+
+def test_ambiguous_explode_output_does_not_fall_back_to_a_physical_column():
+    data = _analyze(
+        "select upper(e) as label from src "
+        "lateral view explode(src.a) first_items as e "
+        "lateral view explode(src.b) second_items as e"
+    )
+    assert data["status"] == "partial"
+    assert data["confidence_level"] != "high"
+    assert any(d["code"] == "AMBIGUOUS_COLUMN" for d in data["diagnostics"])
+    assert not any(edge[1:] == ("output_column:label", "column_lineage") for edge in _edge_set(data))
