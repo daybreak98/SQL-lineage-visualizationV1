@@ -95,7 +95,12 @@ def _sql_word_matches(sql: str, dialect: str | None = None):
     # Token text may be decoded; only its original source span is editable.
     # Comments are not tokens. Quoted and prefixed literals fail the raw-span
     # word check even when represented by a string token type other than STRING.
-    for token in Dialect.get_or_raise(dialect).tokenize(sql):
+    tokens = Dialect.get_or_raise(dialect).tokenize(sql)
+    for index, token in enumerate(tokens):
+        # :name is a binding identifier even when its spelling is COUNT/SELECT.
+        # Keep colon-following names out of both case sampling and rewriting.
+        if index and tokens[index - 1].token_type == TokenType.COLON:
+            continue
         if token.token_type in {TokenType.STRING, TokenType.IDENTIFIER}:
             continue
         raw = sql[token.start:token.end + 1]
