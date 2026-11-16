@@ -119,6 +119,12 @@ def _validate_metadata_db(db_path: Path) -> tuple[bool, str, int, int]:
             for table, key in _REQUIRED_UNIQUE_KEYS.items():
                 if not _has_unique_key(conn, table, key):
                     return False, f"Missing required unique key: {table}({', '.join(key)})", 0, 0
+            # The existing counts do not touch this table, and SQLite backup
+            # can copy a corrupt data page without decoding it.
+            try:
+                conn.execute("SELECT metadata_version FROM metadata_imports NOT INDEXED LIMIT 1").fetchone()
+            except sqlite3.DatabaseError:
+                return False, "Unreadable metadata import history (metadata_imports).", 0, 0
             table_count = conn.execute("SELECT COUNT(*) FROM table_metadata").fetchone()[0]
             column_count = conn.execute("SELECT COUNT(*) FROM column_metadata").fetchone()[0]
             return True, "ok", table_count, column_count

@@ -139,6 +139,41 @@ def test_upload_db_without_unique_table_identity_preserves_queryable_live_db(tmp
     assert not live_db.with_suffix(".db.bak").exists()
 
 
+def test_upload_db_with_corrupt_import_history_preserves_live_db(tmp_path, monkeypatch):
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live_db = _make_valid_metadata_db(live_dir)
+    original = live_db.read_bytes()
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", live_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", live_db)
+
+    corrupt = _make_valid_metadata_db(tmp_path)
+    conn = sqlite3.connect(corrupt)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        root_page = conn.execute(
+            "SELECT rootpage FROM sqlite_schema WHERE name = 'metadata_imports'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert root_page > 1
+    with corrupt.open("r+b") as stream:
+        stream.seek((root_page - 1) * page_size)
+        stream.write(b"\0")  # Invalid B-tree page type; leave sqlite_schema unchanged.
+
+    with corrupt.open("rb") as stream:
+        upload = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("corrupt-history.db", stream, "application/octet-stream")},
+        )
+    assert upload.status_code == 200
+    data = upload.json()
+    assert (data["status"], live_db.read_bytes() == original) == ("failed", True)
+    assert "Unreadable metadata import history" in data["message"]
+    assert not live_db.with_suffix(".db.bak").exists()
+    assert client.get("/api/metadata/tables").json()["tables"][0]["table_name"] == "upload_table"
+
+
 def test_upload_non_sqlite_file_returns_failed(tmp_path, monkeypatch):
     real_db = tmp_path / "metadata.db"
     monkeypatch.setattr("app.db.sqlite.DB_PATH", real_db)
