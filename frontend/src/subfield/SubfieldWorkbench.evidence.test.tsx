@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { Blob as NodeBlob } from 'node:buffer';
 import { createHash, webcrypto } from 'node:crypto';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { analyzeSubfieldSql } from '../api/client';
 import SubfieldWorkbench from './SubfieldWorkbench';
@@ -76,6 +76,58 @@ it('clears pinned review evidence when the protected outputs change', async () =
   expect(inspector.querySelector('h3')).toHaveTextContent('item_id');
   fireEvent.click(first);
   expect(inspector.querySelector('h3')).toHaveTextContent('item_id');
+});
+
+it('lets the current analysis download proceed while invalidated review hashing settles', async () => {
+  let rejectOld!: (error: Error) => void;
+  let deliverCurrent!: (hash: ArrayBuffer) => void;
+  const oldDigest = new Promise<ArrayBuffer>((_, reject) => { rejectOld = reject; });
+  const currentDigest = new Promise<ArrayBuffer>(resolve => { deliverCurrent = resolve; });
+  const digest = vi.fn().mockReturnValueOnce(oldDigest).mockReturnValueOnce(currentDigest);
+  vi.stubGlobal('crypto', { randomUUID: () => webcrypto.randomUUID(), subtle: { digest } });
+  vi.stubGlobal('Blob', NodeBlob);
+  const downloads = vi.fn<(blob: NodeBlob) => string>(() => 'blob:test');
+  vi.stubGlobal('URL', new Proxy(URL, { get(target, key, receiver) {
+    if (key === 'createObjectURL') return downloads;
+    if (key === 'revokeObjectURL') return () => {};
+    return Reflect.get(target, key, receiver);
+  } }));
+  const clickFile = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  const mock = vi.mocked(analyzeSubfieldSql).mockImplementation(async request => ({
+    uses: [],
+    mappings: [{ statement: 1, scope: '1:1', slot: 1, root: true, output: 'item_id' }],
+    unknowns: [],
+    coverage: { parsed: true, dialect: request.dialect, sql_sha256: createHash('sha256').update(request.sql).digest('hex') },
+    ...(request.protected_outputs ? { review: { findings: [] } } : {}),
+  }));
+  render(<SubfieldWorkbench />);
+  fireEvent.click(screen.getByRole('button', { name: '试用示例' }));
+  const root = await screen.findByRole('checkbox', { name: /item_id/ });
+  fireEvent.click(root);
+  fireEvent.click(screen.getByRole('button', { name: '评审剪枝' }));
+  await screen.findByText(/将下载：剪枝评审证据/);
+  fireEvent.click(screen.getByText('分析来源与证据下载'));
+  const button = () => screen.getByRole('button', { name: '下载证据（JSON）' });
+  fireEvent.click(button());
+  await waitFor(() => expect(digest).toHaveBeenCalledTimes(1));
+
+  fireEvent.click(root);
+  expect(screen.getByText(/将下载：分析证据/)).toBeVisible();
+  expect(button()).toBeEnabled();
+  fireEvent.click(button());
+  await waitFor(() => expect(digest).toHaveBeenCalledTimes(2));
+  await act(async () => { rejectOld(new Error('旧评审哈希失败')); await oldDigest.catch(() => {}); });
+  expect(screen.queryByText('旧评审哈希失败')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '正在准备证据…' })).toBeDisabled();
+  expect(clickFile).not.toHaveBeenCalled();
+
+  deliverCurrent(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(mock.mock.calls[0][0].sql)));
+  await waitFor(() => expect(clickFile).toHaveBeenCalledTimes(1));
+  expect(downloads).toHaveBeenCalledTimes(1);
+  const bundle = JSON.parse(await downloads.mock.calls[0][0].text());
+  expect(bundle.request).toEqual(mock.mock.calls[0][0]);
+  expect(bundle.response).not.toHaveProperty('review');
+  expect(button()).toBeEnabled();
 });
 
 it('downloads the exact request and response and invalidates only the review when roots change', async () => {

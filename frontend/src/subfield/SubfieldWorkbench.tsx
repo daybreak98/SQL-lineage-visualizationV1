@@ -152,7 +152,7 @@ export default function SubfieldWorkbench() {
   const [reviewSnapshot, setReviewSnapshot] = useState<EvidenceSnapshot | null>(null);
   const [downloadError, setDownloadError] = useState('');
   const [downloading, setDownloading] = useState(false);
-  const writing = useRef(false);
+  const writing = useRef<number | null>(null);
   const inspectorEvidence = useRef<HTMLDivElement>(null);
   const paths = useMemo(() => pathTree(result), [result]);
   const tree = useMemo(() => treeOf(paths), [paths]);
@@ -177,7 +177,7 @@ export default function SubfieldWorkbench() {
   function reset() {
     revision.current++;
     setPositionIndex(null);
-    setAnalysisSnapshot(null); setReviewSnapshot(null); setDownloadError('');
+    setAnalysisSnapshot(null); setReviewSnapshot(null); setDownloadError(''); setDownloading(false);
     setResult(null); setSurface('table'); setSelected(null); setPicked(null); setQuery(''); setError('');
     setProtectedSlots([]); setReview(null); setReviewStatus('未指定保护点。'); setCandidate(false); setLocation(null);
   }
@@ -213,7 +213,7 @@ export default function SubfieldWorkbench() {
   }
   function invalidateReview() {
     revision.current++;
-    setReview(null); setReviewSnapshot(null); setDownloadError('');
+    setReview(null); setReviewSnapshot(null); setDownloadError(''); setDownloading(false);
     setPicked(value => value?.fromReview ? null : value);
   }
   async function runReview() {
@@ -241,9 +241,10 @@ export default function SubfieldWorkbench() {
   }
   const downloadSnapshot = reviewSnapshot ?? analysisSnapshot;
   async function downloadEvidence() {
-    if (!downloadSnapshot || pending.current || writing.current) return;
-    writing.current = true; setDownloading(true); setDownloadError('');
     const issued = revision.current;
+    // A hash from an invalidated revision may still be running.
+    if (!downloadSnapshot || pending.current || writing.current === issued) return;
+    writing.current = issued; setDownloading(true); setDownloadError('');
     try {
       const { buildEvidenceBundle } = await import('./evidenceBundle');
       const bundle = await buildEvidenceBundle(downloadSnapshot);
@@ -257,7 +258,10 @@ export default function SubfieldWorkbench() {
       finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
     } catch (exception) {
       if (issued === revision.current) setDownloadError(exception instanceof Error ? exception.message : '证据下载失败。');
-    } finally { writing.current = false; setDownloading(false); }
+    } finally {
+      if (writing.current === issued) writing.current = null;
+      if (issued === revision.current) setDownloading(false);
+    }
   }
   const evidence = useMemo(() => picked ?? (selected && projection ? { title: pathLabel(selected), rows: [
     ...selected.uses, ...projection.mappings.flatMap(row => [row, ...(Array.isArray(row.port_reads) ? row.port_reads : [])]),
