@@ -72,11 +72,13 @@ export function layeredGraphFacts(result) {
   }
   for (const [key, count] of pending) if (count) nodes.get(key).uncertain = true;
   const lastLane = [...nodes.values()].reduce((max, node) => Math.max(max, node.lane), 2);
-  result.unknowns.forEach((row, index) => add(`unknown:${index}`, lastLane + 1, row?.code || `未决 #${index + 1}`, row, true));
+  result.unknowns.forEach((row, index) => {
+    add(`unknown:${index}`, lastLane + 1, row?.code || `未决 #${index + 1}`, row, true).kind = 'unknown';
+  });
   return {
     nodes: [...nodes.values()].sort((a, b) => a.lane - b.lane),
     edges: edges.filter(edge => !pending.get(edge.from) && !pending.get(edge.to)),
     lanes: Array.from({ length: lastLane + (result.unknowns.length ? 2 : 1) }, (_, index) =>
-      index === 0 ? '源表' : index === 1 ? '源列' : index > lastLane ? '未决记录' : `投影端口 · 第 ${index - 1} 层`),
+      index === 0 ? '源关系' : index === 1 ? '源列' : index > lastLane ? '未决记录' : `投影端口 · 第 ${index - 1} 层`),
   };
 }

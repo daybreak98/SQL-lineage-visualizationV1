@@ -64,6 +64,11 @@ def test_upload_valid_db_returns_success(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.metadata_controller.DB_PATH", real_db)
 
     valid_db = _make_valid_metadata_db(tmp_path)
+    conn = sqlite3.connect(valid_db)
+    try:
+        conn.execute("ALTER TABLE table_metadata ADD COLUMN export_note TEXT")
+    finally:
+        conn.close()
 
     with open(valid_db, "rb") as f:
         resp = client.post(
@@ -77,6 +82,34 @@ def test_upload_valid_db_returns_success(tmp_path, monkeypatch):
     assert data["table_count"] == 1
     assert data["column_count"] == 2
     assert real_db.exists()
+
+
+def test_upload_db_missing_required_column_preserves_live_db(tmp_path, monkeypatch):
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live_db = _make_valid_metadata_db(live_dir)
+    original = live_db.read_bytes()
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", live_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", live_db)
+
+    incomplete = _make_valid_metadata_db(tmp_path)
+    conn = sqlite3.connect(incomplete)
+    try:
+        conn.execute("ALTER TABLE column_metadata DROP COLUMN ordinal")
+    finally:
+        conn.close()
+
+    with incomplete.open("rb") as stream:
+        resp = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("incomplete.db", stream, "application/octet-stream")},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert (data["status"], live_db.read_bytes() == original) == ("failed", True)
+    assert "column_metadata.ordinal" in data["message"]
+    assert not live_db.with_suffix(".db.bak").exists()
 
 
 def test_upload_non_sqlite_file_returns_failed(tmp_path, monkeypatch):

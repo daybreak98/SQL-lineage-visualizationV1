@@ -23,6 +23,7 @@ export function graphFacts(result) {
     const key = addNode(identity(['path', source, column, path, input?.path_tokens ?? null]), 1,
       `${column ?? '列未绑定'} · ${path ?? '路径未确定'}`, uncertain, row,
       path === '$' ? 2 : uncertain ? 1 : 0);
+    nodes.get(key).kind = 'path';
     addEdge(table, key, uncertain, row);
     return { key, uncertain };
   };
@@ -33,13 +34,15 @@ export function graphFacts(result) {
     const projection = addNode(identity(['projection', row.statement, row.scope, row.slot, index]), 2,
       [row.target, row.output || `槽位 ${row.slot ?? '?'}`, row.scope].filter(Boolean).join(' · '),
       uncertain, row, row.root === true ? 0 : 1);
+    nodes.get(projection).root = row.root === true;
     for (const input of Array.isArray(row.inputs) ? row.inputs : []) {
       const path = origin(input, row);
       addEdge(path.key, projection, uncertain || path.uncertain, row);
     }
   });
   for (const [index, row] of result.unknowns.entries()) {
-    addNode(identity(['unknown', index]), 3, row?.code || `未决 #${index + 1}`, true, row);
+    const key = addNode(identity(['unknown', index]), 3, row?.code || `未决 #${index + 1}`, true, row);
+    nodes.get(key).kind = 'unknown';
   }
   return { nodes: [...nodes.values()].sort((a, b) => a.lane - b.lane || a.priority - b.priority), edges: [...edges.values()] };
 }

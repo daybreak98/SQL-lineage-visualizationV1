@@ -21,6 +21,6 @@ export interface PathItem {
   input: { source: string; column: string; path: string; path_tokens?: {kind: string; value?: string | number}[] };
   uses: RecordRow[];
 }
-export interface GraphNode { key: string; lane: number; label: string; display?: string; root?: boolean; uncertain: boolean; evidence: Set<RecordRow> }
+export interface GraphNode { key: string; lane: number; label: string; display?: string; root?: boolean; kind?: 'path' | 'unknown'; uncertain: boolean; evidence: Set<RecordRow> }
 export interface GraphEdge { from: string; to: string; uncertain: boolean; evidence: Set<RecordRow> }
 export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; lanes?: string[] }

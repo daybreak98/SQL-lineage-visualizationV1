@@ -391,7 +391,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width:760px) { #fieldSearch::placeholder { color:transparent; } }
 @media (max-width:1279px) { .convert-diagnostics { grid-template-columns:1fr; } }
 @media (max-width:1120px) { .convert-toolbar { height:auto; padding:10px 12px; align-items:flex-start; flex-direction:column; } }
-@media (max-width:1023px) { .app::after { content:"Screen too narrow. v1.4 P0-Core standard workbench requires 1366px+ for visual regression."; position:fixed; inset:0; z-index:999; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.82); color:white; text-align:center; padding:24px; font-size:14px; line-height:22px; } }
+@media (max-width:1023px) {
+  .app::after { content:"Screen too narrow. v1.4 P0-Core standard workbench requires 1366px+ for visual regression."; position:fixed; inset:0; z-index:999; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.82); color:white; text-align:center; padding:24px; font-size:14px; line-height:22px; }
+  .leftnav { position:relative; z-index:1000; }
+}
 
 .btn-copy { height:28px; border:1px solid var(--line); border-radius:6px; padding:0 10px; font-size:11px; background:white; color:var(--slate-600); transition:background .12s,border-color .12s,color .12s; }
 .btn-copy:disabled { opacity:.48; cursor:not-allowed; }

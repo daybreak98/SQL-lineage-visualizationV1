@@ -67,21 +67,35 @@ class MetadataUploadResponse(BaseModel):
     column_count: int = 0
 
 
-_REQUIRED_TABLES = {"table_metadata", "column_metadata", "metadata_imports"}
+# Minimum column layout of the workbench metadata migration. Uploads may
+# contain additional columns or tables.
+_REQUIRED_COLUMNS = {
+    "metadata_imports": {"id", "metadata_version", "source_name", "imported_at", "table_count", "column_count"},
+    "table_metadata": {"id", "catalog", "schema_name", "table_name", "comment", "table_type", "import_id"},
+    "column_metadata": {"id", "table_id", "name", "data_type", "comment", "ordinal", "is_partition", "nullable"},
+}
 
 
 def _validate_metadata_db(db_path: Path) -> tuple[bool, str, int, int]:
-    """Open db, check required tables exist. Returns (ok, message, table_count, column_count)."""
+    """Check the staged upload's required tables and columns before touching the live DB."""
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
         try:
             rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
             table_names = {row[0] for row in rows}
-            missing = _REQUIRED_TABLES - table_names
+            missing = _REQUIRED_COLUMNS.keys() - table_names
             if missing:
                 return False, f"Missing required tables: {', '.join(sorted(missing))}", 0, 0
+            missing_columns = []
+            for table, required in _REQUIRED_COLUMNS.items():
+                columns = {row[0].lower() for row in conn.execute(
+                    "SELECT name FROM pragma_table_info(?)", (table,)
+                )}
+                missing_columns.extend(f"{table}.{name}" for name in sorted(required - columns))
+            if missing_columns:
+                return False, f"Missing required columns: {', '.join(missing_columns)}", 0, 0
             table_count = conn.execute("SELECT COUNT(*) FROM table_metadata").fetchone()[0]
             column_count = conn.execute("SELECT COUNT(*) FROM column_metadata").fetchone()[0]
             return True, "ok", table_count, column_count

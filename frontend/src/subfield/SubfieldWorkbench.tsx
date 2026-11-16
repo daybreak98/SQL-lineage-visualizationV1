@@ -35,16 +35,27 @@ const pathLabel = ({ input }: PathItem) => `${input.source} · ${input.column} �
 
 interface Branch { label: string; children: Map<string, Branch>; paths: PathItem[] }
 const branch = (label: string): Branch => ({ label, children: new Map(), paths: [] });
+function tokenLabel({ kind, value }: NonNullable<PathItem['input']['path_tokens']>[number]) {
+  if (kind === 'key') return value === '' ? '空键（""）' : String(value ?? '键名未提供');
+  if (kind === 'index') return `[${value ?? '?'}]`;
+  if (kind === 'any_element') return '[*]';
+  if (kind === 'decode') return '解码';
+  if (kind === 'parse') return '解析';
+  return value === undefined ? kind : `${kind}：${value}`;
+}
 function treeOf(paths: PathItem[]) {
   const root = branch('');
   for (const item of paths) {
-    const segments = [item.input.source, item.input.column, ...(item.input.path_tokens ?? []).map(token =>
-      JSON.stringify([token.kind, token.value]))];
+    const { source, column, path_tokens: tokens } = item.input;
+    const segments = [
+      [source, source], [column, column],
+      ...(tokens ?? []).map(token => [JSON.stringify([token.kind, token.value]), tokenLabel(token)]),
+    ];
     let parent = root;
-    segments.forEach((key, i) => {
-      if (!parent.children.has(key)) parent.children.set(key, branch(i < 2 ? key : key.slice(1, -1).replace(/^"key",/, '')));
+    for (const [key, label] of segments) {
+      if (!parent.children.has(key)) parent.children.set(key, branch(label));
       parent = parent.children.get(key)!;
-    });
+    }
     parent.paths.push(item);
   }
   return root;
@@ -55,18 +66,22 @@ function contains(node: Branch, id?: string): boolean {
 const PathTree = memo(function PathTree({ root, active, select }: {
   root: Branch; active?: string; select: (item: PathItem) => void;
 }) {
-  function render(node: Branch) {
-    return <details key={node.label} open={contains(node, active) || undefined}><summary>{node.label}</summary>
+  function pathButton(item: PathItem) {
+    return <button type="button" className="json-tree-row" key={item.id}
+      aria-pressed={item.id === active} onClick={() => select(item)}>{item.input.path === '$' ? '整列（$）' : item.input.path}</button>;
+  }
+  function render([key, node]: [string, Branch], depth: number) {
+    if (depth >= 2 && !node.children.size && node.paths.length === 1) return pathButton(node.paths[0]);
+    return <details key={key} open={contains(node, active) || undefined}><summary>{node.label}</summary>
       <div className="json-tree-children">
-        {node.paths.map(item => <button type="button" className="json-tree-row" key={item.id}
-          aria-pressed={item.id === active} onClick={() => select(item)}>{item.input.path}</button>)}
-        {[...node.children.values()].map(render)}
+        {node.paths.map(pathButton)}
+        {[...node.children.entries()].map(child => render(child, depth + 1))}
       </div>
     </details>;
   }
   return <section className="json-tree-pane" aria-label="JSON 枝干树">
     <div className="json-pane-head"><h2>JSON 枝干树</h2></div>
-    {root.children.size ? [...root.children.values()].map(render) : <p className="muted">没有已绑定的源路径。</p>}
+    {root.children.size ? [...root.children.entries()].map(child => render(child, 0)) : <p className="muted">没有已绑定的源路径。</p>}
   </section>;
 });
 
@@ -162,7 +177,7 @@ export default function SubfieldWorkbench() {
     revision.current++;
     setPositionIndex(null);
     setAnalysisSnapshot(null); setReviewSnapshot(null); setDownloadError('');
-    setResult(null); setSelected(null); setPicked(null); setQuery(''); setError('');
+    setResult(null); setSurface('table'); setSelected(null); setPicked(null); setQuery(''); setError('');
     setProtectedSlots([]); setReview(null); setReviewStatus('未指定保护点。'); setCandidate(false); setLocation(null);
   }
   async function requestSnapshot(request: Request, origin: EvidenceOrigin): Promise<EvidenceSnapshot> {
@@ -265,50 +280,46 @@ export default function SubfieldWorkbench() {
   return <div className="subfield-app">
     <section className="subfield-main" aria-label="JSON 血缘工作台">
       <form id="analysis" onSubmit={event => { event.preventDefault(); void analyze(); }}>
-        <div className="actions"><button className="btn" type="button" aria-expanded={editorOpen} onClick={() => setEditorOpen(open => !open)}>编辑 SQL 原文</button>
-          <label>方言 <select className="select" value={dialect} disabled={busy} onChange={event => { reset(); setDialect(event.target.value as Dialect); }}>
+        <div className="analysis-toolbar">
+          <div className="actions analysis-primary">
+            <button className="btn-primary" type="submit" disabled={busy}>分析 SQL</button>
+            <button className="btn" type="button" aria-expanded={editorOpen} onClick={() => setEditorOpen(open => !open)}>编辑 SQL 原文</button>
+            <button className="btn" type="button" disabled={busy} onClick={() => loadExample(examples[0], true)}>试用示例</button>
+            <label className="analysis-field">方言 <select className="select" value={dialect} disabled={busy} onChange={event => { reset(); setDialect(event.target.value as Dialect); }}>
             <option value="spark">Spark</option><option value="hive">Hive</option>
-          </select></label>
-          <button className="btn-primary" type="submit" disabled={busy}>分析 SQL</button>
-          <button className="btn" type="button" disabled={busy} onClick={() => loadExample(examples[0], true)}>试用示例</button>
-          <label>加载示例 <select className="select" disabled={busy} value="" onChange={event => loadExample(examples[Number(event.target.value)])}>
-            <option value="" disabled>选择示例</option>{examples.map((example, i) => <option key={example.name} value={i}>{example.name}</option>)}
-          </select></label>
-          <span role="status">{busy ? '处理中…' : result ? `服务结果 · ${result.uses.length} 个使用点` : '等待分析'}</span>
-          {result && <span className="pill">{status} · {result.coverage?.complete === true ? '服务报告覆盖完整' : '覆盖未确认'} · 未决 {result.unknowns.length}</span>}
+            </select></label>
+          </div>
+          <details className="analysis-options">
+            <summary>示例与分析选项{schemas.trim() ? ' · 已填写源列清单' : ''}</summary>
+            <div className="analysis-options-body">
+              <label className="analysis-field">加载示例 <select className="select" disabled={busy} value="" onChange={event => loadExample(examples[Number(event.target.value)])}>
+                <option value="" disabled>选择示例</option>{examples.map((example, i) => <option key={example.name} value={i}>{example.name}</option>)}
+              </select></label>
+              {example && <p className="muted">{example.note}</p>}
+              <details className="schema-options"><summary>源列清单（可选）</summary>
+                <p className="muted">由调用方声明，未经生产数据目录核验。</p>
+                <textarea aria-label="源列清单 JSON" value={schemas} disabled={busy} onChange={event => { reset(); setSchemas(event.target.value); }} />
+              </details>
+            </div>
+          </details>
         </div>
-        <details className="schema-options"><summary>源列清单（可选）</summary>
-          <p className="muted">由调用方声明，未经生产数据目录核验。</p>
-          <textarea aria-label="源列清单 JSON" value={schemas} disabled={busy} onChange={event => { reset(); setSchemas(event.target.value); }} />
-        </details>
-        {example && <p className="muted">{example.note}</p>}{error && <p id="error" role="alert">{error}</p>}
+        {error && <p id="error" role="alert">{error}</p>}
       </form>
-      {result && downloadSnapshot && <section className="evidence-download" aria-label="本次分析和证据下载">
-        <p>{scope}{declared && <> · 原件坐标未核对</>}</p>
-        {result.coverage?.partial && <div>
-          <p>已恢复语句：{result.coverage.recovered ?? '服务未提供'}</p>
-          {failedStatements.map((row, i) => <p key={i}>失败语句 {typeof row.statement === 'number' ? row.statement : '编号未提供'}：
-            {row.position && positionIndex?.valid(row.position) ? `提交 SQL 代码点 [${row.position.start}, ${row.position.end})` : '位置未记录'}</p>)}
-        </div>}
-        <div className="actions">
-          <button type="button" disabled={busy || downloading} onClick={() => void downloadEvidence()}>
-            {downloading ? '正在准备证据…' : '下载证据（JSON）'}
-          </button>
-          <p>将下载：{reviewSnapshot ? `剪枝评审证据 · 保护输出：${reviewSnapshot.request.protected_outputs?.map(port =>
-            `${port.statement}/${port.scope}/${port.slot}`).join('、')}` : '分析证据'}。含提交 SQL，仅保存到本机。</p>
-          {!reviewSnapshot && protectedSlots.length > 0 && <p className="muted">所选输出尚无当前评审包。</p>}
-        </div>
-        {downloadError && <p role="alert">{downloadError}</p>}
-      </section>}
       <div className="workbench shell">
         <section className="work" aria-label="血缘画布">
           {editor}
-          <div className="toolbar">
+          <div className="subfield-canvas-toolbar">
+            <span className="subfield-tool-title">血缘画布</span>
             <div className="seg canvas-mode">{(['table', 'json'] as const).map(mode =>
-              <button type="button" key={mode} aria-pressed={surface === mode} onClick={() => { setSurface(mode); setPicked(null); }}>{mode === 'table' ? '表血缘' : 'JSON 排查'}</button>
+              <button type="button" key={mode} disabled={busy} aria-pressed={surface === mode} onClick={() => {
+                const first = mode === 'json' && !selected && (paths.find(path => path.input.path !== '$') ?? paths[0]);
+                if (first) select(first);
+                else { setSurface(mode); setPicked(null); }
+              }}>{mode === 'table' ? '表血缘' : 'JSON 排查'}</button>
             )}</div>
-            <div className="search-wrap">
-              <input id="canvas-search" type="search" aria-label="查找表、列或路径" placeholder="查找表、列或路径" value={query}
+            <div className="subfield-search">
+              <input id="canvas-search" type="search" aria-label="查找表、列或路径"
+                disabled={!paths.length} placeholder={!result ? '请先分析 SQL' : paths.length ? '查找表、列或路径' : '没有可搜索的路径'} value={query}
                 onChange={event => setQuery(event.target.value)} onKeyDown={event => {
                   if (event.key === 'Escape') setQuery('');
                   if (event.key === 'Enter' && hits.length) select(hits[0]);
@@ -331,23 +342,27 @@ export default function SubfieldWorkbench() {
               </div>}
             </div>
           </div>
-          <div className={surface === 'json' ? 'json-canvas' : undefined}>
+          <div className={surface === 'json' ? 'graph-layout json-canvas' : 'graph-layout'}>
             {surface === 'json' && <PathTree root={tree} active={selected?.id} select={select} />}
             <div className="json-flow-pane">
               {surface === 'json' && <div id="json-flow-head" className="json-pane-head">
-                <h2 id="json-focus-title">{selected?.input.path ?? '从左侧选择路径'}</h2>
-                {selected && <><p id="json-focus">{selected.input.source} · {selected.input.column}</p>
-                  <button id="clear-path" type="button" onClick={() => { setSelected(null); setPicked(null); }}>清除路径</button></>}
+                <div>
+                  <h2 id="json-focus-title">{selected?.input.path ?? '从路径树选择路径'}</h2>
+                  {selected && <p id="json-focus">{selected.input.source} · {selected.input.column}</p>}
+                </div>
+                {selected && <button className="btn" id="clear-path" type="button" onClick={() => { setSelected(null); setPicked(null); }}>清除路径</button>}
               </div>}
-              <ReactGraph key={surface + (selected?.id ?? '')} graph={surface === 'json' ? focusedGraph : fullGraph} onPick={onPick} />
+              <ReactGraph key={surface + (selected?.id ?? '')} graph={surface === 'json' ? focusedGraph : fullGraph}
+                emptyMessage={busy ? '正在分析 SQL…' : !result ? '分析 SQL 后查看血缘。'
+                  : paths.length ? '选择路径后查看下游链路。' : '本次分析没有已绑定的源路径。'} onPick={onPick} />
             </div>
           </div>
-          <p className="canvas-bottom">滚动查看全图 · 未决端口止步 · 点节点或连线查看证据</p>
+          <p className="canvas-bottom">滚动查看全图 · 虚线表示未决 · 点节点或连线查看证据</p>
         </section>
         <aside className="inspector" aria-label="血缘详情">
           <div className="ins-head"><h2>血缘详情</h2></div>
           <div className="ins-scroll">
-            <div className="detail-body" ref={inspectorEvidence} tabIndex={-1}>
+            <div className="subfield-detail-body" ref={inspectorEvidence} tabIndex={-1}>
               {evidence ? <><h3>{evidence.title}</h3>
                 <Evidence key={evidence.title} rows={evidence.rows} index={positionIndex} declared={declared} locate={locateEvidence} /></> : <p className="muted">选择路径、节点或连线查看服务证据。</p>}
               {result && <Raw title="本次提交 SQL" value={submitted} />}
@@ -356,9 +371,28 @@ export default function SubfieldWorkbench() {
                 <Raw title="查看原始分析 JSON" value={result} />
               </details>}
             </div>
+            {result && downloadSnapshot && <details className="evidence-download">
+              <summary>分析来源与证据下载</summary>
+              <div className="evidence-download-body">
+                <p>{scope}{declared && <> · 原件坐标未核对</>}</p>
+                {result.coverage?.partial && <div>
+                  <p>已恢复语句：{result.coverage.recovered ?? '服务未提供'}</p>
+                  {failedStatements.map((row, i) => <p key={i}>失败语句 {typeof row.statement === 'number' ? row.statement : '编号未提供'}：
+                    {row.position && positionIndex?.valid(row.position) ? `提交 SQL 代码点 [${row.position.start}, ${row.position.end})` : '位置未记录'}</p>)}
+                </div>}
+                <button className="btn" type="button" disabled={busy || downloading} onClick={() => void downloadEvidence()}>
+                  {downloading ? '正在准备证据…' : '下载证据（JSON）'}
+                </button>
+                <p>将下载：{reviewSnapshot ? `剪枝评审证据 · 保护输出：${reviewSnapshot.request.protected_outputs?.map(port =>
+                  `${port.statement}/${port.scope}/${port.slot}`).join('、')}` : '分析证据'}。含提交 SQL，仅保存到本机。</p>
+                {!reviewSnapshot && protectedSlots.length > 0 && <p className="muted">所选输出尚无当前评审包。</p>}
+                {downloadError && <p role="alert">{downloadError}</p>}
+              </div>
+            </details>}
             {result && <section className="reports">
               <h2>剪枝评审</h2>
               <fieldset id="review-controls" disabled={busy}><legend>选择要保护的根输出</legend>
+                {roots.length > 0 && <p className="muted">编号顺序：语句 / 作用域 / 槽位</p>}
                 <div id="protected-options">{roots.map((root, i) => <label key={i}>
                   <input type="checkbox" checked={protectedSlots.includes(i)} onChange={event => {
                     setProtectedSlots(event.target.checked ? [...protectedSlots, i] : protectedSlots.filter(slot => slot !== i));
@@ -366,7 +400,7 @@ export default function SubfieldWorkbench() {
                   }} /> {root.output ?? '未命名'} · {root.statement}/{root.scope}/{root.slot}
                 </label>)}</div>
                 {!roots.length && <p>服务未提供可选根输出。</p>}
-                {submitted === layeredSQL && dialect === 'spark' && <label><input type="checkbox" checked={candidate}
+                {submitted === layeredSQL && dialect === 'spark' && <label className="review-candidate"><input type="checkbox" checked={candidate}
                   onChange={event => { setCandidate(event.target.checked); invalidateReview(); setReviewStatus('评审选项已更新；尚未评审。'); }} /> 验证示例键（含人工假设键）</label>}
                 <button type="button" disabled={!roots.length} onClick={() => void runReview()}>评审剪枝</button>
               </fieldset>
@@ -378,6 +412,13 @@ export default function SubfieldWorkbench() {
           </div>
         </aside>
       </div>
+      <footer className="subfield-status">
+        <span className={`pill ${busy ? 'running' : ''}`} role="status">{busy ? '处理中…' : result ? `服务结果 · ${result.uses.length} 个使用点` : '等待分析'}</span>
+        {result && <>
+          <span>{declared ? '归档摘录 · 仅此片段' : analysisSnapshot?.origin.kind === 'CONSTRUCTED' ? '构造示例' : '手动提交'}</span>
+          <span>{status}</span><span>{result.coverage?.complete === true ? '服务报告覆盖完整' : '覆盖未确认'}</span><span>未决 {result.unknowns.length}</span>
+        </>}
+      </footer>
     </section>
   </div>;
 }

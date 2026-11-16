@@ -9,7 +9,37 @@ import { buildEvidenceBundle } from './evidenceBundle';
 import { textMapSQL } from './workbench.mjs';
 
 vi.mock('../api/client', () => ({ analyzeSubfieldSql: vi.fn() }));
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { vi.mocked(analyzeSubfieldSql).mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it('returns to the full table graph after reanalyzing a selected JSON path', async () => {
+  const input = { source: 'demo.events', column: 'payload', path: '$.item_id',
+    path_tokens: [{ kind: 'key', value: 'item_id' }] };
+  const whole = { ...input, path: '$', path_tokens: [] };
+  const mock = vi.mocked(analyzeSubfieldSql).mockResolvedValue({
+    uses: [input, whole],
+    mappings: [input, whole].map((path, i) => ({
+      statement: 1, scope: '1:1', slot: i + 1, root: true, output: i === 0 ? 'item_id' : 'raw_payload',
+      terminal_binding: 'SQL_NAMED_RELATION_COLUMN', inputs: [path],
+    })),
+    unknowns: [],
+  });
+  const { container } = render(<SubfieldWorkbench />);
+  const tryExample = screen.getByRole('button', { name: '试用示例' });
+  fireEvent.click(tryExample);
+  await screen.findByText('服务结果 · 2 个使用点');
+  const search = screen.getByRole('searchbox');
+  fireEvent.change(search, { target: { value: 'item_id' } });
+  fireEvent.keyDown(search, { key: 'Enter' });
+  expect(screen.getByRole('button', { name: 'JSON 排查' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: '整列（$）' })).toBeVisible();
+  expect(container.querySelectorAll('.canvas-node')).toHaveLength(3);
+
+  fireEvent.click(tryExample);
+  await screen.findByText('服务结果 · 2 个使用点');
+  expect(mock).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button', { name: '表血缘' })).toHaveAttribute('aria-pressed', 'true');
+  expect(container.querySelectorAll('.canvas-node')).toHaveLength(4);
+});
 
 it('downloads the exact request and response and invalidates only the review when roots change', async () => {
   vi.stubGlobal('crypto', webcrypto);
@@ -30,10 +60,16 @@ it('downloads the exact request and response and invalidates only the review whe
     ...(request.protected_outputs ? { review: { findings: [] } } : {}),
   }));
   render(<SubfieldWorkbench />);
+  fireEvent.click(screen.getByText('示例与分析选项'));
   const select = screen.getByLabelText('加载示例') as HTMLSelectElement;
   fireEvent.change(select, { target: { value: screen.getByRole<HTMLOptionElement>('option', { name: '文本 Map 查键示例' }).value } });
   fireEvent.click(screen.getByRole('button', { name: '分析 SQL' }));
-  expect(await screen.findByText('合成示例 · 仅分析本次提交 SQL')).toBeInTheDocument();
+  expect(await screen.findByText('构造示例')).toBeVisible();
+  const downloadSummary = screen.getByText('分析来源与证据下载');
+  expect(downloadSummary.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(downloadSummary);
+  expect(downloadSummary.closest('details')).toHaveAttribute('open');
+  expect(screen.getByText('合成示例 · 仅分析本次提交 SQL')).toBeVisible();
   const download = () => fireEvent.click(screen.getByRole('button', { name: '下载证据（JSON）' }));
   download();
   await waitFor(() => expect(downloads).toHaveBeenCalledTimes(1));

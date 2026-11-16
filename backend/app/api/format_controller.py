@@ -88,62 +88,36 @@ def _join_transpiled_sql(statements: list[str]) -> str:
     return ";\n\n".join(cleaned)
 
 
-def _lowercase_sql_words(sql: str) -> str:
-    pattern = re.compile(
-        r"\b(" + "|".join(re.escape(word) for word in sorted(CASE_PRESERVED_WORDS, key=len, reverse=True)) + r")\b",
-        flags=re.IGNORECASE,
-    )
-    result: list[str] = []
-    index = 0
-    sql_len = len(sql)
+def _sql_word_matches(sql: str, dialect: str | None = None):
+    from sqlglot.dialects import Dialect
+    from sqlglot.tokens import TokenType
 
-    while index < sql_len:
-        char = sql[index]
-        next_two = sql[index:index + 2]
-
-        if next_two == "--":
-            end = sql.find("\n", index)
-            if end == -1:
-                result.append(sql[index:])
-                break
-            result.append(sql[index:end])
-            index = end
+    # Token text may be decoded; only its original source span is editable.
+    # Comments are not tokens. Quoted and prefixed literals fail the raw-span
+    # word check even when represented by a string token type other than STRING.
+    for token in Dialect.get_or_raise(dialect).tokenize(sql):
+        if token.token_type in {TokenType.STRING, TokenType.IDENTIFIER}:
             continue
-
-        if next_two == "/*":
-            end = sql.find("*/", index + 2)
-            if end == -1:
-                result.append(sql[index:])
-                break
-            end += 2
-            result.append(sql[index:end])
-            index = end
+        raw = sql[token.start:token.end + 1]
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*", raw):
             continue
+        yield from re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b").finditer(sql, token.start, token.end + 1)
 
-        if char in ("'", '"', "`"):
-            end = index + 1
-            while end < sql_len:
-                if sql[end] == char:
-                    if char == "'" and end + 1 < sql_len and sql[end + 1] == "'":
-                        end += 2
-                        continue
-                    end += 1
-                    break
-                end += 1
-            result.append(sql[index:end])
-            index = end
-            continue
 
-        match = pattern.match(sql, index)
-        if match:
-            result.append(match.group(0).lower())
-            index = match.end()
-            continue
-
-        result.append(char)
-        index += 1
-
+def _rewrite_sql_word_case(sql: str, cases: dict[str, str], dialect: str | None = None) -> str:
+    result = []
+    start = 0
+    for match in _sql_word_matches(sql, dialect):
+        replacement = cases.get(match.group(0).lower())
+        if replacement is not None:
+            result.extend((sql[start:match.start()], replacement))
+            start = match.end()
+    result.append(sql[start:])
     return "".join(result)
+
+
+def _lowercase_sql_words(sql: str, dialect: str | None = None) -> str:
+    return _rewrite_sql_word_case(sql, {word: word for word in CASE_PRESERVED_WORDS}, dialect)
 
 
 @router.post("/sql/format", response_model=FormatSqlResponse)
@@ -168,7 +142,7 @@ def format_sql(request: FormatSqlRequest) -> FormatSqlResponse:
                 pretty=True,
             )
         )
-        formatted = _lowercase_sql_words(formatted)
+        formatted = _lowercase_sql_words(formatted, dialect.normalized)
         return FormatSqlResponse(
             status="success",
             dialect=dialect.normalized,
@@ -225,8 +199,10 @@ def convert_sql(request: ConvertSqlRequest) -> ConvertSqlResponse:
             request.sql,
             converted,
             keep_original_if_noop=not request.pretty,
+            source_dialect=source_dialect.normalized,
+            target_dialect=target_dialect.normalized,
         )
-        converted = _lowercase_sql_words(converted)
+        converted = _lowercase_sql_words(converted, target_dialect.normalized)
         diagnostics = _conversion_diagnostics(
             sqlglot=sqlglot,
             source_sql=request.sql,
@@ -340,19 +316,21 @@ def _line_for_offset(line_starts: list[int], offset: int) -> int:
     return line
 
 
-def _minimize_diff_noise(source_sql: str, converted_sql: str, *, keep_original_if_noop: bool) -> str:
+def _minimize_diff_noise(source_sql: str, converted_sql: str, *, keep_original_if_noop: bool,
+                         source_dialect: str | None = None, target_dialect: str | None = None) -> str:
     if keep_original_if_noop and _case_and_space_insensitive(source_sql) == _case_and_space_insensitive(converted_sql):
         return source_sql
-    return _restore_source_word_case(source_sql, converted_sql)
+    return _restore_source_word_case(source_sql, converted_sql, source_dialect=source_dialect, target_dialect=target_dialect)
 
 
 def _case_and_space_insensitive(sql: str) -> str:
     return re.sub(r"\s+", "", sql).lower()
 
 
-def _restore_source_word_case(source_sql: str, converted_sql: str) -> str:
+def _restore_source_word_case(source_sql: str, converted_sql: str, *,
+                              source_dialect: str | None = None, target_dialect: str | None = None) -> str:
     source_case: dict[str, str] = {}
-    for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source_sql):
+    for match in _sql_word_matches(source_sql, source_dialect):
         word = match.group(0)
         lower = word.lower()
         if lower in CASE_PRESERVED_WORDS and lower not in source_case:
@@ -361,12 +339,4 @@ def _restore_source_word_case(source_sql: str, converted_sql: str) -> str:
     if not source_case:
         return converted_sql
 
-    pattern = re.compile(
-        r"\b(" + "|".join(re.escape(word) for word in sorted(source_case, key=len, reverse=True)) + r")\b",
-        flags=re.IGNORECASE,
-    )
-
-    def replace(match: re.Match[str]) -> str:
-        return source_case.get(match.group(0).lower(), match.group(0))
-
-    return pattern.sub(replace, converted_sql)
+    return _rewrite_sql_word_case(converted_sql, source_case, target_dialect)
