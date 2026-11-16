@@ -14,7 +14,7 @@ export function layeredGraphFacts(result) {
     if (!id) return [];
     const key = `port:${index}`;
     ports.set(id, ports.has(id) ? null : { key, row });
-    const node = add(key, 2, `${row.root === true ? '根' : '中间'} · ${row.output || '未命名'} · ${row.statement}/${row.scope}/${row.slot}`, row);
+    const node = add(key, 2, `${row.root === true ? '根输出' : '投影端口'} · ${row.output || '未命名'} · ${row.statement}/${row.scope}/${row.slot}`, row);
     node.display = row.output || '未命名';
     node.root = row.root === true;
     return [{ key, id, row }];
