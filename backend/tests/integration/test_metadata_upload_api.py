@@ -11,11 +11,12 @@ from app.db.sqlite import DB_PATH
 client = TestClient(app)
 
 
-def _make_valid_metadata_db(tmp_path: Path) -> Path:
+def _make_valid_metadata_db(tmp_path: Path, *, unique_table_identity: bool = True) -> Path:
     """Create a sqlite db with the 3 required tables + sample data."""
     db_path = tmp_path / "valid.db"
     conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
+    table_identity = ", UNIQUE(catalog, schema_name, table_name)" if unique_table_identity else ""
+    conn.executescript(f"""
         CREATE TABLE metadata_imports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             metadata_version TEXT NOT NULL,
@@ -31,8 +32,7 @@ def _make_valid_metadata_db(tmp_path: Path) -> Path:
             table_name TEXT NOT NULL,
             comment TEXT,
             table_type TEXT DEFAULT 'table',
-            import_id INTEGER,
-            UNIQUE(catalog, schema_name, table_name)
+            import_id INTEGER{table_identity}
         );
         CREATE TABLE column_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +109,33 @@ def test_upload_db_missing_required_column_preserves_live_db(tmp_path, monkeypat
     data = resp.json()
     assert (data["status"], live_db.read_bytes() == original) == ("failed", True)
     assert "column_metadata.ordinal" in data["message"]
+    assert not live_db.with_suffix(".db.bak").exists()
+
+
+def test_upload_db_without_unique_table_identity_preserves_queryable_live_db(tmp_path, monkeypatch):
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live_db = _make_valid_metadata_db(live_dir)
+    with sqlite3.connect(live_db) as conn:
+        conn.execute("UPDATE table_metadata SET table_name = 'retained_table'")
+    conn.close()
+    original = live_db.read_bytes()
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", live_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", live_db)
+
+    incompatible = _make_valid_metadata_db(tmp_path, unique_table_identity=False)
+    with incompatible.open("rb") as stream:
+        upload = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("missing-unique.db", stream, "application/octet-stream")},
+        )
+    tables = client.get("/api/metadata/tables")
+
+    assert upload.status_code == tables.status_code == 200
+    data = upload.json()
+    names = [table["table_name"] for table in tables.json()["tables"]]
+    assert (data["status"], live_db.read_bytes() == original, names) == ("failed", True, ["retained_table"])
+    assert "table_metadata(catalog, schema_name, table_name)" in data["message"]
     assert not live_db.with_suffix(".db.bak").exists()
 
 

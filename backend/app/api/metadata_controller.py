@@ -75,9 +75,29 @@ _REQUIRED_COLUMNS = {
     "column_metadata": {"id", "table_id", "name", "data_type", "comment", "ordinal", "is_partition", "nullable"},
 }
 
+# metadata_repository's INSERT OR REPLACE depends on these logical keys.
+_REQUIRED_UNIQUE_KEYS = {
+    "table_metadata": ("catalog", "schema_name", "table_name"),
+    "column_metadata": ("table_id", "name"),
+}
+
+
+def _has_unique_key(conn: sqlite3.Connection, table: str, required: tuple[str, ...]) -> bool:
+    for (index,) in conn.execute(
+        'SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND partial = 0', (table,)
+    ):
+        columns = [
+            name.lower() if name is not None else None
+            for (name,) in conn.execute("SELECT name FROM pragma_index_info(?)", (index,))
+        ]
+        # A wider key or an expression index does not enforce the same identity.
+        if len(columns) == len(required) and set(columns) == set(required):
+            return True
+    return False
+
 
 def _validate_metadata_db(db_path: Path) -> tuple[bool, str, int, int]:
-    """Check the staged upload's required tables and columns before touching the live DB."""
+    """Check the staged upload's column layout and upsert keys before touching the live DB."""
     try:
         conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
         try:
@@ -96,6 +116,9 @@ def _validate_metadata_db(db_path: Path) -> tuple[bool, str, int, int]:
                 missing_columns.extend(f"{table}.{name}" for name in sorted(required - columns))
             if missing_columns:
                 return False, f"Missing required columns: {', '.join(missing_columns)}", 0, 0
+            for table, key in _REQUIRED_UNIQUE_KEYS.items():
+                if not _has_unique_key(conn, table, key):
+                    return False, f"Missing required unique key: {table}({', '.join(key)})", 0, 0
             table_count = conn.execute("SELECT COUNT(*) FROM table_metadata").fetchone()[0]
             column_count = conn.execute("SELECT COUNT(*) FROM column_metadata").fetchone()[0]
             return True, "ok", table_count, column_count
