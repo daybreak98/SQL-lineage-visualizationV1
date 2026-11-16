@@ -2,7 +2,7 @@ import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Graph, RecordRow } from './contract';
 
 const MIN_ZOOM = .75;
-const fitZoom = (available: number, graphWidth: number) => Math.max(MIN_ZOOM, Math.min(1, available / graphWidth));
+const initialZoom = (available: number, graphWidth: number) => Math.max(MIN_ZOOM, Math.min(1, available / graphWidth));
 const roleNames = { relation: '源关系', column: '源列', path: 'JSON 路径', root: '根输出', slot: '投影端口', unknown: '未决记录' };
 
 export const ReactGraph = memo(function ReactGraph({ graph, emptyMessage, onPick }: {
@@ -23,7 +23,7 @@ export const ReactGraph = memo(function ReactGraph({ graph, emptyMessage, onPick
   }, [graph]);
   useLayoutEffect(() => {
     if (graph?.nodes.length && viewport.current) {
-      setZoom(fitZoom(viewport.current.clientWidth, layout.width));
+      setZoom(initialZoom(viewport.current.clientWidth, layout.width));
     }
   }, [graph, layout.width]);
   function pick(id: string, title: string, rows: Set<RecordRow>) {
@@ -35,10 +35,11 @@ export const ReactGraph = memo(function ReactGraph({ graph, emptyMessage, onPick
       <button type="button" aria-label="缩小" disabled={!graph?.nodes.length || zoom <= MIN_ZOOM} onClick={() => setZoom(v => Math.max(MIN_ZOOM, v - .15))}>−</button>
       <output>{Math.round(zoom * 100)}%</output>
       <button type="button" aria-label="放大" disabled={!graph?.nodes.length} onClick={() => setZoom(v => Math.min(1.8, v + .15))}>＋</button>
-      <button type="button" disabled={!graph?.nodes.length} title="按宽度适配，最低 75%；更宽的图可横向滚动" onClick={() => {
-        if (!viewport.current) return;
-        setZoom(fitZoom(viewport.current.clientWidth, layout.width));
-        viewport.current.scrollTo(0, 0);
+      <button type="button" disabled={!graph?.nodes.length} title="适应窗口，查看全图；可再放大阅读" onClick={() => {
+        const canvas = viewport.current;
+        if (!canvas?.clientWidth || !canvas.clientHeight) return;
+        setZoom(Math.min(1, canvas.clientWidth / layout.width, canvas.clientHeight / layout.height));
+        canvas.scrollTo(0, 0);
       }}>适配</button>
     </div>
     <div ref={viewport} id="lineage-canvas" tabIndex={0} aria-label="血缘画布，可滚动查看">
