@@ -141,7 +141,7 @@ export default function SubfieldWorkbench() {
   const [positionIndex, setPositionIndex] = useState<SQLPositionIndex | null>(null);
   const [surface, setSurface] = useState<'table' | 'json'>('table');
   const [selected, setSelected] = useState<PathItem | null>(null), [query, setQuery] = useState('');
-  const [picked, setPicked] = useState<{ title: string; rows: RecordRow[] } | null>(null);
+  const [picked, setPicked] = useState<{ title: string; rows: RecordRow[]; fromReview: boolean } | null>(null);
   const [protectedSlots, setProtectedSlots] = useState<number[]>([]);
   const [candidate, setCandidate] = useState(false);
   const [review, setReview] = useState<unknown>(null), [reviewStatus, setReviewStatus] = useState('未指定保护点。');
@@ -162,14 +162,15 @@ export default function SubfieldWorkbench() {
     ? layeredGraphFacts(result) : graphFacts(result)) : null, [result]);
   const focusedGraph = useMemo(() => projection ? layeredGraphFacts(projection) : null, [projection]);
   const hits = useMemo(() => query.trim() ? paths.filter(path => pathLabel(path).toLowerCase().includes(query.trim().toLowerCase())).slice(0, 12) : [], [paths, query]);
-  const onPick = useCallback((title: string, rows: RecordRow[]) => setPicked({ title, rows }), []);
-  const onReportPick = useCallback((title: string, rows: RecordRow[]) => {
-    onPick(title, rows);
+  const onPick = useCallback((title: string, rows: RecordRow[], fromReview = false) => setPicked({ title, rows, fromReview }), []);
+  const onReportPick = useCallback((title: string, rows: RecordRow[], fromReview = false) => {
+    onPick(title, rows, fromReview);
     requestAnimationFrame(() => {
       inspectorEvidence.current?.scrollIntoView({ block: 'start' });
       inspectorEvidence.current?.focus({ preventScroll: true });
     });
   }, [onPick]);
+  const onReviewPick = useCallback((title: string, rows: RecordRow[]) => onReportPick(title, rows, true), [onReportPick]);
   const select = useCallback((path: PathItem) => {
     setSelected(path); setPicked(null); setSurface('json'); setQuery('');
   }, []);
@@ -213,6 +214,7 @@ export default function SubfieldWorkbench() {
   function invalidateReview() {
     revision.current++;
     setReview(null); setReviewSnapshot(null); setDownloadError('');
+    setPicked(value => value?.fromReview ? null : value);
   }
   async function runReview() {
     if (pending.current || !analysisSnapshot) return;
@@ -406,7 +408,7 @@ export default function SubfieldWorkbench() {
               </fieldset>
               <p role="status">{reviewStatus}</p>
               {review != null && <><p>仅限当前 SQL 和所选根输出；未证明裁剪安全。未列出的路径不能据此判定为可删。</p>
-                <ReviewSummary value={review} pick={onReportPick} preview={previewEvidence} />
+                <ReviewSummary value={review} pick={onReviewPick} preview={previewEvidence} />
                 <Raw value={review} title="查看原始评审 JSON" /></>}
             </section>}
           </div>

@@ -41,6 +41,43 @@ it('returns to the full table graph after reanalyzing a selected JSON path', asy
   expect(container.querySelectorAll('.canvas-node')).toHaveLength(4);
 });
 
+it('clears pinned review evidence when the protected outputs change', async () => {
+  // The pinned report normally scrolls into view; this test only checks the evidence state.
+  vi.stubGlobal('requestAnimationFrame', vi.fn());
+  vi.mocked(analyzeSubfieldSql).mockImplementation(async request => ({
+    uses: [],
+    mappings: ['item_id', 'raw_payload'].map((output, i) => ({
+      statement: 1, scope: '1:1', slot: i + 1, root: true, output,
+    })),
+    unknowns: [],
+    ...(request.protected_outputs ? { review: {
+      findings: [{ decision: 'RETAIN_WHOLE', basis: '旧评审证据', position: { start: 0, end: 3 } }],
+    } } : {}),
+  }));
+  const { container } = render(<SubfieldWorkbench />);
+  fireEvent.click(screen.getByRole('button', { name: '试用示例' }));
+  const first = await screen.findByRole('checkbox', { name: /item_id/ });
+  fireEvent.click(first);
+  fireEvent.click(screen.getByRole('button', { name: '评审剪枝' }));
+  const finding = await screen.findByText(/保留与待验证项 · 1 项/);
+  const details = finding.closest('details')!;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+  fireEvent.click(await screen.findByRole('button', { name: /旧评审证据/ }));
+  const inspector = container.querySelector('.subfield-detail-body')!;
+  expect(inspector).toHaveTextContent('旧评审证据');
+
+  fireEvent.click(screen.getByRole('checkbox', { name: /raw_payload/ }));
+  expect(screen.queryByText(/保留与待验证项 · 1 项/)).not.toBeInTheDocument();
+  expect(inspector).not.toHaveTextContent('旧评审证据');
+  expect(screen.getByText(/将下载：分析证据/)).toBeInTheDocument();
+
+  fireEvent.click(container.querySelector('.canvas-node[title^="item_id"]')!);
+  expect(inspector.querySelector('h3')).toHaveTextContent('item_id');
+  fireEvent.click(first);
+  expect(inspector.querySelector('h3')).toHaveTextContent('item_id');
+});
+
 it('downloads the exact request and response and invalidates only the review when roots change', async () => {
   vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('Blob', NodeBlob);

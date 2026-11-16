@@ -34,9 +34,10 @@
 .subfield-app .canvas-node[aria-pressed=true]{background:#dceafa;border-color:var(--blue)}
 .subfield-app .canvas-node.uncertain{border-style:dashed;color:#705026}
 .subfield-app .canvas-edges{position:absolute;inset:0;overflow:visible;pointer-events:none}
-.subfield-app .canvas-edges path{fill:none;stroke:#6b88ae;stroke-width:2.4;pointer-events:stroke;cursor:pointer}
-.subfield-app .canvas-edges path.uncertain{stroke:#8e6338;stroke-dasharray:7 4}
-.subfield-app .canvas-edges path:hover,.subfield-app .canvas-edges path:focus,.subfield-app .canvas-edges path[aria-pressed=true]{stroke:#174a8a;stroke-width:5}
+.subfield-app .canvas-edge-hit{fill:none;stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:pointer}
+.subfield-app .canvas-edge-line{fill:none;stroke:#6b88ae;stroke-width:2.4;pointer-events:none}
+.subfield-app .canvas-edge-line.uncertain{stroke:#8e6338;stroke-dasharray:7 4}
+.subfield-app .canvas-edge-hit:is(:hover,:focus,[aria-pressed=true]) + .canvas-edge-line{stroke:#174a8a;stroke-width:5}
 
 /* Workbench shell, canvas controls and inspector. */
 .subfield-app .subfield-main{min-width:0}

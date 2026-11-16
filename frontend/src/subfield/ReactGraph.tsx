@@ -52,13 +52,16 @@ export const ReactGraph = memo(function ReactGraph({ graph, emptyMessage, onPick
             if (!from || !to) return null;
             const id = 'edge-' + index, title = `${from.label} → ${to.label}`;
             const start = from.x + 176, mid = (start + to.x) / 2;
+            const d = `M${start},${from.y + 31} C${mid},${from.y + 31} ${mid},${to.y + 31} ${to.x},${to.y + 31}`;
             const activate = () => pick(id, title, edge.evidence);
-            return <path key={id} data-edge="" className={edge.uncertain ? 'uncertain' : undefined}
-              d={`M${start},${from.y + 31} C${mid},${from.y + 31} ${mid},${to.y + 31} ${to.x},${to.y + 31}`}
-              tabIndex={0} role="button" aria-label={title} aria-pressed={id === active}
-              onClick={activate} onKeyDown={event => {
-                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
-              }} />;
+            return <g key={id}>
+              <path data-edge="" className="canvas-edge-hit" d={d}
+                tabIndex={0} role="button" aria-label={title} aria-pressed={id === active}
+                onClick={activate} onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
+                }} />
+              <path className={edge.uncertain ? 'canvas-edge-line uncertain' : 'canvas-edge-line'} d={d} aria-hidden="true" />
+            </g>;
           })}
         </svg>
         {graph.nodes.map(node => {
