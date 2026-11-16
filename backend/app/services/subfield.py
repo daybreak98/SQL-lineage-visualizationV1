@@ -121,7 +121,29 @@ def finite_case_keys(node):
     return tuple(dict.fromkeys(v.this for v in values)), tuple(arm.this for arm in arms)
 
 
-def binding_declarations(source_schemas):
+class SourceSchemaConflict(ValueError):
+    def __init__(self, relations):
+        self.relations = sorted(relations)
+        super().__init__("Conflicting complete source schemas: " + ", ".join(self.relations))
+
+
+def unquoted_relation_identity(relation, dialect):
+    """Group only exact, unquoted multipart names recognized by the dialect."""
+    try:
+        table = sqlglot.parse_one(relation, read=dialect, into=exp.Table)
+    except SqlglotError:
+        return None
+    if not isinstance(table, exp.Table):
+        return None
+    parts = table.parts
+    if (len(parts) < 2 or any(not isinstance(part, exp.Identifier) or part.quoted for part in parts)
+            or ".".join(part.name for part in parts) != relation):
+        return None
+    normalizer = Dialect.get_or_raise(dialect)
+    return tuple(normalizer.normalize_identifier(part.copy()).name for part in parts)
+
+
+def binding_declarations(source_schemas, dialect):
     """Only complete, evidenced caller declarations can prove column absence."""
     usable = {}
     ignored = {}
@@ -149,6 +171,21 @@ def binding_declarations(source_schemas):
             ignored[relation] = "AMBIGUOUS_COLUMN_LIST"
             continue
         usable[relation] = (folded, {k: item[k] for k in ("complete", "version", "evidence")})
+    if len(usable) > 1:
+        aliases = {}
+        for relation in usable:
+            identity = unquoted_relation_identity(relation, dialect)
+            if identity is not None:
+                aliases.setdefault(identity, []).append(relation)
+        # The resolver uses a folded column set; evidence text remains attached
+        # to the exact spelling, but does not alter the declared columns/version.
+        conflicts = [
+            name for names in aliases.values()
+            if len({(usable[name][0], usable[name][1]["version"]) for name in names}) > 1
+            for name in names
+        ]
+        if conflicts:
+            raise SourceSchemaConflict(conflicts)
     return usable, ignored
 
 
@@ -275,7 +312,7 @@ class Analysis:
         self.macros = {}
         self.seen_macros = set()
         self.macro_context = None
-        self.declarations, self.ignored_schemas = binding_declarations(source_schemas)
+        self.declarations, self.ignored_schemas = binding_declarations(source_schemas, dialect)
         self.applied_schemas = {}
 
     def evidence(self, node):

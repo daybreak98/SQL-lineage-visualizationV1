@@ -147,7 +147,7 @@ export default function App() {
       ) : isSubfield ? (
         <header className="topbar">
           <div className="brand">
-            <div className="logo">JSON</div>
+            <div className="logo" aria-hidden="true">{'{ }'}</div>
             <h1 className="title">亚字段血缘解析</h1>
           </div>
         </header>

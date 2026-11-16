@@ -1,0 +1,281 @@
+{
+  "format": "subfield-lineage-public-evaluation-v1",
+  "date": "2026-11-17",
+  "timezone": "Asia/Shanghai",
+  "versions": {
+    "r50_regression": "f7fe4696f323f357b71feee293ca475c2b4cfdb8",
+    "r51_regression": "79ba33a220d776b411d3941a05a4498f88c44cf0",
+    "frozen_analyzer": "3f126c1ece261b6b64ec96a1850c803e26b7308e",
+    "paired_analyzer_candidate": "8704b051e02e55834ce8cea08d132079c7b9758c",
+    "scored_analyzer": "704fbdf55c700e1d06ca435d2384dca6fda873b7",
+    "r62_graph": "63b71fe76236ae88ef589f40a74ad765e6fb7922",
+    "public_ui_candidate": "63825d0098e386b3cde0548855ed66553849569d"
+  },
+  "runtime": {
+    "python": "3.11.9",
+    "sqlglot": "30.31.0"
+  },
+  "regression": {
+    "r50": {
+      "sql_converter_protected_literals_and_comments_passed": true,
+      "missing_required_column_rejected": true,
+      "original_sqlite_unchanged": true
+    },
+    "r51": {
+      "incomplete_uniqueness_rejected": true,
+      "unreadable_history_rejected": true,
+      "original_sqlite_unchanged": true,
+      "named_parameter_case_preserved": true,
+      "stale_review_cleared": true,
+      "obsolete_download_failure_isolated": true
+    },
+    "r56": {
+      "request_pairs": 8,
+      "explicit_conflict_http_200_to_422": 3,
+      "unchanged_successful_responses": 5,
+      "successful_responses_include_one_single_declaration_control": true
+    }
+  },
+  "browser": {
+    "public_candidate_reanalysis": {
+      "desktop_viewport_px": [
+        1120,
+        900
+      ],
+      "analysis_http_statuses": [
+        200,
+        200
+      ],
+      "full_graph_nodes": 10,
+      "reopened_focus_graph_nodes": 5,
+      "nonempty_path_evidence": true
+    },
+    "r62_fit": {
+      "desktop_viewport_px": [
+        1024,
+        768
+      ],
+      "canvas_client_scroll_width_px": [
+        965,
+        965
+      ],
+      "canvas_client_scroll_height_px": [
+        399,
+        399
+      ],
+      "last_layer_visible_after_fit": true,
+      "zoom_percent_after_fit": 67.67,
+      "zoom_percent_after_zoom_in": 82.67
+    }
+  },
+  "r57_first_replay": {
+    "evaluation_kind": "frozen_static_replay",
+    "dialect_assumption": "hive",
+    "caller_schema_supplied": false,
+    "strict_blind_test": false,
+    "limits": {
+      "bytes": 262144,
+      "unicode_codepoints": 65536
+    },
+    "non_sql_members_excluded": 317,
+    "repeated_content_extra_members": 78,
+    "analyzer_exceptions": 0,
+    "groups": {
+      "members": {
+        "total": 288,
+        "attempted": 274,
+        "full_parse": 214,
+        "partial_recovery": 56,
+        "parse_failed": 4,
+        "skipped_char_limit": 14,
+        "responses_with_semantic_unknown": 258
+      },
+      "historically_overlapping_members": {
+        "total": 31,
+        "attempted": 30,
+        "full_parse": 27,
+        "partial_recovery": 3,
+        "parse_failed": 0,
+        "skipped_char_limit": 1,
+        "responses_with_semantic_unknown": 28
+      },
+      "nonoverlapping_members": {
+        "total": 257,
+        "attempted": 244,
+        "full_parse": 187,
+        "partial_recovery": 53,
+        "parse_failed": 4,
+        "skipped_char_limit": 13,
+        "responses_with_semantic_unknown": 230
+      },
+      "unique_contents": {
+        "total": 210,
+        "attempted": 202,
+        "full_parse": 164,
+        "partial_recovery": 36,
+        "parse_failed": 2,
+        "skipped_char_limit": 8,
+        "responses_with_semantic_unknown": 189
+      },
+      "historically_overlapping_unique_contents": {
+        "total": 17,
+        "attempted": 16,
+        "full_parse": 15,
+        "partial_recovery": 1,
+        "parse_failed": 0,
+        "skipped_char_limit": 1,
+        "responses_with_semantic_unknown": 14
+      },
+      "nonoverlapping_unique_contents": {
+        "total": 193,
+        "attempted": 186,
+        "full_parse": 149,
+        "partial_recovery": 35,
+        "parse_failed": 2,
+        "skipped_char_limit": 7,
+        "responses_with_semantic_unknown": 175
+      }
+    },
+    "partial_recovery_signal": {
+      "members_with_uses_or_mappings": 41,
+      "members_without_either": 15,
+      "unique_with_uses_or_mappings": 26,
+      "unique_without_either": 10
+    },
+    "semantic_unknown_records_excluding_parse_errors": {
+      "by_member": 11345,
+      "by_unique_content": 6541
+    }
+  },
+  "r58_paired_replay": {
+    "sealed_frozen_identity_rows_verified": 288,
+    "sealed_frozen_response_hashes_verified": 274,
+    "paired_responses_byte_identical": 274,
+    "paired_unique_contents_with_responses": 202,
+    "unattempted_members": 14,
+    "unattempted_unique_contents": 8,
+    "parse_category_changes": 0,
+    "fact_changes": 0,
+    "position_changes": 0,
+    "semantic_unknown_changes": 0,
+    "scope": "same inputs, Hive assumed, no caller schema, analyzer core only"
+  },
+  "performance": {
+    "r60": {
+      "scope": "recorded single-machine serial static analysis and JSON serialization",
+      "timed_members": 274,
+      "skipped_members": 14,
+      "large_bucket_share_of_timed_ms": 0.455,
+      "slowest_members_count": 28,
+      "slowest_members_in_largest_bucket": 23,
+      "size_buckets": [
+        {
+          "min_bytes_exclusive": 0,
+          "max_bytes_inclusive": 8192,
+          "n": 122,
+          "median_ms": 24.18,
+          "p95_ms": 96.3
+        },
+        {
+          "min_bytes_exclusive": 8192,
+          "max_bytes_inclusive": 32768,
+          "n": 115,
+          "median_ms": 102.77,
+          "p95_ms": 287.24
+        },
+        {
+          "min_bytes_exclusive": 32768,
+          "max_bytes_inclusive": null,
+          "n": 37,
+          "median_ms": 325.89,
+          "p95_ms": 981.92
+        }
+      ]
+    },
+    "r61": {
+      "scope": "one synthetic pair, two measurements per variant after one warmup",
+      "bytes_per_script": 42080,
+      "statements_per_script": 160,
+      "changed_bytes": 1,
+      "static_analysis_median_ms": {
+        "full": 346.5,
+        "partial": 518.4
+      },
+      "serialization_median_ms": {
+        "full": 39.5,
+        "partial": 40.7
+      }
+    },
+    "r62": {
+      "profile_scope": "one cold profiling call per variant, same synthetic pair",
+      "main_recovery_work": "re-tokenization, splitting, and per-statement reparse",
+      "coordinate_microcheck": {
+        "coordinate_count": 636,
+        "mismatches": 0,
+        "analyzer_calls": 0,
+        "old_ms": 5.2154,
+        "index_build_and_query_ms": 2.2857,
+        "local_delta_ms": 2.9297
+      },
+      "validated_end_to_end_speedup": null
+    },
+    "production_sla_or_throughput_inferred": false
+  },
+  "scoring": {
+    "official": {
+      "o1_recall_threshold": 0.9,
+      "o2_precision_threshold": 0.8,
+      "o1_recall": null,
+      "o2_precision": null,
+      "cross_task_end_to_end_score": null
+    },
+    "local": [
+      {
+        "round": "R64",
+        "unit": "literal_json_physical_use",
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "recall": 1,
+        "precision": 1
+      },
+      {
+        "round": "R65",
+        "unit": "dynamic_path_event",
+        "tp": 0,
+        "fp": 0,
+        "fn": 2,
+        "recall": 0,
+        "precision": null,
+        "unverified_predictions": 0,
+        "exact_subfield_recall": null,
+        "exact_subfield_precision": null
+      },
+      {
+        "round": "R65",
+        "unit": "opaque_function_whole_column_argument",
+        "tp": 0,
+        "fp": 0,
+        "fn": 1,
+        "recall": 0,
+        "precision": null,
+        "unverified_predictions": 0,
+        "exact_subfield_recall": null,
+        "exact_subfield_precision": null
+      },
+      {
+        "round": "R65",
+        "unit": "within_script_cte_projection_propagation",
+        "tp": 0,
+        "fp": 0,
+        "fn": 3,
+        "recall": 0,
+        "precision": null,
+        "unverified_predictions": 0
+      }
+    ],
+    "local_units_merged": false,
+    "local_results_generalized_to_official_dataset": false,
+    "zero_denominator": "null (not applicable)"
+  }
+}

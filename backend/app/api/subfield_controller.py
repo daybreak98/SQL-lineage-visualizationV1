@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.middleware.local_delivery import MAX_SQL_CHARS
@@ -40,7 +40,7 @@ class SubfieldRequest(BaseModel):
 
 @router.post("/sql/subfield-lineage")
 def analyze_subfield_lineage(request: SubfieldRequest, http_request: Request = None) -> dict:
-    from app.services.subfield import analyze_subfields
+    from app.services.subfield import SourceSchemaConflict, analyze_subfields
 
     schemas = {relation: schema.model_dump()
                for relation, schema in (request.source_schemas or {}).items()}
@@ -48,7 +48,12 @@ def analyze_subfield_lineage(request: SubfieldRequest, http_request: Request = N
     key = fact_key(http_request, request.sql, request.dialect, schemas, analyze_subfields)
     result = read_facts(key) if reviewing else None
     if result is None:
-        result = analyze_subfields(request.sql, request.dialect, schemas)
+        try:
+            result = analyze_subfields(request.sql, request.dialect, schemas)
+        except SourceSchemaConflict as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "CONFLICTING_SOURCE_SCHEMAS", "relations": exc.relations,
+            }) from exc
         if not reviewing:
             propose_facts(http_request, key, result)
     if reviewing:

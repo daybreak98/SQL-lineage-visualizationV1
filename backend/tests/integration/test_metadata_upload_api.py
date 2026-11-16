@@ -11,11 +11,12 @@ from app.db.sqlite import DB_PATH
 client = TestClient(app)
 
 
-def _make_valid_metadata_db(tmp_path: Path) -> Path:
+def _make_valid_metadata_db(tmp_path: Path, *, unique_table_identity: bool = True) -> Path:
     """Create a sqlite db with the 3 required tables + sample data."""
     db_path = tmp_path / "valid.db"
     conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
+    table_identity = ", UNIQUE(catalog, schema_name, table_name)" if unique_table_identity else ""
+    conn.executescript(f"""
         CREATE TABLE metadata_imports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             metadata_version TEXT NOT NULL,
@@ -31,8 +32,7 @@ def _make_valid_metadata_db(tmp_path: Path) -> Path:
             table_name TEXT NOT NULL,
             comment TEXT,
             table_type TEXT DEFAULT 'table',
-            import_id INTEGER,
-            UNIQUE(catalog, schema_name, table_name)
+            import_id INTEGER{table_identity}
         );
         CREATE TABLE column_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +64,11 @@ def test_upload_valid_db_returns_success(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.metadata_controller.DB_PATH", real_db)
 
     valid_db = _make_valid_metadata_db(tmp_path)
+    conn = sqlite3.connect(valid_db)
+    try:
+        conn.execute("ALTER TABLE table_metadata ADD COLUMN export_note TEXT")
+    finally:
+        conn.close()
 
     with open(valid_db, "rb") as f:
         resp = client.post(
@@ -77,6 +82,96 @@ def test_upload_valid_db_returns_success(tmp_path, monkeypatch):
     assert data["table_count"] == 1
     assert data["column_count"] == 2
     assert real_db.exists()
+
+
+def test_upload_db_missing_required_column_preserves_live_db(tmp_path, monkeypatch):
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live_db = _make_valid_metadata_db(live_dir)
+    original = live_db.read_bytes()
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", live_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", live_db)
+
+    incomplete = _make_valid_metadata_db(tmp_path)
+    conn = sqlite3.connect(incomplete)
+    try:
+        conn.execute("ALTER TABLE column_metadata DROP COLUMN ordinal")
+    finally:
+        conn.close()
+
+    with incomplete.open("rb") as stream:
+        resp = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("incomplete.db", stream, "application/octet-stream")},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert (data["status"], live_db.read_bytes() == original) == ("failed", True)
+    assert "column_metadata.ordinal" in data["message"]
+    assert not live_db.with_suffix(".db.bak").exists()
+
+
+def test_upload_db_without_unique_table_identity_preserves_queryable_live_db(tmp_path, monkeypatch):
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live_db = _make_valid_metadata_db(live_dir)
+    with sqlite3.connect(live_db) as conn:
+        conn.execute("UPDATE table_metadata SET table_name = 'retained_table'")
+    conn.close()
+    original = live_db.read_bytes()
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", live_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", live_db)
+
+    incompatible = _make_valid_metadata_db(tmp_path, unique_table_identity=False)
+    with incompatible.open("rb") as stream:
+        upload = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("missing-unique.db", stream, "application/octet-stream")},
+        )
+    tables = client.get("/api/metadata/tables")
+
+    assert upload.status_code == tables.status_code == 200
+    data = upload.json()
+    names = [table["table_name"] for table in tables.json()["tables"]]
+    assert (data["status"], live_db.read_bytes() == original, names) == ("failed", True, ["retained_table"])
+    assert "table_metadata(catalog, schema_name, table_name)" in data["message"]
+    assert not live_db.with_suffix(".db.bak").exists()
+
+
+def test_upload_db_with_corrupt_import_history_preserves_live_db(tmp_path, monkeypatch):
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live_db = _make_valid_metadata_db(live_dir)
+    original = live_db.read_bytes()
+    monkeypatch.setattr("app.db.sqlite.DB_PATH", live_db)
+    monkeypatch.setattr("app.api.metadata_controller.DB_PATH", live_db)
+
+    corrupt = _make_valid_metadata_db(tmp_path)
+    conn = sqlite3.connect(corrupt)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        root_page = conn.execute(
+            "SELECT rootpage FROM sqlite_schema WHERE name = 'metadata_imports'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert root_page > 1
+    with corrupt.open("r+b") as stream:
+        stream.seek((root_page - 1) * page_size)
+        stream.write(b"\0")  # Invalid B-tree page type; leave sqlite_schema unchanged.
+
+    with corrupt.open("rb") as stream:
+        upload = client.post(
+            "/api/metadata/upload-db",
+            files={"file": ("corrupt-history.db", stream, "application/octet-stream")},
+        )
+    assert upload.status_code == 200
+    data = upload.json()
+    assert (data["status"], live_db.read_bytes() == original) == ("failed", True)
+    assert "Unreadable metadata import history" in data["message"]
+    assert not live_db.with_suffix(".db.bak").exists()
+    assert client.get("/api/metadata/tables").json()["tables"][0]["table_name"] == "upload_table"
 
 
 def test_upload_non_sqlite_file_returns_failed(tmp_path, monkeypatch):
