@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { analyzeSubfieldSql } from '../api/client';
 import SubfieldWorkbench from './SubfieldWorkbench';
 import { buildEvidenceBundle } from './evidenceBundle';
-import { textMapSQL } from './workbench.mjs';
+import examples from './archive-evidence-examples.json';
 
 vi.mock('../api/client', () => ({ analyzeSubfieldSql: vi.fn() }));
 afterEach(() => { vi.mocked(analyzeSubfieldSql).mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -39,6 +39,64 @@ it('returns to the full table graph after reanalyzing a selected JSON path', asy
   expect(mock).toHaveBeenCalledTimes(2);
   expect(screen.getByRole('button', { name: '表血缘' })).toHaveAttribute('aria-pressed', 'true');
   expect(container.querySelectorAll('.canvas-node')).toHaveLength(4);
+});
+
+function analyzeAndFocusPath(source: string, path: string) {
+  fireEvent.click(screen.getByRole('button', { name: '试用示例' }));
+  return screen.findByText(/服务结果 · \d+ 个使用点/).then(() => {
+    const search = screen.getByRole('searchbox');
+    fireEvent.change(search, { target: { value: `${source} · j · ${path}` } });
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(screen.getByRole('button', { name: 'JSON 排查' })).toHaveAttribute('aria-pressed', 'true');
+  });
+}
+
+const kindPath = (source: string) => ({ source, column: 'j', path: '$.kind',
+  path_tokens: [{ kind: 'key', value: 'kind' }] });
+
+it('keeps the source and both value projections when focusing a fixed-map value path', async () => {
+  // Map key/value projection facts from the analyzer, with no asserted port reads.
+  const origin = kindPath('lab.events');
+  vi.mocked(analyzeSubfieldSql).mockResolvedValue({
+    uses: [origin, origin], unknowns: [],
+    mappings: ['1:1', '1:2'].flatMap((scope, i) => ['k', 'v'].map((output, j) => ({
+      output, statement: 1, scope, slot: j + 1, root: i === 1, kind: 'DERIVED',
+      generator_ports: [`1:1:explode:${j + 1}`], inputs: j ? [origin] : [],
+    }))),
+  });
+  const { container } = render(<SubfieldWorkbench />);
+  await analyzeAndFocusPath('lab.events', '$.kind');
+  expect(container.querySelector('[data-role="relation"][title="lab.events"]')).toBeVisible();
+  expect(container.querySelector('[data-role="path"][title="j · $.kind"]')).toBeVisible();
+  expect([...container.querySelectorAll('.canvas-node')].map(n => n.getAttribute('title'))).toEqual([
+    'lab.events', 'j · $.kind', 'v · 1:2', 'v · 1:1',
+  ]);
+  const edges = [...container.querySelectorAll('[data-edge]')];
+  expect(edges).toHaveLength(3);
+  expect(edges.every(edge => edge.getAttribute('aria-label')!.includes('j · $.kind'))).toBe(true);
+});
+
+it('keeps both UNION branches with the same source path as separate evidence', async () => {
+  const origin = kindPath('lab.events');
+  vi.mocked(analyzeSubfieldSql).mockResolvedValue({
+    uses: [origin, origin], unknowns: [],
+    mappings: [origin, origin].map((input, i) => ({
+      statement: 1, scope: `1:${i + 1}`, slot: 1, root: false, output: 'kind', kind: 'EXTRACT', inputs: [input],
+    })),
+  });
+  const { container } = render(<SubfieldWorkbench />);
+  await analyzeAndFocusPath('lab.events', '$.kind');
+  expect([...container.querySelectorAll('.canvas-node')].map(n => n.getAttribute('title'))).toEqual([
+    'lab.events', 'j · $.kind', 'kind · 1:1', 'kind · 1:2',
+  ]);
+  const edges = [...container.querySelectorAll('[data-edge]')];
+  expect(edges).toHaveLength(3);
+  for (const scope of ['1:1', '1:2']) {
+    const branch = edges.find(edge => edge.getAttribute('aria-label')!.includes(`kind · ${scope}`));
+    expect(branch).toBeDefined();
+    fireEvent.click(branch!);
+    expect(container.querySelector('.subfield-detail-body h3')).toHaveTextContent(`kind · ${scope}`);
+  }
 });
 
 it('clears pinned review evidence when the protected outputs change', async () => {
@@ -151,24 +209,24 @@ it('downloads the exact request and response and invalidates only the review whe
   render(<SubfieldWorkbench />);
   fireEvent.click(screen.getByText('示例与分析选项'));
   const select = screen.getByLabelText('加载示例') as HTMLSelectElement;
-  fireEvent.change(select, { target: { value: screen.getByRole<HTMLOptionElement>('option', { name: '文本 Map 查键示例' }).value } });
+  fireEvent.change(select, { target: { value: screen.getByRole<HTMLOptionElement>('option', { name: /合成文本 Map 摘录/ }).value } });
   fireEvent.click(screen.getByRole('button', { name: '分析 SQL' }));
-  expect(await screen.findByText('构造示例')).toBeVisible();
+  expect(await screen.findByText('合成摘录 · 仅此片段')).toBeVisible();
+  expect(await screen.findByText(/合成摘录 · #\d+.*清单声明/)).toBeInTheDocument();
   const downloadSummary = screen.getByText('分析来源与证据下载');
   expect(downloadSummary.closest('details')).not.toHaveAttribute('open');
   fireEvent.click(downloadSummary);
   expect(downloadSummary.closest('details')).toHaveAttribute('open');
-  expect(screen.getByText('合成示例 · 仅分析本次提交 SQL')).toBeVisible();
   const download = () => fireEvent.click(screen.getByRole('button', { name: '下载证据（JSON）' }));
   download();
   await waitFor(() => expect(downloads).toHaveBeenCalledTimes(1));
   const analysis = JSON.parse(await downloads.mock.calls[0][0].text());
-  expect(analysis.request).toEqual({ sql: textMapSQL, dialect: 'hive' });
-  expect(analysis.origin).toEqual({ kind: 'CONSTRUCTED', verification: 'NOT_APPLICABLE' });
+  expect(analysis.request).toEqual({ sql: examples.r24.sql, dialect: 'hive' });
+  expect(analysis.origin.verification).toBe('DECLARED');
   expect(analysis.response.extra_service_data).toEqual({ keep: true });
   expect(analysis.locations.find((row: { fact_ref: string }) => row.fact_ref === '/unknowns/0').original_span).toBeNull();
   // Even matching supplied bytes and a non-empty receipt string are not a trusted archive witness.
-  const bytes = new TextEncoder().encode(textMapSQL);
+  const bytes = new TextEncoder().encode(examples.r24.sql);
   const untrusted = {
     requestId: 'negative-control', capturedAt: analysis.captured_at, request: analysis.request,
     rawResponse: analysis.response, originalBytes: bytes,

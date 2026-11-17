@@ -6,7 +6,10 @@ import { graphFacts } from './graph-model.mjs';
 import { layeredGraphFacts } from './layered-graph.mjs';
 import { ReactGraph } from './ReactGraph';
 import { AnalysisReports, ReviewSummary } from './EvidenceReports';
-import { layeredSQL, textMapSQL, twoJsonSQL, windowSQL } from './workbench.mjs';
+import { layeredSQL, twoJsonSQL } from './workbench.mjs';
+import archive from './archive-example.json';
+import coupon from './coupon-window-example.json';
+import archiveEvidence from './archive-evidence-examples.json';
 import type { EvidenceOrigin, EvidenceSnapshot } from './evidenceBundle';
 import { isTextMapEvidence, textMapLocations } from './textMapEvidence';
 import { createSQLPositionIndex } from './sqlPositionIndex';
@@ -18,18 +21,32 @@ const Editor = lazy(() => import('./SubfieldEditor'));
 type Dialect = 'hive' | 'spark';
 type Request = Parameters<typeof analyzeSubfieldSql>[0];
 let localRequestSequence = 0;
+type Excerpt = typeof archiveEvidence.r12;
 const adhoc: EvidenceOrigin = { kind: 'AD_HOC' };
 const constructed: EvidenceOrigin = { kind: 'CONSTRUCTED' };
-type Example = { name: string; sql: string; dialect: string; note: string };
+function declaredExcerpt(item: Excerpt): EvidenceOrigin {
+  return {
+    kind: 'EXCERPT', manifest_ref: `${item.provenance_ref.path}#${item.provenance_ref.json_pointer} (SHA-256 ${item.provenance_ref.sha256})`,
+    archive_sha256: item.archive_sha256, member: item.member, member_ordinal: item.member_ordinal,
+    original_size: item.member_bytes, original_sha256: item.original_sha256,
+    byte_range: { start: item.start_byte_inclusive, end: item.end_byte_exclusive },
+    range_sha256: item.excerpt_sha256, encoding: 'utf-8', context: item.source_context,
+  };
+}
+type Example = { name: string; sql: string; dialect: string; note: string; excerpt?: Excerpt; context?: string };
+const reducedArchiveContext = '合成精简查询 · 仅定位提交 SQL';
 const examples: Example[] = [
-  {name: '同表双 JSON 五级演示', sql: twoJsonSQL, dialect: 'spark', note: '合成示例：两列 JSON 经两级 CTE 传递。'},
-  {name: '单列五级演示', sql: layeredSQL, dialect: 'spark', note: '合成示例：一列 JSON 经两级 CTE 传递。'},
-  {name: '窗口与生成器示例', sql: windowSQL, dialect: 'hive', note: '合成示例：展开标签，按时间取每个标签最新的事件。'},
+  {name: '同表双 JSON 五级演示', sql: twoJsonSQL, dialect: 'spark', note: '合成示例：双 JSON 载体通过两级 CTE。'},
+  {name: '单列五级演示', sql: layeredSQL, dialect: 'spark', note: '合成示例：单 JSON 载体通过两级 CTE。'},
+  {name: '单表合成 SQL', sql: archive.sql, dialect: archive.parser_dialect,
+    note: `${reducedArchiveContext}`, context: reducedArchiveContext},
+  {name: '合成窗口摘录', sql: coupon.sql, dialect: coupon.dialect, excerpt: archiveEvidence.r12, note: '合成片段：展示窗口和行选择证据。'},
   {name: '单根双分支示例', dialect: 'spark', note: '构造示例：值分支不代表已验证行集。',
     sql: "WITH base AS (SELECT t.j FROM src t), l AS (SELECT get_json_object(x.j,'$.a') AS a FROM base x), r AS (SELECT get_json_object(x.j,'$.b') AS b FROM base x) SELECT COALESCE(l.a,r.b) AS protected FROM l CROSS JOIN r"},
-  {name: '文本 Map 查键示例', sql: textMapSQL, dialect: 'hive', note: '合成示例：按固定键读取文本 Map 供投影和过滤。'},
+  {name: '合成文本 Map 摘录', sql: archiveEvidence.r24.sql, dialect: archiveEvidence.r24.dialect,
+    excerpt: archiveEvidence.r24, note: '合成 HQL 片段：分别定位函数及查键。'},
 ];
-const exampleKeys = [{ source: 'demo.events', column: 'context_json', keys: ['item_id', 'session_key', 'sample_key'] }];
+const exampleKeys = [{ source: 'lab.media_events', column: 'event_payload', keys: ['media_id', 'session_id', 'example_unseen_key'] }];
 const roleNames: Record<string, string> = { VALUE: '输出值依赖', CONDITION: '条件依赖', CARRIER: '载体传递', STRUCTURE: '结构依赖', RELATIONAL: '关系依赖', REPRESENTATION: '原始表示依赖' };
 const pathLabel = ({ input }: PathItem) => `${input.source} · ${input.column} · ${input.path}`;
 
@@ -158,9 +175,11 @@ export default function SubfieldWorkbench() {
   const tree = useMemo(() => treeOf(paths), [paths]);
   const roots = useMemo(() => rootOutputs(result?.mappings ?? []), [result]);
   const projection = useMemo(() => selected && result ? projectPath(result, selected) : null, [selected, result]);
-  const fullGraph = useMemo(() => result ? (result.mappings.some(row => row.terminal_binding || row.port_reads)
-    ? layeredGraphFacts(result) : graphFacts(result)) : null, [result]);
-  const focusedGraph = useMemo(() => projection ? layeredGraphFacts(projection) : null, [projection]);
+  // Choose from the original response: projecting a path can remove port reads.
+  const buildGraph = result?.mappings.some(row => row.terminal_binding || row.port_reads)
+    ? layeredGraphFacts : graphFacts;
+  const fullGraph = useMemo(() => result ? buildGraph(result) : null, [result, buildGraph]);
+  const focusedGraph = useMemo(() => projection ? buildGraph(projection) : null, [projection, buildGraph]);
   const hits = useMemo(() => query.trim() ? paths.filter(path => pathLabel(path).toLowerCase().includes(query.trim().toLowerCase())).slice(0, 12) : [], [paths, query]);
   const onPick = useCallback((title: string, rows: RecordRow[], fromReview = false) => setPicked({ title, rows, fromReview }), []);
   const onReportPick = useCallback((title: string, rows: RecordRow[], fromReview = false) => {
@@ -196,7 +215,9 @@ export default function SubfieldWorkbench() {
     try {
       const sourceSchemas = parseSourceSchemas(source);
       const request: Request = { sql: input, dialect: mode, ...(sourceSchemas === undefined ? {} : { source_schemas: sourceSchemas }) };
-      const origin = selectedExample?.sql === input ? constructed : adhoc;
+      const origin: EvidenceOrigin = selectedExample?.sql === input ? (selectedExample.excerpt
+        ? declaredExcerpt(selectedExample.excerpt)
+        : selectedExample.context ? { kind: 'CONSTRUCTED', context: selectedExample.context } : constructed) : adhoc;
       const captured = await requestSnapshot(request, origin);
       if (issued !== revision.current) return;
       const response = normalize(captured.rawResponse);
@@ -281,8 +302,10 @@ export default function SubfieldWorkbench() {
   const status = result?.coverage?.partial ? '部分恢复' : result?.coverage?.parsed === false ? '解析失败'
     : result?.coverage?.parsed === true ? '完整解析' : '解析状态未提供';
   const failedStatements = result?.unknowns.filter(row => row.code === 'PARSE_ERROR') ?? [];
-  const scope = analysisSnapshot?.origin.kind === 'CONSTRUCTED'
-    ? '合成示例 · 仅分析本次提交 SQL' : '手动提交 SQL · 本次提交全文';
+  const scope = declared && example?.excerpt
+    ? `合成摘录 · #${example.excerpt.member_ordinal} · 原件第 ${example.excerpt.source_lines_inclusive.join('–')} 行（清单声明） · 仅分析此片段，非整件`
+    : analysisSnapshot?.origin.kind === 'CONSTRUCTED' ? analysisSnapshot.origin.context ?? '构造示例 · 仅分析本次提交 SQL'
+      : '手动提交 SQL · 本次提交全文';
   return <div className="subfield-app">
     <section className="subfield-main" aria-label="JSON 血缘工作台">
       <form id="analysis" onSubmit={event => { event.preventDefault(); void analyze(); }}>
@@ -421,7 +444,7 @@ export default function SubfieldWorkbench() {
       <footer className="subfield-status">
         <span className={`pill ${busy ? 'running' : ''}`} role="status">{busy ? '处理中…' : result ? `服务结果 · ${result.uses.length} 个使用点` : '等待分析'}</span>
         {result && <>
-          <span>{declared ? '归档摘录 · 仅此片段' : analysisSnapshot?.origin.kind === 'CONSTRUCTED' ? '构造示例' : '手动提交'}</span>
+          <span>{declared ? '合成摘录 · 仅此片段' : analysisSnapshot?.origin.kind === 'CONSTRUCTED' ? '构造示例' : '手动提交'}</span>
           <span>{status}</span><span>{result.coverage?.complete === true ? '服务报告覆盖完整' : '覆盖未确认'}</span><span>未决 {result.unknowns.length}</span>
         </>}
       </footer>

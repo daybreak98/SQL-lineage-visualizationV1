@@ -1,0 +1,50 @@
+{
+  "format": "synthetic-excerpt-examples-v1",
+  "visibility": "public_synthetic_fixture",
+  "r12": {
+    "member": "demo_station_token_window.sql",
+    "member_ordinal": 1,
+    "member_bytes": 637,
+    "original_sha256": "43e401a06b8ca2cca17a1f4af2d7accbf37038286333fd7affd11e3dd6547f7d",
+    "start_byte_inclusive": 69,
+    "end_byte_exclusive": 611,
+    "excerpt_sha256": "79b44a4024588edb25828e6799945d53a85ea70a61a26cccfd48028b7329dacd",
+    "dialect": "hive",
+    "source_context": "Synthetic nested SELECT with a window and a demonstration generator whose identity is unspecified.",
+    "source_lines_inclusive": [
+      2,
+      15
+    ],
+    "encoding": "utf-8",
+    "provenance_ref": {
+      "path": "synthetic-demo/manifest.json",
+      "json_pointer": "/cases/0",
+      "sha256": "d9f95c8e0ab2414630d0ea71e0e33307ade9e974c2fc0fdcfbfe2cb93b71189b"
+    },
+    "archive_sha256": "6aadee7df81800823b65c0fa296d596ffbec21256078b31ab79df981051d686f",
+    "sql": "SELECT picked.token_id, picked.event_type\nFROM (\n  SELECT t.token_id, s.event_type,\n         row_number() OVER (PARTITION BY t.token_id ORDER BY s.event_time DESC) AS rn\n  FROM (\n    SELECT e.event_time,\n           get_json_object(e.payload, '$.token_list') AS token_list,\n           get_json_object(e.payload, '$.event_type') AS event_type\n    FROM demo.station_events e\n    WHERE get_json_object(e.payload, '$.region') IS NOT NULL\n  ) s\n  LATERAL VIEW explode(demo.decode_token_list(s.token_list)) t AS token_id\n) picked\nWHERE picked.rn = 1"
+  },
+  "r24": {
+    "member": "demo_widget_attributes.sql",
+    "member_ordinal": 2,
+    "member_bytes": 336,
+    "original_sha256": "f798976416a071afbaca74da137eef894f625369c4c976b9478e96ebeac83426",
+    "start_byte_inclusive": 69,
+    "end_byte_exclusive": 310,
+    "excerpt_sha256": "41ddb3375e0b480ce1521410f4f52fa8edf9937682fc4e4eab5e83932bf72dc3",
+    "dialect": "hive",
+    "source_context": "Synthetic SELECT and WHERE text-map reads with independent function and key locations.",
+    "source_lines_inclusive": [
+      2,
+      5
+    ],
+    "encoding": "utf-8",
+    "provenance_ref": {
+      "path": "synthetic-demo/manifest.json",
+      "json_pointer": "/cases/1",
+      "sha256": "d9f95c8e0ab2414630d0ea71e0e33307ade9e974c2fc0fdcfbfe2cb93b71189b"
+    },
+    "archive_sha256": "6aadee7df81800823b65c0fa296d596ffbec21256078b31ab79df981051d686f",
+    "sql": "SELECT coalesce(get_json_object(e.attributes, '$.display_mode'),\n                str_to_map(e.attributes, '&', '=')['display_mode']) AS display_mode\nFROM demo.widget_events e\nWHERE str_to_map(e.attributes, '&', '=')['test_group'] = 'control'"
+  }
+}

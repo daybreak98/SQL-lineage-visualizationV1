@@ -1,17 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { sourceExcerpt } from '../src/subfield/graph-model.mjs';
-import { textMapSQL } from '../src/subfield/workbench.mjs';
 import { createSQLPositionIndex } from '../src/subfield/sqlPositionIndex.ts';
 
-test('one index preserves the recorded synthetic function and key snippets', () => {
-  const sql = textMapSQL;
+test('the synthetic text-map index preserves the recorded function and key snippets', () => {
+  const { r24: { sql } } = JSON.parse(readFileSync(new URL('../src/subfield/archive-evidence-examples.json', import.meta.url), 'utf8'));
   const index = createSQLPositionIndex(sql);
   for (const [start, end, token] of [
-    [sql.indexOf('str_to_map'), sql.indexOf('str_to_map') + 10, 'str_to_map'],
-    [sql.lastIndexOf('str_to_map'), sql.lastIndexOf('str_to_map') + 10, 'str_to_map'],
-    [sql.indexOf("'category'"), sql.indexOf("'category'") + 10, "'category'"],
-    [sql.indexOf("'region'"), sql.indexOf("'region'") + 8, "'region'"],
+    [81, 91, 'str_to_map'], [116, 130, "'display_mode'"],
+    [181, 191, 'str_to_map'], [216, 228, "'test_group'"],
   ]) {
     const range = { start, end };
     assert.deepEqual(index.excerpt(range), sourceExcerpt(sql, range));

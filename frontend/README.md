@@ -1,9 +1,10 @@
 # SQL Lineage Workbench v1.4 Merged Final Frontend
 
-亚字段血缘解析集成在主工作台左侧导航。它可静态分析 Hive / Spark SQL、查阅 JSON 路径及原文证据，并按所选保护根生成只读评审。内置样例均为合成数据。参见[亚字段工作台使用指南](../SUBFIELD_WORKBENCH.md)。
+亚字段工作台由 React 路由 `/?view=subfield` 提供，从原工作台顶部也可进入；旧 `/subfield.html` 会跳转。运行 `npm ci`、`npm run dev`，然后打开 `http://127.0.0.1:5173/?view=subfield`。Vite 把 `/api` 转发到 `BACKEND_PROXY_TARGET`（默认 `http://localhost:8000`）；部署构建产物时需要在同源提供 API。
 
+内置示例均为合成数据。点「试用示例」分析双 JSON；选中 `media_id` 后可以运行剪枝评审。单列演示展示候选键；合成窗口摘录展示窗口与行选择；合成文本 Map 摘录可分别定位 `str_to_map` 函数和带引号的键。文本 Map 行只表示文本查键证据，不提供 JSON 子路径或删键建议。若服务未返回相关证据，界面不会推断。
 
-这是当前前端页面的完整可运行项目源码，不是单页 HTML，也不是纯文档。项目基于 **Vite + React + TypeScript + Tailwind CSS**，用于让 opencode + DeepSeek 按当前交付页面继续还原与工程化开发。
+点「下载证据（JSON）」保存当前请求、SQL 和服务完整响应。示例摘录的出处为合成夹具声明，定位对应提交的 SQL。修改 SQL、方言或源列后会清除旧结果；修改保护根或候选键只清除评审包。
 
 ## 当前版本定位
 
@@ -178,4 +179,3 @@ GET  /api/fields/{entity_id}/path
 4. 再替换 Monaco Editor。
 5. 最后替换 React Flow。
 6. 每次替换后跑通 README 的 11 条交互验收路径。
-

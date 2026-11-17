@@ -1,0 +1,16 @@
+{
+  "id": "demo_media_events",
+  "sql": "WITH base AS (\n  SELECT e.event_payload, e.context_payload\n  FROM lab.media_events e\n)\nSELECT CASE\n         WHEN get_json_object(event_payload, '$.media_category') = 'recording'\n           THEN get_json_object(event_payload, '$.media_id')\n         ELSE get_json_object(context_payload, '$.media_id')\n       END AS media_id,\n       get_json_object(context_payload, '$.session_id') AS session_id\nFROM base",
+  "parser_dialect": "hive",
+  "input_kind": "reduced_select",
+  "evidence": {
+    "path": "synthetic-demo/demo_media_events.sql",
+    "sha256": "88f7232169e122d8e5a590d15e8d3b2006a2d013a882184f06af0bf121928786",
+    "ranges_1based_inclusive": [
+      [
+        1,
+        11
+      ]
+    ]
+  }
+}

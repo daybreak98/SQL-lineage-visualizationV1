@@ -1,34 +1,22 @@
-// Synthetic SQL fixtures for the public workbench.
+// Synthetic SQL for the workbench demos.
 export const layeredSQL = `WITH raw_payload AS (
-  SELECT context_json
-  FROM demo.events
+  SELECT event_payload
+  FROM lab.media_events
 ), carried AS (
-  SELECT context_json AS payload
+  SELECT event_payload AS payload
   FROM raw_payload
 )
-SELECT get_json_object(payload, '$.item_id') AS item_id,
-       get_json_object(payload, '$.session_key') AS session_key
+SELECT get_json_object(payload, '$.media_id') AS media_id,
+       get_json_object(payload, '$.session_id') AS session_id
 FROM carried`;
 export const twoJsonSQL = `WITH raw_payload AS (
-  SELECT t.object_json, t.context_json
-  FROM demo.events t
+  SELECT t.context_payload, t.event_payload
+  FROM lab.media_events t
 ), carried AS (
-  SELECT r.object_json AS object_payload, r.context_json AS context_payload
+  SELECT r.context_payload AS share_payload, r.event_payload AS refer_payload
   FROM raw_payload r
 )
-SELECT get_json_object(c.object_payload, '$.object.identifier') AS object_id,
-       get_json_object(c.context_payload, '$.item_id') AS item_id,
-       get_json_object(c.context_payload, '$.session_key') AS session_key
+SELECT get_json_object(c.share_payload, '$.media.category') AS media_category,
+       get_json_object(c.refer_payload, '$.media_id') AS media_id,
+       get_json_object(c.refer_payload, '$.session_id') AS session_id
 FROM carried c`;
-
-export const windowSQL = `WITH ranked AS (
-  SELECT g.tag AS tag,
-         row_number() OVER (PARTITION BY g.tag ORDER BY e.event_time DESC) AS rn
-  FROM demo.events e
-  LATERAL VIEW explode(e.tags) g AS tag
-)
-SELECT tag FROM ranked WHERE rn = 1`;
-
-export const textMapSQL = `SELECT str_to_map(e.attributes, '&', '=')['category'] AS category
-FROM demo.events e
-WHERE str_to_map(e.attributes, '&', '=')['region'] = 'sample'`;

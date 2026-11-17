@@ -1,0 +1,11 @@
+{
+  "member": "demo_station_token_window.sql",
+  "member_ordinal": 1,
+  "source_lines_inclusive": [
+    2,
+    15
+  ],
+  "excerpt_sha256": "79b44a4024588edb25828e6799945d53a85ea70a61a26cccfd48028b7329dacd",
+  "dialect": "hive",
+  "sql": "SELECT picked.token_id, picked.event_type\nFROM (\n  SELECT t.token_id, s.event_type,\n         row_number() OVER (PARTITION BY t.token_id ORDER BY s.event_time DESC) AS rn\n  FROM (\n    SELECT e.event_time,\n           get_json_object(e.payload, '$.token_list') AS token_list,\n           get_json_object(e.payload, '$.event_type') AS event_type\n    FROM demo.station_events e\n    WHERE get_json_object(e.payload, '$.region') IS NOT NULL\n  ) s\n  LATERAL VIEW explode(demo.decode_token_list(s.token_list)) t AS token_id\n) picked\nWHERE picked.rn = 1"
+}
