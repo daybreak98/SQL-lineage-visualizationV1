@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.middleware.local_delivery import MAX_SQL_CHARS
 from app.api.subfield_fact_cache import FactCacheRoute, fact_key, read_facts, propose_facts
+from app.api.composition_controller import CompositionRequest, compose_lineage
 
 router = APIRouter(route_class=FactCacheRoute)
 
@@ -31,6 +32,7 @@ class CandidateKeys(BaseModel):
 
 
 class SubfieldRequest(BaseModel):
+    mode: Literal["analyze"] = "analyze"
     sql: str = Field(min_length=1, max_length=MAX_SQL_CHARS)
     dialect: Literal["hive", "spark"] = "spark"
     source_schemas: dict[str, SourceSchema] | None = None
@@ -39,7 +41,10 @@ class SubfieldRequest(BaseModel):
 
 
 @router.post("/sql/subfield-lineage")
-def analyze_subfield_lineage(request: SubfieldRequest, http_request: Request = None) -> dict:
+def analyze_subfield_lineage(request: SubfieldRequest | CompositionRequest, http_request: Request = None) -> dict:
+    if isinstance(request, CompositionRequest):
+        return compose_lineage(request)
+
     from app.services.subfield import SourceSchemaConflict, analyze_subfields
 
     schemas = {relation: schema.model_dump()

@@ -49,6 +49,7 @@ class Value:
     kind: str = "DERIVED"
     exact: Origin | None = None
     generator_ports: frozenset[str] = frozenset()
+    source_binding_status: str | None = None
 
 
 def combine(values, kind="DERIVED"):
@@ -59,7 +60,8 @@ def combine(values, kind="DERIVED"):
 
 
 def passthrough(origin):
-    return Value((origin,), kind="WHOLE_RAW", exact=origin)
+    return Value((origin,), kind="WHOLE_RAW", exact=origin,
+                 source_binding_status="SQL_NAMED_RELATION_COLUMN")
 
 
 def path_tokens(node):
@@ -193,8 +195,9 @@ def binding_declarations(source_schemas, dialect):
 class Macro:
     name: str
     parameter: str
-    body: exp.Case
+    body: exp.Expr
     statement: int
+    path_parameter: str | None = None
 
 
 def statement_parts(sql, dialect="hive", *, reliable=False):
@@ -264,33 +267,45 @@ def parse_slice(sql, start, end, dialect, line, cache):
 
 
 def macro_definition(sql, tokens, end, terminated, index, cache):
-    """Recognize only unquoted, single STRING parameter and a closed CASE body."""
+    """Recognize closed scalar bodies with one source and optional STRING path."""
     if len(tokens) < 10 or not terminated:
         return None
     name, lparen, parameter, datatype, rparen = tokens[3:8]
+    path_parameter = None
+    body_index = 8
+    if rparen.token_type == TokenType.COMMA and len(tokens) > 11:
+        path_name, path_type, rparen = tokens[8:11]
+        if (not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", sql[path_name.start:path_name.end + 1])
+                or path_type.text.lower() != "string" or path_name.text.lower() == parameter.text.lower()):
+            return None
+        path_parameter = path_name.text.lower()
+        body_index = 11
     if (not all(re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", sql[t.start:t.end + 1])
                 for t in (name, parameter))
             or lparen.token_type != TokenType.L_PAREN or rparen.token_type != TokenType.R_PAREN
             or sql[datatype.start:datatype.end + 1].lower() != "string"
-            or tokens[8].token_type != TokenType.CASE
-            or tokens[-1].token_type != TokenType.END):
+            ):
         return None
-    body_token = tokens[8]
+    body_token = tokens[body_index]
     body = parse_slice(sql, body_token.start, end, "hive", body_token.line, cache)
-    if not isinstance(body, exp.Case) or body.this is not None:
+    if isinstance(body, StatementFailure) or body is None:
         return None
-    if any(col.table or col.is_star or col.name.lower() != parameter.text.lower()
+    if any(col.table or col.is_star or col.name.lower() not in {parameter.text.lower(), path_parameter}
            for col in body.find_all(exp.Column)):
+        return None
+    if path_parameter and any(
+        not (isinstance(col.parent, (exp.JSONExtractScalar, exp.JSONExtract))
+             and col.parent.expression is col)
+        for col in body.find_all(exp.Column) if col.name.lower() == path_parameter
+    ):
         return None
     for sub in body.walk():
         if isinstance(sub, (exp.Query, exp.UDTF, exp.Star, exp.Window, exp.AggFunc)):
             return None
         if isinstance(sub, exp.Anonymous):
-            if sub.name.lower() == name.text.lower() or (
-                sub.name.lower() != "bigint" and not isinstance(sub.parent, exp.Dot)
-            ):
+            if sub.name.lower() == name.text.lower():
                 return None
-    return Macro(name.text.lower(), parameter.text.lower(), body, index)
+    return Macro(name.text.lower(), parameter.text.lower(), body, index, path_parameter)
 
 
 class Analysis:
@@ -300,18 +315,30 @@ class Analysis:
         self.uses = []
         self.mappings = []
         self.generators = []
+        self.on_query = None
+        self.generator_outputs = {}
+        self.tuple_overridden = False
+        self.group_alias_gaps = set()
         self.windows = []
         self.row_selections = []
         self.locally_reviewable_projection_only = False
         self.allow_text_map_evidence = False
+        self.allow_fixed_map_evidence = False
+        self.fixed_map_overridden = False
         self.allow_multi_coalesce = False
         self.source_string_tokens = None
+        self.call_closers = None
+        self.opaque_call_arguments = []
         self.unknowns = []
         self.active = set()
         self.statement = 0
         self.macros = {}
         self.seen_macros = set()
         self.macro_context = None
+        self.macro_path_argument = None
+        self.macro_path_statement = None
+        self.expanding_macros = set()
+        self.json_builtin_overridden = False
         self.declarations, self.ignored_schemas = binding_declarations(source_schemas, dialect)
         self.applied_schemas = {}
 
@@ -326,6 +353,73 @@ class Analysis:
                         "line": m.get("line"), "column_end": m.get("col")}
         return {"statement": self.statement, "position": position,
                 "expression": node.sql(dialect=self.dialect)}
+
+    def call_closer(self, name_end):
+        # Pair lexical parentheses once; strings and comments cannot close calls.
+        if self.call_closers is None:
+            self.call_closers = {}
+            stack = []
+            previous_end = None
+            try:
+                tokens = Dialect.get_or_raise(self.dialect).tokenize(self.sql)
+            except SqlglotError:
+                return None
+            for t in tokens:
+                if t.token_type == TokenType.L_PAREN:
+                    stack.append(previous_end)
+                elif t.token_type == TokenType.R_PAREN and stack:
+                    self.call_closers[stack.pop()] = t
+                elif t.token_type == TokenType.SEMICOLON:
+                    stack.clear()
+                previous_end = t.end + 1
+        return self.call_closers.get(name_end)
+
+    def observe_opaque_arguments(self, node, operands, values, scope, clause, role):
+        """Direct column operands with original call and source-binding evidence."""
+        def dotted_name(parts):
+            positions = [part.meta for part in parts]
+            if not positions or any('start' not in p or 'end' not in p for p in positions):
+                return None
+            for i, (part, p) in enumerate(zip(parts, positions)):
+                token = self.sql[p['start']:p['end'] + 1]
+                if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', token) or token.lower() != part.name.lower():
+                    return None
+                if i and self.sql[positions[i-1]['end']+1:p['start']].strip() != '.':
+                    return None
+            return {'start': positions[0]['start'], 'end': positions[-1]['end'] + 1,
+                    'line': positions[0].get('line'), 'column_end': positions[-1].get('col')}
+
+        prefix = []
+        if isinstance(node.parent, exp.Dot):
+            if node.parent.expression is not node:
+                return
+            prefix = node.parent.this.flatten() if isinstance(node.parent.this, exp.Dot) else [node.parent.this]
+            prefix = list(prefix)
+            if not all(type(p) is exp.Identifier for p in prefix):
+                return
+        parts = [*prefix, node]
+        call = dotted_name(parts)
+        if call is None or self.macro_context is not None:
+            return
+        closer = self.call_closer(call['end'])
+        if closer is None:
+            return
+        span = {**call, 'end': closer.end + 1, 'column_end': closer.col}
+        for slot, (operand, value) in enumerate(zip(operands, values), 1):
+            if (type(operand) is not exp.Column or operand.is_star or value.exact is None
+                    or not value.source_binding_status or value.kind not in {'WHOLE_RAW', 'EXTRACT'}):
+                continue
+            arg = dotted_name(operand.parts)
+            if arg is None or not call['end'] <= arg['start'] < arg['end'] <= closer.start:
+                continue
+            row = {'statement': self.statement, 'scope': self.scope_ids[scope], 'clause': clause,
+                   'role': role, 'operation': 'OPAQUE_CALL_ARGUMENT', 'semantics': 'OPAQUE',
+                   'callee': '.'.join(p.name.lower() for p in parts), 'call_position': call,
+                   'call_span': span, 'source_binding_status': value.source_binding_status,
+                   'leaf_position': self.evidence(node)['position'], 'argument_slot': slot,
+                   'argument_position': arg, 'source': value.exact.as_dict()}
+            if row not in self.opaque_call_arguments:
+                self.opaque_call_arguments.append(row)
 
     def map_key_position(self, node):
         """Locate a literal only when AST and original-source tokenizer agree."""
@@ -348,6 +442,8 @@ class Analysis:
         return {"start": start, "end": end + 1, "line": token.line, "column_end": token.col}
 
     def is_unqualified_builtin(self, node, name):
+        if name == "get_json_object" and self.json_builtin_overridden:
+            return False
         meta = node.meta
         return ("start" in meta and "end" in meta and not isinstance(node.parent, exp.Dot)
                 and self.sql[meta["start"]:meta["end"] + 1].lower() == name)
@@ -362,6 +458,10 @@ class Analysis:
                 "definition": {"statement": macro.statement, "position": evidence["position"]},
                 "call": call_evidence,
             }
+            if self.macro_path_argument is not None:
+                evidence["macro"]["path_argument"] = {
+                    "parameter_slot": 2, **self.evidence(self.macro_path_argument),
+                    "statement": self.macro_path_statement}
         return evidence
 
     def unknown(self, code, node, clause=None, inputs=()):
@@ -376,8 +476,12 @@ class Analysis:
 
     def expand_macro(self, call, scope, outputs, role, clause, record):
         macro = self.macros[call.name.lower()]
+        if macro.name in self.expanding_macros:
+            self.unknown("RECURSIVE_MACRO_UNVERIFIED", call, clause)
+            return Value(kind="UNKNOWN")
         args = call.expressions
-        if len(args) != 1 or not isinstance(args[0], exp.Column):
+        if (len(args) != (2 if macro.path_parameter else 1)
+                or (macro.path_parameter and (type(args[1]) is not exp.Literal or not args[1].is_string))):
             children = [self.expression(a, scope, outputs, role, clause, record=record) for a in args]
             value = combine(children, "UNKNOWN")
             self.unknown("UNSUPPORTED_MACRO_ARGUMENT", call, clause, value.inputs)
@@ -387,12 +491,22 @@ class Analysis:
             self.unknown("UNBOUND_MACRO_ARGUMENT", call, clause, value.inputs)
             return combine((value,), "UNKNOWN")
         call_evidence = self.evidence(call)
+        if self.macro_context is not None:
+            call_evidence["parent_call"] = self.macro_context[2]
+            call_evidence["statement"] = self.macro_context[0].statement
         prev = len(self.unknowns)
+        previous_context, previous_path = self.macro_context, self.macro_path_argument
+        previous_path_statement = self.macro_path_statement
+        self.macro_path_statement = previous_context[0].statement if previous_context else self.statement
         self.macro_context = (macro, value, call_evidence)
+        self.macro_path_argument = args[1] if macro.path_parameter else None
+        self.expanding_macros.add(macro.name)
         try:
             result = self.expression(macro.body, scope, outputs, role, clause, record=record)
         finally:
-            self.macro_context = None
+            self.expanding_macros.remove(macro.name)
+            self.macro_context, self.macro_path_argument = previous_context, previous_path
+            self.macro_path_statement = previous_path_statement
         return combine((result,), "UNKNOWN") if len(self.unknowns) > prev else result
 
     @staticmethod
@@ -400,20 +514,24 @@ class Analysis:
         return (dict(scope.lateral_sources) if isinstance(scope.expression, exp.UDTF)
                 else {k: v for k, (_, v) in scope.selected_sources.items()})
 
-    def table_may_have_column(self, table, name):
+    def declared_columns(self, table):
         # Exact SQL relation spelling, no aliases, suffix matches or guessed
         # catalog. Skip multipart names that would collide when joined by dots.
         parts = table.parts
-        if (table.alias_column_names or len(parts) < 2
+        if (table.alias_column_names or not parts
                 or any(not isinstance(p, exp.Identifier) or "." in p.name for p in parts)):
-            return True
+            return None
         relation = ".".join(p.name for p in parts)
         declaration = self.declarations.get(relation)
         if declaration is None:
-            return True
+            return None
         columns, provenance = declaration
         self.applied_schemas[relation] = provenance
-        return name in columns
+        return columns
+
+    def table_may_have_column(self, table, name):
+        columns = self.declared_columns(table)
+        return columns is None or name in columns
 
     def column_candidates(self, node, scope, outputs):
         sources = self.relations(scope)
@@ -443,15 +561,38 @@ class Analysis:
             ):
                 self.unknown("UNBOUND_COLUMN", node, clause)
                 return Value(kind="UNKNOWN")
-            return passthrough(Origin(".".join(p.name for p in src.parts), node.name))
+            # Qualification selects a relation, but does not prove that the
+            # column exists when its complete declaration explicitly excludes it.
+            if node.table and not self.table_may_have_column(src, name):
+                self.unknown("UNBOUND_COLUMN", node, clause)
+                return Value(kind="UNKNOWN")
+            origin = Origin(".".join(p.name for p in src.parts), node.name)
+            self.on_column_binding(node, scope, clause, {
+                "kind": "NAMED_SOURCE", "source": origin.source, "column": origin.column})
+            return passthrough(origin)
         if node.db or node.catalog:
             self.unknown("UNBOUND_COLUMN", node, clause)
             return Value(kind="UNKNOWN")
         value = outputs.get(src, {}).get(name)
+        if name in self.unresolved_star_outputs.get(src, ()):
+            return Value(kind='UNKNOWN')
         if value is None:
             self.unknown("UNBOUND_COLUMN", node, clause)
             return Value(kind="UNKNOWN")
+        generator_output = self.generator_outputs.get((self.scope_ids[src], name))
+        if generator_output is not None:
+            self.on_column_binding(node, scope, clause, generator_output)
+            return value
+        names = [item.alias_or_name.lower() for item in src.expression.selects]
+        if names.count(name) == 1:
+            producer = {"statement": self.statement, "scope": self.scope_ids[src],
+                        "slot": names.index(name) + 1}
+            if any(all(mapping.get(k) == v for k, v in producer.items()) for mapping in self.mappings):
+                self.on_column_binding(node, scope, clause, {"kind": "PROJECTION", "producer": producer})
         return value
+
+    def on_column_binding(self, node, scope, clause, binding):
+        """Extension hook reached only after the existing resolver accepts a binding."""
 
     def same_group_input(self, column, projection, scope, outputs):
         if projection is None:
@@ -472,10 +613,15 @@ class Analysis:
             return Value(kind="CONSTANT")
         if isinstance(node, (exp.Alias, exp.Paren)):
             return read(node.this)
-        if (self.macro_context is None and isinstance(node, exp.Anonymous)
+        if (isinstance(node, exp.Anonymous)
                 and not isinstance(node.parent, exp.Dot) and node.name.lower() in self.macros):
+            if self.macro_context is not None and node.name.lower() == self.macro_context[0].name:
+                self.unknown("RECURSIVE_MACRO_UNVERIFIED", node, clause)
+                return Value(kind="UNKNOWN")
             return self.expand_macro(node, scope, outputs, role, clause, record)
         if isinstance(node, exp.Column):
+            if id(node) in self.group_alias_gaps:
+                return Value(kind="UNKNOWN")
             if node.is_star:
                 self.unknown("UNEXPANDED_STAR", node, clause)
                 return Value(kind="UNKNOWN")
@@ -493,7 +639,12 @@ class Analysis:
             while isinstance(base_node, exp.Paren):
                 base_node = base_node.this
             body = read(node.this, record_child=record and not isinstance(base_node, exp.Column))
-            tokens = path_tokens(node.expression)
+            path_expression = node.expression
+            if (self.macro_context is not None and self.macro_path_argument is not None
+                    and type(path_expression) is exp.Column and not path_expression.table
+                    and path_expression.name.lower() == self.macro_context[0].path_parameter):
+                path_expression = Dialect.get_or_raise(self.dialect).to_json_path(self.macro_path_argument)
+            tokens = path_tokens(path_expression)
             builtin = self.is_unqualified_builtin(node, "get_json_object")
             candidate = None
             if (tokens is None and builtin and self.dialect == "spark" and body.exact is not None
@@ -505,6 +656,14 @@ class Analysis:
                 extra = (read(node.expression) if node.expression is not None
                          and not isinstance(node.expression, exp.JSONPath) else Value())
                 return combine((body, extra), "UNKNOWN")
+            if body.kind == "UNION_VALUE" and builtin and tokens is not None:
+                origins = tuple(Origin(o.source, o.column, o.tokens + (
+                    (("parse", "json"),) if o.tokens else ()) + tokens) for o in body.inputs)
+                if record:
+                    for origin in origins:
+                        self.use(origin, role, clause, "EXTRACT", node,
+                                 conversion_semantics="UNION_COERCION_UNVERIFIED")
+                return Value(origins, body.slots, "DERIVED", generator_ports=body.generator_ports)
             if body.exact is None:
                 self.unknown("UNKNOWN_JSON_INPUT", node, clause, body.inputs)
                 return combine((body,), "UNKNOWN")
@@ -528,7 +687,7 @@ class Analysis:
             origin = Origin(base.source, base.column, base.tokens + hops + tokens)
             if record:
                 self.use(origin, role, clause, "EXTRACT", node)
-            return Value((origin,), body.slots, "EXTRACT", origin, body.generator_ports)
+            return Value((origin,), body.slots, "EXTRACT", origin, body.generator_ports, body.source_binding_status)
         if isinstance(node, exp.If):
             branches = [read(node.this, "CONDITION")]
             branches.extend(read(node.args[k]) for k in ("true", "false") if node.args.get(k) is not None)
@@ -577,8 +736,13 @@ class Analysis:
                 # use (including CONDITION in WHERE). All other args are literals.
                 self.unknown("UNSUPPORTED_EXPRESSION", node, clause, subject.inputs)
                 return combine((subject,), "UNKNOWN")
-        child_values = [read(child) for child in node.iter_expressions()]
+        children = list(node.iter_expressions())
+        child_values = [read(child) for child in children]
         merged = combine(child_values)
+        if (record and type(node) is exp.Anonymous and self.macro_context is None
+                and len(children) == len(node.expressions)
+                and all(a is b for a, b in zip(children, node.expressions))):
+            self.observe_opaque_arguments(node, children, child_values, scope, clause, role)
         if isinstance(node, (exp.Anonymous, exp.FromJson, exp.Window, exp.Bracket, exp.Dot)):
             code = "UNKNOWN_FUNCTION" if isinstance(node, exp.Anonymous) else "UNSUPPORTED_EXPRESSION"
             self.unknown(code, node, clause, merged.inputs)
@@ -589,6 +753,25 @@ class Analysis:
         node = scope.expression
         gen = node.this
         names = node.alias_column_names
+        fixed = self.fixed_map_explode(scope, outputs, scope_ids)
+        if fixed is not None:
+            return fixed
+        if (len(names) == 2 and len({n.lower() for n in names}) == 2
+                and gen.this is not None and not gen.expressions):
+            base = self.expression(gen.this, scope, outputs, "STRUCTURE", "LATERAL")
+            generator_id = f"{scope_ids[scope]}:explode"
+            ports = [{"id": f"{generator_id}:{slot}", "relation_alias": node.alias,
+                      "column": name, "slot": slot} for slot, name in enumerate(names, 1)]
+            self.generators.append({"id": generator_id, "scope": scope_ids[scope],
+                "consumer_scope": scope_ids.get(scope.parent), "function": "explode",
+                "input_semantics": "UNKNOWN", "row_effect": "EXPANSION",
+                "mode": "OUTER" if node.args.get("outer") else "INNER",
+                "structure_inputs": [o.as_dict() for o in base.inputs],
+                "outputs": ports, **self.evidence(gen)})
+            self.unknown("UNKNOWN_EXPLODE_INPUT_SEMANTICS", gen.this, "LATERAL", base.inputs)
+            return {name.lower(): Value(base.inputs, base.slots, "UNKNOWN",
+                    generator_ports=base.generator_ports | {port["id"]})
+                    for name, port in zip(names, ports)}
         if not node.alias or len(names) != 1 or gen.this is None or gen.expressions:
             self.unknown("UNSUPPORTED_GENERATOR", node, "LATERAL")
             if gen.this is not None:
@@ -622,12 +805,53 @@ class Analysis:
             element = Origin(origin.source, origin.column, origin.tokens + (
                 ("decode", "array<string>"), ("any_element", None),
             ))
-            value = Value((element,), base.slots, "ELEMENT_STRING", element)
+            value = Value((element,), base.slots, "ELEMENT_STRING", element, source_binding_status=base.source_binding_status)
         else:
             self.unknown("UNKNOWN_EXPLODE_INPUT_SEMANTICS", arg, "LATERAL", base.inputs)
             value = Value(base.inputs, base.slots, "UNKNOWN")
         return {names[0].lower(): Value(value.inputs, value.slots, value.kind, value.exact,
-                                        base.generator_ports | {port_id})}
+                                        base.generator_ports | {port_id}, value.source_binding_status)}
+
+    def fixed_map_explode(self, scope, outputs, scope_ids):
+        node, gen = scope.expression, scope.expression.this
+        names = node.alias_column_names
+        arg = gen.this
+        if (not self.allow_fixed_map_evidence or len(names) != 2
+                or len(set(n.lower() for n in names)) != 2 or gen.expressions
+                or not self.is_unqualified_builtin(gen, "explode")
+                or type(arg) is not exp.VarMap or not self.is_unqualified_builtin(arg, "map")):
+            return None
+        keys, values = arg.args.get("keys"), arg.args.get("values")
+        if (type(keys) is not exp.Array or type(values) is not exp.Array
+                or not keys.expressions or len(keys.expressions) != len(values.expressions)
+                or any(type(k) is not exp.Literal or not k.is_string for k in keys.expressions)
+                or len({k.this for k in keys.expressions}) != len(keys.expressions)):
+            return None
+        inputs = []
+        entries = []
+        for slot, (key, value) in enumerate(zip(keys.expressions, values.expressions), 1):
+            observed = self.expression(value, scope, outputs, "VALUE", "LATERAL")
+            inputs.append(observed)
+            entries.append({"slot": slot, "constructed_key": key.this,
+                            "key_position": self.evidence(key)["position"],
+                            "inputs": [o.as_dict() for o in observed.inputs],
+                            "value_kind": observed.kind, **self.evidence(value)})
+        merged = combine(inputs)
+        generator_id = f"{scope_ids[scope]}:explode"
+        ports = [{"id": f"{generator_id}:{i}", "relation_alias": node.alias,
+                  "column": name, "slot": i} for i, name in enumerate(names, 1)]
+        self.generators.append({"id": generator_id, "scope": scope_ids[scope],
+            "consumer_scope": scope_ids.get(scope.parent), "function": "explode",
+            "mode": "OUTER" if node.args.get("outer") else "INNER", "row_effect": "EXPANSION",
+            "input_semantics": "FIXED_MAP_CONSTRUCTION", "function_binding": "UNVERIFIED",
+            "entries": entries, "structure_inputs": [o.as_dict() for o in merged.inputs],
+            "outputs": ports, **self.evidence(gen)})
+        # Construction keys are not source JSON keys. Values have finite visible
+        # dependencies, but neither output is an exact/passthrough JSON carrier.
+        self.unknown("GENERATOR_FUNCTION_BINDING_UNVERIFIED", gen, "LATERAL", merged.inputs)
+        return {names[0].lower(): Value(kind="DERIVED", generator_ports=frozenset({ports[0]["id"]})),
+                names[1].lower(): Value(merged.inputs, merged.slots, "DERIVED",
+                                       generator_ports=merged.generator_ports | {ports[1]["id"]})}
 
     def lateral(self, scope, outputs, scope_ids):
         node = scope.expression
@@ -651,22 +875,39 @@ class Analysis:
         else:
             base = Value()
         exact = base.exact
-        if (exact is None or len(args) < 2 or len(args) != len(names) + 1
+        if (self.tuple_overridden or not node.alias or len(args) < 2 or len(args) != len(names) + 1
                 or len(set(n.lower() for n in names)) != len(names)
                 or not all(isinstance(k, exp.Literal) and k.is_string for k in args[1:])):
-            self.unknown("UNSUPPORTED_TUPLE_BINDING", gen, "LATERAL", base.inputs)
+            key_values = [self.expression(key, scope, outputs, "STRUCTURE", "LATERAL") for key in args[1:]]
+            self.unknown("UNSUPPORTED_TUPLE_BINDING", gen, "LATERAL", combine([base, *key_values]).inputs)
             return {}
         result = {}
+        generator_id = f"{scope_ids[scope]}:json_tuple"
+        ports = []
+        self.generators.append({"id": generator_id, "scope": scope_ids[scope],
+            "consumer_scope": scope_ids.get(scope.parent), "function": "json_tuple",
+            "mode": "OUTER" if node.args.get("outer") else "INNER", "row_effect": "UNVERIFIED",
+            "input_semantics": "EXACT_CARRIER" if exact else "UNKNOWN", "function_binding": "UNVERIFIED",
+            "structure_inputs": [origin.as_dict() for origin in base.inputs], "outputs": ports, **self.evidence(gen)})
+        if exact is None:
+            self.unknown("UNSUPPORTED_TUPLE_BINDING", gen, "LATERAL", base.inputs)
         hops = (("decode", "json_string"),) if base.kind == "ELEMENT_STRING" else (
             (("parse", "json"),) if base.kind == "EXTRACT" else ()
         )
         for slot, (key, alias) in enumerate(zip(args[1:], names), 1):
+            port_id = f"{generator_id}:{slot}"
+            ports.append({"id": port_id, "slot": slot, "relation_alias": node.alias, "column": alias,
+                          "key": key.this, "key_position": self.evidence(key)["position"]})
+            dependencies = base.generator_ports | {port_id}
+            if exact is None:
+                result[alias.lower()] = Value(base.inputs, base.slots, "UNKNOWN", generator_ports=dependencies)
+                continue
             origin = Origin(exact.source, exact.column, exact.tokens + hops + (("key", key.this),))
             request_id = len(self.uses)
             self.use(origin, "VALUE", "LATERAL", "TUPLE_REQUEST", gen, slot=slot, alias=alias,
                      key_position=self.evidence(key)["position"])
             result[alias.lower()] = Value((origin,), base.slots | {request_id}, "EXTRACT", origin,
-                                          base.generator_ports)
+                                          dependencies, base.source_binding_status)
         return result
 
     def row_number_projection(self, item, scope, outputs, port):
@@ -751,6 +992,30 @@ class Analysis:
             if folded_name in seen_names:
                 duplicate_names.add(folded_name)
             seen_names.add(folded_name)
+        # Check name collisions without expanding a star into logical slots.
+        star_names = set()
+        star_unverified = False
+        for item in node.selects:
+            if not item.is_star:
+                continue
+            sources = self.relations(scope)
+            if isinstance(item, exp.Column) and not item.db and not item.catalog:
+                candidates = [s for alias, s in sources.items() if alias.lower() == item.table.lower()]
+                star = item.this
+            else:
+                candidates = list(sources.values()) if isinstance(item, exp.Star) else []
+                star = item
+            columns = None
+            if (len(candidates) == 1 and isinstance(candidates[0], exp.Table)
+                    and isinstance(candidates[0].this, exp.Identifier) and isinstance(star, exp.Star)
+                    and not any(star.args.values())):
+                columns = self.declared_columns(candidates[0])
+            if columns is None:
+                star_unverified = True
+            else:
+                star_names.update(columns)
+        blocked = (seen_names if star_unverified else star_names) & (seen_names - {'*'})
+        self.unresolved_star_outputs[scope] = blocked
         for index, item in enumerate(node.selects):
             port = {"statement": self.statement, "scope": scope_id, "slot": index + 1}
             rank = self.row_number_projection(item, scope, outputs, port)
@@ -761,8 +1026,9 @@ class Analysis:
                     self.open_scopes.add(scope)
                 continue
             folded = name.lower()
-            if folded in slots:
-                self.unknown("AMBIGUOUS_OUTPUT", item, "SELECT")
+            if folded in slots or folded in blocked:
+                if folded in slots or folded in star_names:
+                    self.unknown("AMBIGUOUS_OUTPUT", item, "SELECT")
                 slots[folded] = Value(kind="UNKNOWN")
                 projections[folded] = None
                 ranks.pop(folded, None)
@@ -787,9 +1053,9 @@ class Analysis:
                 argument_count = count if count > 2 else None
                 port_reads = self.coalesce_port_reads(coalesce_args, scope, outputs) if count <= 8 else []
             terminal_binding = (self.terminal_column_binding(item, scope, outputs, value)
-                                if folded not in duplicate_names else None)
+                                if folded not in duplicate_names and folded not in blocked else None)
             self.mapping(scope_id, root, target, index + 1, name, item, value,
-                         port_reads, terminal_binding, port_model, argument_count)
+                         port_reads, terminal_binding, port_model, argument_count, projection_site=True)
             if root:
                 self.active.update(value.slots)
         for key, clause, role in (
@@ -799,6 +1065,37 @@ class Analysis:
         ):
             expr = node.args.get(key)
             if expr is None:
+                continue
+            if (key == "group" and only_projection_args(expr, {"expressions"})
+                    and not any(isinstance(term, exp.Literal) for term in expr.expressions)):
+                for term in expr.expressions:
+                    collisions = [col for col in term.find_all(exp.Column) if not col.table and col.name.lower() in slots
+                                  and col.find_ancestor(exp.Select) is node
+                                  and not self.same_group_input(col, projections[col.name.lower()], scope, outputs)]
+                    if collisions:
+                        for column in collisions:
+                            self.unknown("POSSIBLE_OUTPUT_ALIAS", column, clause)
+                        # A declared derived input slot may still be observed
+                        # conservatively even when output-alias precedence is
+                        # unverified. Do not resolve this through a physical
+                        # table of unknown schema or remove the alias gap.
+                        if type(term) is exp.Column:
+                            candidates = self.column_candidates(term, scope, outputs)
+                            sources = self.relations(scope)
+                            if (len(candidates) == 1 and isinstance(sources[candidates[0]], Scope)
+                                    and term.name.lower() in outputs.get(sources[candidates[0]], {})):
+                                start = len(self.uses)
+                                self.active.update(self.expression(term, scope, outputs, role, clause).slots)
+                                for use in self.uses[start:]:
+                                    use["binding_status"] = "INPUT_OR_OUTPUT_ALIAS_UNVERIFIED"
+                        else:
+                            self.group_alias_gaps = {id(column) for column in collisions}
+                            try:
+                                self.active.update(self.expression(term, scope, outputs, role, clause).slots)
+                            finally:
+                                self.group_alias_gaps.clear()
+                    else:
+                        self.active.update(self.expression(term, scope, outputs, role, clause).slots)
                 continue
             if (key in {"group", "order", "having", "qualify"}
                     and any(not c.table and c.name.lower() in slots
@@ -920,8 +1217,33 @@ class Analysis:
         # A SQL relation token is an observed endpoint, not a catalog binding.
         return "SQL_NAMED_RELATION_COLUMN"
 
+    def identifier_anchor(self, identifier, name):
+        if isinstance(identifier, exp.Identifier) and identifier.name.lower() == name.lower():
+            pos = self.evidence(identifier)['position']
+            if pos and self.sql[pos['start']:pos['end']].lower() == name.lower():
+                return pos
+
+    def mapping_evidence(self, node, name, projection_site=False, anchor=None):
+        evidence = self.evidence(node)
+        # Alias nodes may have no span. Anchor an actual projection to its
+        # outer call name only when the original source verifies that token.
+        if (projection_site and evidence['position'] is None and isinstance(node, exp.Alias)
+                and isinstance(node.this, exp.Anonymous)):
+            position = self.evidence(node.this)['position']
+            if position:
+                token = self.sql[position['start']:position['end']]
+                if re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', token) and token.lower() == node.this.name.lower():
+                    evidence['position'] = position
+        if projection_site and isinstance(node, exp.Alias):
+            anchor = node.args.get('alias')
+        if evidence['position'] is None and anchor is not None:
+            evidence['position'] = self.identifier_anchor(anchor, name)
+        return evidence
+
     def mapping(self, scope_id, root, target, slot, name, node, value, port_reads=None,
-                terminal_binding=None, port_model=None, argument_count=None):
+                terminal_binding=None, port_model=None, argument_count=None, *, projection_site=False,
+                anchor=None):
+        evidence = self.mapping_evidence(node, name, projection_site, anchor)
         self.mappings.append({"scope": scope_id, "root": root, "target": target, "slot": slot,
                               "output": name, "kind": value.kind,
                               **({"port_reads": port_reads} if port_reads or port_model else {}),
@@ -929,7 +1251,7 @@ class Analysis:
                               **({"argument_count": argument_count} if argument_count is not None else {}),
                               **({"terminal_binding": terminal_binding} if terminal_binding else {}),
                               "generator_ports": sorted(value.generator_ports),
-                              "inputs": [x.as_dict() for x in value.inputs], **self.evidence(node)})
+                              "inputs": [x.as_dict() for x in value.inputs], **evidence})
 
     def positional_union_inputs(self, scope, outputs):
         node = scope.expression
@@ -937,8 +1259,23 @@ class Analysis:
                 or scope.outer_columns
                 or any(v for k, v in node.args.items() if k not in {"this", "expression", "distinct"})):
             return None
-        branches = scope.set_operation_scopes
-        if len(branches) != 2:
+        def leaves(current):
+            expression = current.expression
+            if isinstance(expression, exp.Select):
+                return [current]
+            if (type(expression) is not exp.Union or expression.args.get("distinct") is not False
+                    or current.outer_columns or any(v for k, v in expression.args.items()
+                        if k not in {"this", "expression", "distinct"})):
+                return None
+            result = []
+            for child in current.set_operation_scopes:
+                items = leaves(child)
+                if items is None:
+                    return None
+                result.extend(items)
+            return result
+        branches = leaves(scope)
+        if not branches or len(branches) < 2:
             return None
         bound = []
         for branch in branches:
@@ -952,18 +1289,31 @@ class Analysis:
                     or len(set(names)) != len(names) or any(name not in values for name in names)):
                 return None
             bound.append([(name, values[name]) for name in names])
-        left, right = bound
-        if len(left) != len(right):
+        left = bound[0]
+        if any(len(items) != len(left) for items in bound):
             return None
         merged = {}
         supported = {"WHOLE_RAW", "EXTRACT", "ELEMENT_STRING", "CONSTANT"}
-        for (name, a), (_, b) in zip(left, right):
+        for slot, (name, _) in enumerate(left, 1):
             # Do not combine unresolved slots or arbitrary computations that
             # may have only partial dependencies.
             # Even when both are known, do not preserve either exact identity:
             # set-level type coercion and branch selection are not modeled here.
-            merged[name] = (combine((a, b)) if a.kind in supported and b.kind in supported
-                            else Value(kind="UNKNOWN"))
+            values = [items[slot - 1][1] for items in bound]
+            kind = ("UNION_VALUE" if len(branches) > 2 else "DERIVED") if all(
+                value.kind in supported for value in values) else "UNKNOWN"
+            merged[name] = combine(values, kind)
+            # Slot identity follows the validated positional layout even when
+            # the selected value or its common runtime type is unknown.
+            item = branches[0].expression.selects[slot - 1]
+            self.mapping(self.scope_ids[scope], False, None, slot, name, item, merged[name])
+            self.mappings[-1]["union_branches"] = [
+                {"branch_slot": i, "producer": {"statement": self.statement,
+                 "scope": self.scope_ids[branch], "slot": slot},
+                 "branch_kind": values[i - 1].kind,
+                 "position": self.mapping_evidence(branch.expression.selects[slot - 1],
+                     bound[i - 1][slot - 1][0], projection_site=True)["position"]}
+                for i, branch in enumerate(branches, 1)]
         self.unknown("UNION_ALL_TYPE_COERCION_UNVERIFIED", node)
         return merged
 
@@ -1030,6 +1380,22 @@ class Analysis:
                 )
         for index, statement, declaration_tokens in statements:
             self.statement = index
+            if (isinstance(statement, exp.Create) and statement.args.get("kind") == "FUNCTION"
+                    and isinstance(statement.this, exp.Table) and statement.this.name.lower() == "json_tuple"):
+                self.tuple_overridden = True
+            if (isinstance(statement, exp.Create) and statement.args.get("kind") == "FUNCTION"
+                    and isinstance(statement.this, exp.Table)):
+                function_name = statement.this.name.lower()
+                self.macros.pop(function_name, None)
+                self.seen_macros.add(function_name)
+            if (isinstance(statement, exp.Create) and statement.args.get("kind") == "FUNCTION"
+                    and isinstance(statement.this, exp.Table)
+                    and statement.this.name.lower() == "get_json_object"):
+                self.json_builtin_overridden = True
+            if (isinstance(statement, exp.Create) and statement.args.get("kind") == "FUNCTION"
+                    and isinstance(statement.this, exp.Table)
+                    and statement.this.name.lower() in {"map", "explode"}):
+                self.fixed_map_overridden = True
             if isinstance(statement, StatementFailure):
                 self.unknowns.append({"code": "PARSE_ERROR", "statement": index,
                                       "position": statement.position, "message": statement.message})
@@ -1038,6 +1404,12 @@ class Analysis:
             if declaration_tokens is not None:
                 token = declaration_tokens[3] if len(declaration_tokens) > 3 else declaration_tokens[0]
                 name = token.text.lower()
+                if name == "json_tuple":
+                    self.tuple_overridden = True
+                if name == "get_json_object":
+                    self.json_builtin_overridden = True
+                if name in {"map", "explode"}:
+                    self.fixed_map_overridden = True
                 duplicate = name in self.seen_macros
                 self.seen_macros.add(name)
                 if duplicate or statement is None:
@@ -1056,18 +1428,45 @@ class Analysis:
             if isinstance(statement, (exp.Insert, exp.Create)):
                 target = statement.this.sql(dialect=self.dialect)
                 query = statement.args.get("expression")
+                # Hive WITH ... INSERT stores the WITH on the statement, not
+                # its SELECT. Transfer the AST clause on a private query copy;
+                # otherwise its CTE names are mistaken for physical relations.
+                if isinstance(query, exp.Query) and statement.args.get("with_") is not None:
+                    if query.args.get("with_") is not None:
+                        self.unknown("CONFLICTING_QUERY_WITH", statement)
+                        continue
+                    query = query.copy()
+                    query.set("with_", statement.args["with_"].copy())
             if not isinstance(query, exp.Query):
+                if isinstance(statement, exp.Command) and str(statement.this).upper() == "DROP":
+                    dropped = re.fullmatch(r"\s*TEMPORARY\s+MACRO\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*",
+                                           str(statement.expression), re.IGNORECASE)
+                    if dropped:
+                        self.macros.pop(dropped[1].lower(), None)
+                        continue
                 self.unknown("UNSUPPORTED_STATEMENT", statement)
-                self.macros.clear()  # may alter the visible session environment
+                if not (isinstance(statement, exp.Create) and statement.args.get("kind") in {"TABLE", "FUNCTION"}
+                        and isinstance(statement.this, (exp.Table, exp.Schema))):
+                    self.macros.clear()
                 continue
             if query.args.get("with_") and query.args["with_"].args.get("recursive"):
                 self.unknown("RECURSIVE_QUERY", query)
                 continue
             try:
+                self.allow_fixed_map_evidence = (parsed and self.dialect == "hive"
+                                                 and not self.fixed_map_overridden)
+                mapping_start = len(self.mappings)
                 self.query(query, target, check_projection=(
                     parsed and self.dialect == "spark" and len(statements) == 1
                     and type(statement) is exp.Select
                 ))
+                if self.on_query is not None:
+                    by_id = {identity: scope for scope, identity in self.scope_ids.items()}
+                    ports = {scope: [] for scope in self.scope_ids}
+                    for mapping in self.mappings[mapping_start:]:
+                        ports[by_id[mapping["scope"]]].append({key: mapping[key] for key in ("statement", "scope", "slot")})
+                    self.on_query({"statement": index, "tree": statement, "query": query,
+                                   "scope_ids": self.scope_ids.copy(), "ports": ports})
             except SqlglotError as err:
                 self.unknown("SCOPE_ERROR", query)
                 self.unknowns[-1]["message"] = str(err)
@@ -1083,6 +1482,7 @@ class Analysis:
         return {
             "uses": self.uses, "mappings": self.mappings, "unknowns": self.unknowns,
             "generators": self.generators,
+            "opaque_call_arguments": self.opaque_call_arguments,
             "windows": self.windows, "row_selections": self.row_selections,
             "coverage": {"parsed": parsed, "partial": not parsed and recovered > 0,
                          "recovered": recovered, "complete": False,
@@ -1175,6 +1575,7 @@ class Analysis:
         scopes = traverse_scope(query)
         outputs = {}
         self.open_scopes = set()
+        self.unresolved_star_outputs = {}
         if not scopes:
             self.unknown("NO_QUERY_SCOPE", query)
         scope_ids = {scope: f"{self.statement}:{idx}" for idx, scope in enumerate(scopes, 1)}
@@ -1208,12 +1609,22 @@ class Analysis:
                     }
             elif isinstance(source, exp.UDTF):
                 outputs[scope] = self.lateral(scope, outputs, scope_ids)
+                if self.generators and self.generators[-1]["scope"] == scope_id:
+                    generator = self.generators[-1]
+                    for port in generator["outputs"]:
+                        self.generator_outputs[scope_id, port["column"].lower()] = {
+                            "kind": "PROJECTION", "generator_id": generator["id"],
+                            "relation_alias": port["relation_alias"], "column": port["column"],
+                            "producer": {"statement": self.statement, "scope": scope_id, "slot": port["slot"]}}
                 if not outputs[scope]:
                     self.open_scopes.add(scope)
+                table_alias = source.args.get('alias')
+                identifiers = table_alias.columns if isinstance(table_alias, exp.TableAlias) else []
                 for slot, alias in enumerate(source.alias_column_names, 1):
                     if alias.lower() in outputs[scope]:
                         self.mapping(scope_id, False, None, slot, alias, source,
-                                     outputs[scope][alias.lower()])
+                                     outputs[scope][alias.lower()],
+                                     anchor=identifiers[slot - 1] if slot <= len(identifiers) else None)
             else:
                 merged = self.positional_union_inputs(scope, outputs) if not root else None
                 if merged is not None:
@@ -1227,7 +1638,7 @@ class Analysis:
 
 
 def analyze_subfields(sql: str, dialect: str = "spark", source_schemas: Mapping | None = None) -> dict:
-    """Return local facts; optional caller declarations narrow bare-column binding only."""
+    """Return SQL-level facts; complete caller declarations can rule out source columns."""
     if dialect not in {"spark", "hive"}:
         raise ValueError("dialect must be 'spark' or 'hive'")
     return Analysis(sql, dialect, source_schemas).run()
