@@ -9,7 +9,7 @@ export interface RecordRow {
 export interface Result {
   uses: RecordRow[];
   mappings: RecordRow[];
-  unknowns: RecordRow[];
+  unknowns?: RecordRow[];
   coverage?: { parsed?: boolean; partial?: boolean; recovered?: number; complete?: boolean };
   generators?: unknown;
   windows?: unknown;

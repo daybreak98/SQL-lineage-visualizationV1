@@ -3,8 +3,9 @@ const isRecord = value => value !== null && typeof value === 'object' && !Array.
 export const format = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
 
 export function normalize(value) {
-  if (!isRecord(value) || !['uses', 'mappings', 'unknowns'].every(key => Array.isArray(value[key]))) {
-    throw new Error('响应缺少 uses、mappings 或 unknowns 数组。');
+  if (!isRecord(value) || !['uses', 'mappings'].every(key => Array.isArray(value[key])) ||
+      (value.unknowns !== undefined && !Array.isArray(value.unknowns))) {
+    throw new Error('响应缺少 uses 或 mappings 数组，或 unknowns 格式无效。');
   }
   const groups = new Map();
   value.uses.forEach((row, index) => {

@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react';
+import type { RefObject } from 'react';
 import { cx } from '../utils/cx';
 
 interface Props {
   split: number;
+  measureRef?: RefObject<HTMLElement | null>;
+  label?: string;
   setSplit: (value: number) => void;
 }
 
-export function Splitter({ split, setSplit }: Props) {
+export function Splitter({ split, setSplit, measureRef, label = 'Resize SQL and Canvas panels' }: Props) {
   const [dragging, setDragging] = useState(false);
   const [start, setStart] = useState({ x: 0, split });
 
   useEffect(() => {
     const move = (event: MouseEvent) => {
       if (!dragging) return;
-      const workspace = document.getElementById('workspace');
+      const workspace = measureRef?.current ?? document.getElementById('workspace');
       const width = workspace?.getBoundingClientRect().width || window.innerWidth;
       const next = Math.max(24, Math.min(62, start.split + ((event.clientX - start.x) / width) * 100));
       setSplit(next);
@@ -25,14 +28,14 @@ export function Splitter({ split, setSplit }: Props) {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
     };
-  }, [dragging, setSplit, start]);
+  }, [dragging, measureRef, setSplit, start]);
 
   return (
     <div className="splitter-zone">
       {dragging && <div className="overlay show" />}
       <button
         className={cx('splitter', dragging && 'dragging')}
-        aria-label="Resize SQL and Canvas panels"
+        aria-label={label}
         onMouseDown={(event) => {
           event.preventDefault();
           setStart({ x: event.clientX, split });

@@ -7,7 +7,7 @@
 .subfield-app form,.subfield-app .reports{padding:1rem}
 .subfield-app label{font-weight:600}
 .subfield-app textarea{display:block;resize:vertical;width:100%;margin:.4rem 0 .75rem;padding:.55rem;font:inherit;font-family:monospace;border:1px solid var(--line);border-radius:.4rem}
-.subfield-app button:not(.btn):not(.btn-primary),.subfield-app select:not(.select){font:inherit;color:inherit;background:#fff;border:1px solid #bfcde0;border-radius:.4rem;padding:.35rem .65rem;max-width:100%}
+.subfield-app button:not(.btn):not(.btn-primary):not(.splitter),.subfield-app select:not(.select){font:inherit;color:inherit;background:#fff;border:1px solid #bfcde0;border-radius:.4rem;padding:.35rem .65rem;max-width:100%}
 .subfield-app button:not(:disabled),.subfield-app summary{cursor:pointer}
 .subfield-app button:hover:not(:disabled){border-color:var(--blue)}
 .subfield-app button:focus-visible,.subfield-app select:focus-visible,.subfield-app textarea:focus-visible,.subfield-app a:focus-visible,.subfield-app summary:focus-visible{outline:2px solid #396fb3;outline-offset:2px}
@@ -137,6 +137,49 @@
 .subfield-app .subfield-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;padding:3px 10px;border-top:1px solid var(--line);background:var(--panel);color:var(--slate-600);font-size:11px}
 .subfield-app .subfield-status .pill{height:22px}
 
+/* Result and check surfaces follow the workbench panel and control styles. */
+.subfield-app .j-task-summary,
+.subfield-app .j-path-check{
+  flex:none;display:grid;gap:6px;min-width:0;overflow-wrap:anywhere;
+  border:1px solid var(--line);border-radius:8px;padding:9px 12px;
+  margin:8px 12px 0;background:var(--panel);
+}
+.subfield-app .j-path-check{margin:0;grid-template-columns:repeat(2,minmax(0,1fr));align-items:end}
+.subfield-app .j-path-check label{display:grid;grid-template-columns:minmax(0,1fr)}
+@container (width >= 780px){
+  .subfield-app .j-path-check{grid-template-columns:minmax(0,1.25fr) minmax(0,.8fr) minmax(0,1fr) auto}
+}
+.subfield-app .j-task-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px;color:var(--slate-900);font-size:15px;font-weight:700}
+.subfield-app .j-scope{display:flex;align-items:baseline;flex-wrap:wrap;gap:3px 12px;color:var(--slate-600);font-size:12px}
+.subfield-app .j-path-check :is(label,.actions){min-width:0}
+.subfield-app .j-path-check label{align-items:center;gap:4px 7px}
+.subfield-app .j-path-check :is(input:not([type=checkbox]),select){
+  min-width:0;max-width:100%;min-height:32px;padding:4px 8px;
+  border:1px solid var(--line);border-radius:7px;background:white;color:inherit;font:inherit;
+}
+.subfield-app .j-path-check input:focus-visible{outline:2px solid #396fb3;outline-offset:2px}
+.subfield-app .j-path-check .actions{gap:6px 8px}
+.subfield-app .j-path-result{display:grid;gap:5px;min-width:0;padding-block:6px 2px;border-top:1px solid var(--line)}
+.subfield-app .j-path-destination{display:block;min-width:0;color:var(--slate-600);font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+.subfield-app .json-tree-row:has(.j-path-destination){min-height:34px;line-height:1.35}
+.subfield-app .j-advanced-review{min-width:0;overflow-wrap:anywhere;border-top:1px solid var(--line);padding:8px 12px}
+.subfield-app .j-advanced-review > summary{color:var(--slate-600)}
+.subfield-app .j-output-options{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0}
+.subfield-app .j-output-options label{min-width:0;overflow-wrap:anywhere}
+
+/* Shapes and text preserve the three states when color is not distinguishable. */
+.subfield-app .j-path-chip{
+  display:inline-flex;align-items:baseline;justify-self:start;vertical-align:middle;gap:5px;
+  min-width:0;max-width:100%;padding:1px 6px;border:1px solid transparent;border-radius:5px;
+  font-size:11px;line-height:1.4;font-weight:650;overflow-wrap:anywhere;
+}
+.subfield-app .j-path-chip::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;align-self:center;background:currentColor}
+.subfield-app .j-path-chip[data-status=observed]{color:#166534;background:#f0fdf4;border-color:#bbdfc8}
+.subfield-app .j-path-chip[data-status=not-observed]{color:#475569;background:#f8fafc;border-color:#c9d2dd}
+.subfield-app .j-path-chip[data-status=not-observed]::before{box-sizing:border-box;border:1.5px solid currentColor;background:none}
+.subfield-app .j-path-chip[data-status=unknown]{color:#92400e;background:#fffbeb;border-color:#e7c99d}
+.subfield-app .j-path-chip[data-status=unknown]::before{border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%)}
+
 @container (width < 1040px){
   .subfield-app,.subfield-app .subfield-main{height:auto;min-height:100%}
   .subfield-app .shell,.subfield-app .shell:has(#repository-sql-editor){grid-template-columns:minmax(0,1fr);flex:1 0 auto}
@@ -150,4 +193,20 @@
   .subfield-app .json-canvas{grid-template-columns:minmax(0,1fr)}
   .subfield-app .json-tree-pane{max-height:175px;border-right:0;border-bottom:1px solid var(--line)}
   .subfield-app .subfield-search{flex-grow:1}
+  .subfield-app :is(.j-task-summary,.j-path-check){margin-inline:8px;padding-inline:9px}
+  .subfield-app .j-path-check :is(input:not([type=checkbox]),select){width:100%}
+
+}
+
+.subfield-app .j-analysis-area{display:flex;flex-direction:column;min-width:0;min-height:0}
+.subfield-app .j-analysis-area>.work{flex:1}
+.subfield-app .j-key-mode{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.subfield-app .j-analysis-area .splitter{cursor:col-resize}
+@container (width >= 1040px){
+  .subfield-app .j-analysis-area:has(#repository-sql-editor){display:grid;grid-template-columns:minmax(0,var(--j-sql-split)) 10px minmax(0,1fr)}
+  .subfield-app .j-analysis-area #repository-sql-editor{display:flex;align-items:stretch;min-width:0;min-height:0}
+  .subfield-app .j-analysis-area #repository-sql-editor .editor-body{flex:1 1 auto;height:auto;min-height:220px}
+}
+@container (width < 1040px){
+  .subfield-app .j-analysis-area>.splitter-zone{display:none}
 }

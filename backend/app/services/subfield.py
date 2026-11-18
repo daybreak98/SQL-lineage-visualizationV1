@@ -469,6 +469,12 @@ class Analysis:
                               "inputs": [o.as_dict() for o in inputs], **self.located_evidence(node)})
 
     def use(self, origin, role, clause, kind, node, **extra):
+        if (kind == "EXTRACT" and self.macro_context is None
+                and type(node.expression) is exp.JSONPath):
+            # Only the original-input parser supplies a verified literal span.
+            path_position = node.expression.meta.get("json_path_position")
+            if path_position is not None:
+                extra["json_path_position"] = dict(path_position)
         if clause in {"GROUP_BY", "WINDOW_PARTITION", "WINDOW_ORDER"}:
             extra["scope"] = self.current_scope_id
         self.uses.append({**origin.as_dict(), "role": role, "clause": clause, "kind": kind,

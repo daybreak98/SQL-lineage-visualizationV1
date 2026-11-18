@@ -40,7 +40,7 @@ export function graphFacts(result) {
       addEdge(path.key, projection, uncertain || path.uncertain, row);
     }
   });
-  for (const [index, row] of result.unknowns.entries()) {
+  for (const [index, row] of (result.unknowns ?? []).entries()) {
     const key = addNode(identity(['unknown', index]), 3, row?.code || `未决 #${index + 1}`, true, row);
     nodes.get(key).kind = 'unknown';
   }

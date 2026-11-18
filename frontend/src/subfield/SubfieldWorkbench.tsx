@@ -1,4 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Splitter } from '../components/Splitter';
 import { analyzeSubfieldSql } from '../api/client';
 import { normalize, parseSourceSchemas, rootOutputs } from './model.mjs';
 import { pathTree, projectPath } from './path-tree.mjs';
@@ -13,8 +15,10 @@ import archiveEvidence from './archive-evidence-examples.json';
 import type { EvidenceOrigin, EvidenceSnapshot } from './evidenceBundle';
 import { isTextMapEvidence, textMapLocations } from './textMapEvidence';
 import { createSQLPositionIndex } from './sqlPositionIndex';
-import { jsonReadLocation } from './jsonReadLocation';
+import { jsonReadLocation, preferredJsonReadLocation } from './jsonReadLocation';
 import type { PathItem, Port, Position, RecordRow, Result } from './contract';
+import { checkLabels, jsonBranches, keyCheck, keyCheckReason, literalKey, outputId, outputLabel, reviewBoundary, summarizePaths } from './taskSummary';
+import type { CheckState, Output } from './taskSummary';
 import './workbench.css';
 
 const Editor = lazy(() => import('./SubfieldEditor'));
@@ -46,7 +50,16 @@ const examples: Example[] = [
   {name: '合成文本 Map 摘录', sql: archiveEvidence.r24.sql, dialect: archiveEvidence.r24.dialect,
     excerpt: archiveEvidence.r24, note: '合成 HQL 片段：分别定位函数及查键。'},
 ];
-const exampleKeys = [{ source: 'lab.media_events', column: 'event_payload', keys: ['media_id', 'session_id', 'example_unseen_key'] }];
+type Candidate = { source: string; column: string; key: string };
+type Check = { status: CheckState; path: string; ports: Output[]; message: string; candidate?: Candidate };
+const checkCopy: Record<CheckState, string> = {
+  observed: '在本次 SQL 中找到与此键重叠的读取；此结论不能证明每个所选输出都依赖此键。',
+  'not-observed': '在本次 SQL 和所列输出范围下未见与此键重叠的读取。键是否存在、修改是否有影响仍需核对。',
+  unknown: '服务没有提供可确认的逐键结果。请核对源字段、输出范围和未决记录。',
+};
+function PathChip({ state }: { state: CheckState }) {
+  return <span className="j-path-chip" data-status={state}>{checkLabels[state]}</span>;
+}
 const roleNames: Record<string, string> = { VALUE: '输出值依赖', CONDITION: '条件依赖', CARRIER: '载体传递', STRUCTURE: '结构依赖', RELATIONAL: '关系依赖', REPRESENTATION: '原始表示依赖' };
 const pathLabel = ({ input }: PathItem) => `${input.source} · ${input.column} · ${input.path}`;
 
@@ -80,16 +93,21 @@ function treeOf(paths: PathItem[]) {
 function contains(node: Branch, id?: string): boolean {
   return node.paths.some(item => item.id === id) || [...node.children.values()].some(child => contains(child, id));
 }
-const PathTree = memo(function PathTree({ root, active, select }: {
-  root: Branch; active?: string; select: (item: PathItem) => void;
+const PathTree = memo(function PathTree({ root, active, select, byPath, check }: {
+  root: Branch; active?: string; select: (item: PathItem) => void; byPath: Map<string, Output[]>; check: Check | null;
 }) {
   function pathButton(item: PathItem) {
     return <button type="button" className="json-tree-row" key={item.id}
-      aria-pressed={item.id === active} onClick={() => select(item)}>{item.input.path === '$' ? '整列（$）' : item.input.path}</button>;
+      aria-pressed={item.id === active} onClick={() => select(item)}>
+      <span>{item.input.path === '$' ? '整列（$）' : item.input.path}</span>
+      {item.input.path !== '$' && <><PathChip state={item.uses.length > 0 ? 'observed' : 'unknown'} />
+        <span className="j-path-destination">{byPath.get(item.id)?.slice(0, 2).map(output => output.output ?? '未命名输出').join('、') || '下游输出暂不能判断'}
+          {(byPath.get(item.id)?.length ?? 0) > 2 && ` 等 ${byPath.get(item.id)?.length} 个输出`}</span></>}
+    </button>;
   }
   function render([key, node]: [string, Branch], depth: number) {
     if (depth >= 2 && !node.children.size && node.paths.length === 1) return pathButton(node.paths[0]);
-    return <details key={key} open={contains(node, active) || undefined}><summary>{node.label}</summary>
+    return <details key={key} open={depth < 5 || contains(node, active) || undefined}><summary>{node.label}</summary>
       <div className="json-tree-children">
         {node.paths.map(pathButton)}
         {[...node.children.entries()].map(child => render(child, depth + 1))}
@@ -97,7 +115,10 @@ const PathTree = memo(function PathTree({ root, active, select }: {
     </details>;
   }
   return <section className="json-tree-pane" aria-label="JSON 枝干树">
-    <div className="json-pane-head"><h2>JSON 枝干树</h2></div>
+    <div className="json-pane-head"><h2>JSON 枝干树</h2><p>显示本次分析发现的路径；不是完整 JSON 结构。</p></div>
+    {check?.candidate && <p className="j-path-destination" aria-label="按所选范围检查的键">
+      {check.candidate.source} · {check.candidate.column} · {check.path} <PathChip state={check.status} />
+    </p>}
     {root.children.size ? [...root.children.entries()].map(child => render(child, 0)) : <p className="muted">没有已绑定的源路径。</p>}
   </section>;
 });
@@ -113,7 +134,7 @@ type EvidenceOptions = { index: SQLPositionIndex | null; locate: (range: Positio
 function evidenceLocations(row: RecordRow, index: SQLPositionIndex | null) {
   if (isTextMapEvidence(row)) return textMapLocations(row);
   const path = jsonReadLocation(row, index);
-  return path ? [{ label: '载体', position: row.position }, { label: 'JSON 路径字面量', position: path }]
+  return path ? [{ label: row.producer ? '载体' : '读取调用', position: row.position }, { label: 'JSON 路径字面量', position: path }]
     : [{ label: '', position: row.position }];
 }
 
@@ -160,8 +181,11 @@ export default function SubfieldWorkbench() {
   const [selected, setSelected] = useState<PathItem | null>(null), [query, setQuery] = useState('');
   const [picked, setPicked] = useState<{ title: string; rows: RecordRow[]; fromReview: boolean } | null>(null);
   const [protectedSlots, setProtectedSlots] = useState<number[]>([]);
-  const [candidate, setCandidate] = useState(false);
-  const [review, setReview] = useState<unknown>(null), [reviewStatus, setReviewStatus] = useState('未指定保护点。');
+  const [candidatePath, setCandidatePath] = useState(''), [candidateSource, setCandidateSource] = useState(''), [candidateColumn, setCandidateColumn] = useState('');
+  const [inputMode, setInputMode] = useState<'path' | 'key'>('path');
+  const analysisArea = useRef<HTMLDivElement>(null), [sqlSplit, setSqlSplit] = useState(44);
+  const [check, setCheck] = useState<Check | null>(null);
+  const [review, setReview] = useState<unknown>(null), [reviewStatus, setReviewStatus] = useState('尚未执行高级核查。');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const pending = useRef(false);
   const revision = useRef(0);
@@ -172,8 +196,20 @@ export default function SubfieldWorkbench() {
   const writing = useRef<number | null>(null);
   const inspectorEvidence = useRef<HTMLDivElement>(null);
   const paths = useMemo(() => pathTree(result), [result]);
-  const tree = useMemo(() => treeOf(paths), [paths]);
-  const roots = useMemo(() => rootOutputs(result?.mappings ?? []), [result]);
+  const roots: Output[] = useMemo(() => rootOutputs(result?.mappings ?? []), [result]);
+  const task = useMemo(() => summarizePaths(result, paths), [result, paths]);
+  const tree = useMemo(() => treeOf(paths.filter(item => item.input.path === '$').concat(task.branches)), [paths, task]);
+  const sourceColumns = useMemo(() => [...new Map(paths.map(({ input }) => [JSON.stringify([input.source, input.column]), input])).values()], [paths]);
+  const selectedOutputs = roots.filter((_, index) => protectedSlots.includes(index));
+  const allSelected = roots.length > 0 && selectedOutputs.length === roots.length;
+  const scopeText = !roots.length ? '没有可选输出' : allSelected ? `全部 ${roots.length} 个输出（默认）`
+    : selectedOutputs.length ? `已选 ${selectedOutputs.length} / ${roots.length} 个输出（自定义）`
+      : `尚未选择输出（0 / ${roots.length}）`;
+  const scopeNotice = !roots.length ? '当前 SQL 没有可检查的输出，请核对分析结果。'
+    : !selectedOutputs.length ? '请选择本次问题需要检查的输出。未选择输出时不会检查。' : '';
+  const scopeDetails = useRef<HTMLDetailsElement>(null);
+  const [rangeChanged, setRangeChanged] = useState(false);
+  const [keyChecking, setKeyChecking] = useState(false);
   const projection = useMemo(() => selected && result ? projectPath(result, selected) : null, [selected, result]);
   // Choose from the original response: projecting a path can remove port reads.
   const buildGraph = result?.mappings.some(row => row.terminal_binding || row.port_reads)
@@ -198,7 +234,7 @@ export default function SubfieldWorkbench() {
     setPositionIndex(null);
     setAnalysisSnapshot(null); setReviewSnapshot(null); setDownloadError(''); setDownloading(false);
     setResult(null); setSurface('table'); setSelected(null); setPicked(null); setQuery(''); setError('');
-    setProtectedSlots([]); setReview(null); setReviewStatus('未指定保护点。'); setCandidate(false); setLocation(null);
+    setProtectedSlots([]); setRangeChanged(false); setKeyChecking(false); setReview(null); setReviewStatus('尚未执行高级核查。'); setCheck(null); setCandidatePath(''); setCandidateSource(''); setCandidateColumn(''); setLocation(null);
   }
   async function requestSnapshot(request: Request, origin: EvidenceOrigin): Promise<EvidenceSnapshot> {
     const requestId = globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${++localRequestSequence}`;
@@ -224,6 +260,13 @@ export default function SubfieldWorkbench() {
       setPositionIndex(createSQLPositionIndex(input));
       setAnalysisSnapshot(captured);
       setSubmitted(input); setResult(response); setEditorOpen(false);
+      setProtectedSlots(rootOutputs(response.mappings).map((_, index) => index));
+      const branches = jsonBranches(pathTree(response));
+      const first = branches.find(item => item.uses.length > 0) ?? branches[0];
+      if (first) {
+        select(first);
+        setCandidateSource(first.input.source); setCandidateColumn(first.input.column);
+      }
     } catch (exception) { if (issued === revision.current) setError(exception instanceof Error ? exception.message : '分析失败'); }
     finally { pending.current = false; setBusy(false); }
   }
@@ -234,31 +277,64 @@ export default function SubfieldWorkbench() {
   }
   function invalidateReview() {
     revision.current++;
-    setReview(null); setReviewSnapshot(null); setDownloadError(''); setDownloading(false);
+    setReview(null); setReviewSnapshot(null); setCheck(null); setDownloadError(''); setDownloading(false);
     setPicked(value => value?.fromReview ? null : value);
   }
-  async function runReview() {
+  function updateScope(next: number[]) {
+    if (next.length === protectedSlots.length && next.every(slot => protectedSlots.includes(slot))) return;
+    setProtectedSlots(next);
+    invalidateReview();
+    setRangeChanged(true);
+    setReviewStatus('检查范围已更新，请重新检查。');
+  }
+  async function runReview(candidate?: Candidate, displayPath = candidatePath.trim()) {
     if (pending.current || !analysisSnapshot) return;
-    if (!protectedSlots.length) { setReviewStatus('请选择至少一个根输出。'); return; }
+    if (!selectedOutputs.length) { setReviewStatus('请选择至少一个根输出。'); return; }
+    const assessment = candidate && { path: displayPath, ports: selectedOutputs, candidate };
     pending.current = true; setBusy(true); invalidateReview(); setReviewStatus('正在评审…');
+    if (candidate) { setKeyChecking(true); setRangeChanged(false); }
     const issued = revision.current;
     try {
-      const ports: Port[] = protectedSlots.map(index => {
-        const { statement, scope, slot } = roots[index]; return { statement, scope, slot };
-      });
+      const ports: Port[] = selectedOutputs.map(({ statement, scope, slot }) => ({ statement, scope, slot }));
       const request: Request = { ...analysisSnapshot.request, protected_outputs: ports,
-        ...(candidate && submitted === layeredSQL && dialect === 'spark' ? { candidate_keys: exampleKeys } : {}) };
+        ...(candidate ? { candidate_keys: [{ source: candidate.source, column: candidate.column, keys: [candidate.key] }] } : {}) };
       const captured = await requestSnapshot(request, analysisSnapshot.origin);
       if (issued !== revision.current) return;
       const response = normalize(captured.rawResponse);
       const hasReview = response.review !== null && typeof response.review === 'object' && !Array.isArray(response.review);
       if (hasReview) setReviewSnapshot(captured);
       setReview(hasReview ? response.review : null);
+      if (assessment && candidate) {
+        const status = keyCheck(response.review, candidate);
+        const reason = status === 'unknown' ? keyCheckReason(response.review, assessment.ports) : undefined;
+        setCheck({ ...assessment, status, message: reason || checkCopy[status] });
+      }
       setReviewStatus(hasReview ? '服务评审记录' : '该次响应未提供评审；可下载本次分析证据。');
     } catch (exception) {
-      if (issued === revision.current) setReviewStatus(`未取得评审包；可下载本次分析证据。${exception instanceof Error ? exception.message : ''}`);
+      if (issued === revision.current) {
+        setReviewStatus(`未取得评审包；可下载本次分析证据。${exception instanceof Error ? exception.message : ''}`);
+        if (assessment) setCheck({ ...assessment, status: 'unknown', message: '检查请求未完成，请重试。' });
+      }
     }
-    finally { pending.current = false; setBusy(false); }
+    finally { pending.current = false; setBusy(false); setKeyChecking(false); }
+  }
+  function runKeyCheck(explicitEmpty = false) {
+    if (pending.current) return;
+    if (!selectedOutputs.length) return;
+    const path = explicitEmpty ? '' : candidatePath;
+    const source = candidateSource.trim(), column = candidateColumn.trim();
+    const key = inputMode === 'path' ? literalKey(path) : path === '' && !explicitEmpty ? null : path;
+    const label = inputMode === 'key' ? (key === '' ? '空键（""）' : key !== null ? JSON.stringify(key) : '') : path.trim();
+    const message = !source || !column ? '请填写源表和 JSON 列。'
+      : key === null ? (inputMode === 'path'
+        ? '路径方式只支持字面顶层键，例如 user_id 或 $.user_id。检查带点号的顶层键，请切换到字面键名。'
+        : '请填写顶层键名；如需检查空字符串，请使用“检查空键”。')
+      : Array.from(key).length > 256 ? '每个键最多 256 个字符。'
+      : '';
+    if (message || key === null) {
+      invalidateReview(); setCheck({ status: 'unknown', path: label, ports: selectedOutputs, message }); return;
+    }
+    void runReview({ source, column, key }, label);
   }
   const downloadSnapshot = reviewSnapshot ?? analysisSnapshot;
   async function downloadEvidence() {
@@ -287,6 +363,8 @@ export default function SubfieldWorkbench() {
   const evidence = useMemo(() => picked ?? (selected && projection ? { title: pathLabel(selected), rows: [
     ...selected.uses, ...projection.mappings.flatMap(row => [row, ...(Array.isArray(row.port_reads) ? row.port_reads : [])]),
   ] } : null), [picked, selected, projection]);
+  const selectedOutputsForPath = selected ? task.byPath.get(selected.id) ?? [] : [];
+  const readLocation = preferredJsonReadLocation(selected?.uses ?? [], positionIndex);
   const locateEvidence = (range: Position) => {
     if (!analysisSnapshot || sql !== submitted) return;
     setLocation({ ...range });
@@ -301,7 +379,8 @@ export default function SubfieldWorkbench() {
   </Suspense></div>;
   const status = result?.coverage?.partial ? '部分恢复' : result?.coverage?.parsed === false ? '解析失败'
     : result?.coverage?.parsed === true ? '完整解析' : '解析状态未提供';
-  const failedStatements = result?.unknowns.filter(row => row.code === 'PARSE_ERROR') ?? [];
+  const unknownCount = result?.unknowns?.length;
+  const failedStatements = result?.unknowns?.filter(row => row.code === 'PARSE_ERROR') ?? [];
   const scope = declared && example?.excerpt
     ? `合成摘录 · #${example.excerpt.member_ordinal} · 原件第 ${example.excerpt.source_lines_inclusive.join('–')} 行（清单声明） · 仅分析此片段，非整件`
     : analysisSnapshot?.origin.kind === 'CONSTRUCTED' ? analysisSnapshot.origin.context ?? '构造示例 · 仅分析本次提交 SQL'
@@ -334,9 +413,79 @@ export default function SubfieldWorkbench() {
         </div>
         {error && <p id="error" role="alert">{error}</p>}
       </form>
+      {result && <section className="j-task-summary" aria-labelledby="j-task-heading" aria-busy={busy}>
+        <h2 id="j-task-heading" className="j-task-heading">本次核查结论</h2>
+        <p role="status">{result.coverage?.parsed === false && !result.coverage.partial ? '本次 SQL 解析失败，暂不能判断 JSON 依赖。'
+          : task.observed.length ? <>在本次 SQL 中看到 <strong>{task.observed.length} 条 JSON 路径</strong>被读取{task.outputs.length ? <>，已追溯到 <strong>{task.outputs.length} 个不同的下游输出</strong></> : '，下游输出暂不能判断'}。</>
+            : '本次 SQL 暂未取得可确认的 JSON 路径读取证据，不能据此判断没有依赖。'}
+          {result.coverage?.partial && ' 本次只分析了可恢复的语句。'}</p>
+        <p className="j-scope"><strong>SQL 分析待确认项：{unknownCount ?? '未提供'}</strong> · 仅统计本次 SQL 的静态解析与绑定记录</p>
+        {task.observed.length > 0 && <p className="j-path-destination">例如：{task.observed.slice(0, 3).map(pathLabel).join('；')}
+          {task.outputs.length > 0 && ` → 已追溯输出：${task.outputs.slice(0, 3).map(output => output.output ?? '未命名输出').join('、')}`}
+          {task.outputs.length > 0 && task.observed.some(item => !task.byPath.has(item.id)) && '。部分读取的下游暂不能判断。'}</p>}
+        <p className="j-scope">{scope} · {reviewBoundary}</p>
+        <form className="j-path-check" onSubmit={event => { event.preventDefault(); runKeyCheck(); }}>
+          <label>源表 <input list="j-source-tables" value={candidateSource} disabled={busy} onChange={event => {
+            setCandidateSource(event.target.value); setCandidateColumn(''); invalidateReview();
+          }} /></label>
+          <datalist id="j-source-tables">{[...new Set(sourceColumns.map(item => item.source))].map(source => <option key={source} value={source} />)}</datalist>
+          <label>JSON 列 <input list="j-source-columns" value={candidateColumn} disabled={busy} onChange={event => {
+            setCandidateColumn(event.target.value); invalidateReview();
+          }} /></label>
+          <datalist id="j-source-columns">{sourceColumns.filter(item => item.source === candidateSource).map(item => <option key={item.column} value={item.column} />)}</datalist>
+          <label>{inputMode === 'path' ? 'JSON 路径' : 'JSON 顶层键名'} <input id="j-candidate-path" value={candidatePath}
+            placeholder={inputMode === 'path' ? '例如 $.user_id' : '例如 a.b'} disabled={busy} onChange={event => {
+            setCandidatePath(event.target.value); invalidateReview();
+          }} /></label>
+          <button className="btn-primary" type="submit" disabled={busy || !selectedOutputs.length}>检查键</button>
+        </form>
+        <p className="j-scope j-key-mode"><button className="btn" type="button" disabled={busy} onClick={() => {
+          setInputMode(inputMode === 'path' ? 'key' : 'path'); invalidateReview();
+        }}>{inputMode === 'path' ? '按字面键名' : '按 JSON 路径'}</button>
+          {inputMode === 'path' ? '支持 $.user_id 这样的顶层路径。' : '按原样检查；a.b 与 $.a 都是完整键名。'}
+          {inputMode === 'key' && <button className="btn" type="button" disabled={busy || !selectedOutputs.length} onClick={() => runKeyCheck(true)}>检查空键</button>}
+        </p>
+        <details className="j-advanced-review" ref={scopeDetails}><summary>检查范围：{scopeText}</summary>
+          {roots.length > 0 && <fieldset disabled={busy}><legend>手动选择检查输出</legend>
+            <p className="j-scope">默认检查当前 SQL 的全部可选输出。只取消本次问题确实不涉及的输出；缩小范围后的结果仅适用于所选输出。</p>
+            <div className="j-output-options">
+              <label><input type="checkbox" checked={allSelected} ref={node => {
+                if (node) node.indeterminate = !allSelected && selectedOutputs.length > 0;
+              }} onChange={event => updateScope(event.target.checked ? roots.map((_, i) => i) : [])} /> 全选</label>
+              {roots.map((output, i) => <label key={outputId(output)}><input type="checkbox" checked={protectedSlots.includes(i)} onChange={event => {
+                updateScope(event.target.checked ? [...protectedSlots, i] : protectedSlots.filter(slot => slot !== i));
+              }} /> {outputLabel(output)}</label>)}
+            </div>
+            {!allSelected && <button type="button" className="btn" onClick={() => updateScope(roots.map((_, i) => i))}>恢复全部输出</button>}
+          </fieldset>}
+        </details>
+        {scopeNotice && <p className="j-scope">{scopeNotice}</p>}
+        {!check && <p role="status" className="j-scope">{keyChecking ? '键检查：检查中' : rangeChanged
+          ? '键检查：范围已改变，请重新检查。此前结果已失效。' : '键检查：尚未检查'}</p>}
+        {check && <div className="j-path-result" role="status">
+          <div>键检查：<PathChip state={check.status} /> <strong>{check.candidate && `${check.candidate.source} · ${check.candidate.column} · `}{check.path || '未输入路径'}</strong> · {check.message}</div>
+          <p className="j-scope">本次检查范围：{allSelected ? `全部 ${check.ports.length} 个输出 · ` : ''}{check.ports.map(outputLabel).join('、')}</p>
+          {check.status === 'unknown' && check.candidate && <>
+            {unknownCount === 0 && <p className="j-scope">SQL 分析待确认项为 0，仅表示本次分析没有报告待确认项；不代表键检查通过。行集、键是否存在及修改影响仍未验证。</p>}
+            <div className="actions">
+              {task.observed.length > 0 && <button type="button" className="btn" onClick={() => {
+                if (surface !== 'json') select(task.branches.find(item => item.uses.length > 0) ?? task.branches[0]);
+                requestAnimationFrame(() => document.getElementById('json-focus-title')?.focus());
+              }}>查看已有读取证据</button>}
+              <button type="button" className="btn" onClick={() => {
+                if (scopeDetails.current) { scopeDetails.current.open = true; scopeDetails.current.querySelector('summary')?.focus(); }
+              }}>查看检查范围</button>
+            </div>
+            <p className="j-scope">请保留本次问题需要检查的全部输出；若该范围暂不能判断，请补充证据。调整范围会改变问题，不能替代原范围的结论。</p>
+          </>}
+        </div>}
+        <p className="j-scope">下一步：检查想修改的键，或在下方选一条分支查看输出与 SQL 证据。</p>
+      </section>}
       <div className="workbench shell">
-        <section className="work" aria-label="血缘画布">
+        <div className="j-analysis-area" ref={analysisArea} style={{ '--j-sql-split': `${sqlSplit}%` } as CSSProperties}>
           {editor}
+          {editorOpen && <Splitter split={sqlSplit} setSplit={setSqlSplit} measureRef={analysisArea} label="调整 SQL 和血缘画布的宽度" />}
+        <section className="work" aria-label="血缘画布">
           <div className="subfield-canvas-toolbar">
             <span className="subfield-tool-title">血缘画布</span>
             <div className="seg canvas-mode">{(['table', 'json'] as const).map(mode =>
@@ -372,12 +521,19 @@ export default function SubfieldWorkbench() {
             </div>
           </div>
           <div className={surface === 'json' ? 'graph-layout json-canvas' : 'graph-layout'}>
-            {surface === 'json' && <PathTree root={tree} active={selected?.id} select={select} />}
+            {surface === 'json' && <PathTree root={tree} active={selected?.id} select={select} byPath={task.byPath} check={check} />}
             <div className="json-flow-pane">
               {surface === 'json' && <div id="json-flow-head" className="json-pane-head">
                 <div>
-                  <h2 id="json-focus-title">{selected?.input.path ?? '从路径树选择路径'}</h2>
-                  {selected && <p id="json-focus">{selected.input.source} · {selected.input.column}</p>}
+                  <h2 id="json-focus-title" tabIndex={-1}>{selected?.input.path ?? '从路径树选择路径'}</h2>
+                  {selected && <><p id="json-focus">{selected.input.source} · {selected.input.column}</p>
+                    {selectedOutputsForPath.length ? <p className="j-path-destination">流向：{selectedOutputsForPath.map(output => <button type="button" className="btn" key={outputId(output)} onClick={() => {
+                      const row = projection?.mappings.find(item => item.root === true && item.statement === output.statement && item.scope === output.scope && item.slot === output.slot);
+                      onReportPick(outputLabel(output), row ? [row] : []);
+                    }}>{outputLabel(output)}</button>)}</p> : <p className="j-path-destination">下游输出暂不能判断。</p>}
+                    {readLocation ? <button type="button" className="btn" onClick={() => locateEvidence(readLocation.position)}>{readLocation.kind === 'literal' ? '定位读取证据' : '定位读取调用'}</button>
+                      : <p className="muted">没有可靠的读取位置。</p>}
+                  </>}
                 </div>
                 {selected && <button className="btn" id="clear-path" type="button" onClick={() => { setSelected(null); setPicked(null); }}>清除路径</button>}
               </div>}
@@ -388,6 +544,7 @@ export default function SubfieldWorkbench() {
           </div>
           <p className="canvas-bottom">滚动查看全图 · 虚线表示未决 · 点节点或连线查看证据</p>
         </section>
+        </div>
         <aside className="inspector" aria-label="血缘详情">
           <div className="ins-head"><h2>血缘详情</h2></div>
           <div className="ins-scroll">
@@ -418,26 +575,14 @@ export default function SubfieldWorkbench() {
                 {downloadError && <p role="alert">{downloadError}</p>}
               </div>
             </details>}
-            {result && <section className="reports">
-              <h2>剪枝评审</h2>
-              <fieldset id="review-controls" disabled={busy}><legend>选择要保护的根输出</legend>
-                {roots.length > 0 && <p className="muted">编号顺序：语句 / 作用域 / 槽位</p>}
-                <div id="protected-options">{roots.map((root, i) => <label key={i}>
-                  <input type="checkbox" checked={protectedSlots.includes(i)} onChange={event => {
-                    setProtectedSlots(event.target.checked ? [...protectedSlots, i] : protectedSlots.filter(slot => slot !== i));
-                    invalidateReview(); setReviewStatus('保护点已更新；所选输出尚未评审。');
-                  }} /> {root.output ?? '未命名'} · {root.statement}/{root.scope}/{root.slot}
-                </label>)}</div>
-                {!roots.length && <p>服务未提供可选根输出。</p>}
-                {submitted === layeredSQL && dialect === 'spark' && <label className="review-candidate"><input type="checkbox" checked={candidate}
-                  onChange={event => { setCandidate(event.target.checked); invalidateReview(); setReviewStatus('评审选项已更新；尚未评审。'); }} /> 验证示例键（含人工假设键）</label>}
-                <button type="button" disabled={!roots.length} onClick={() => void runReview()}>评审剪枝</button>
-              </fieldset>
+            {result && <details className="reports j-advanced-review">
+              <summary>高级核查记录</summary>
+              <button type="button" disabled={busy || !protectedSlots.length} onClick={() => void runReview()}>核查所选输出</button>
               <p role="status">{reviewStatus}</p>
               {review != null && <><p>仅限当前 SQL 和所选根输出；未证明裁剪安全。未列出的路径不能据此判定为可删。</p>
                 <ReviewSummary value={review} pick={onReviewPick} preview={previewEvidence} />
                 <Raw value={review} title="查看原始评审 JSON" /></>}
-            </section>}
+            </details>}
           </div>
         </aside>
       </div>
@@ -445,7 +590,7 @@ export default function SubfieldWorkbench() {
         <span className={`pill ${busy ? 'running' : ''}`} role="status">{busy ? '处理中…' : result ? `服务结果 · ${result.uses.length} 个使用点` : '等待分析'}</span>
         {result && <>
           <span>{declared ? '合成摘录 · 仅此片段' : analysisSnapshot?.origin.kind === 'CONSTRUCTED' ? '构造示例' : '手动提交'}</span>
-          <span>{status}</span><span>{result.coverage?.complete === true ? '服务报告覆盖完整' : '覆盖未确认'}</span><span>未决 {result.unknowns.length}</span>
+          <span>{status}</span><span>{result.coverage?.complete === true ? '服务报告覆盖完整' : '覆盖未确认'}</span><span>SQL 分析待确认项 {unknownCount ?? '未提供'}</span>
         </>}
       </footer>
     </section>

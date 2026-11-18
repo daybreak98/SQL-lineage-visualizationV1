@@ -1,5 +1,7 @@
+import sqlglot
 from sqlglot import Dialect
 
+from app.api.subfield_controller import SubfieldRequest, analyze_subfield_lineage
 from app.services.subfield import analyze_subfields
 from app.services.subfield_branch_review import build_branch_review
 
@@ -79,3 +81,76 @@ def test_repeated_unicode_literals_use_original_codepoint_spans_and_one_tokeniza
 
     assert not mappings["dynamic_path"].get("port_reads")
     assert source_tokenizations == 1
+
+
+SQL_A = (
+    "SELECT get_json_object(e.payload, '$.item_id') AS item_id,\n"
+    "       get_json_object(e.payload, '$.shop_id') AS shop_id\n"
+    "FROM demo.events e"
+)
+
+
+def _request(sql):
+    return analyze_subfield_lineage(SubfieldRequest(
+        sql=sql,
+        protected_outputs=[{"statement": 1, "scope": "1:2", "slot": 1}],
+        candidate_keys=[{"source": "demo.events", "column": "payload", "keys": ["item_id", "absent"]}],
+    ))
+
+
+def _position(start, end, line, column_end):
+    return {"start": start, "end": end, "line": line, "column_end": column_end}
+
+
+def test_static_extract_uses_expose_literal_spans_and_keep_review_semantics():
+    result = _request(SQL_A)
+    item, shop = result["uses"]
+    for use, key, fn_span, path_span in (
+        (item, "item_id", _position(7, 22, 1, 22), _position(34, 45, 1, 45)),
+        (shop, "shop_id", _position(66, 81, 2, 22), _position(93, 104, 2, 45)),
+    ):
+        assert use["kind"] == "EXTRACT"
+        assert use["path_tokens"] == [{"kind": "key", "value": key}]
+        assert use["position"] == fn_span
+        assert use["json_path_position"] == path_span
+        assert SQL_A[path_span["start"]:path_span["end"]] == f"'$.{key}'"
+    assert result["review"]["candidate_assessment"] == {
+        "status": "UNKNOWN", "reason": "PROTECTED_PATH_UNVERIFIED", "entries": [],
+    }
+
+
+def test_static_extract_uses_keep_distinct_spans_for_repeated_literals_and_ignore_comments():
+    sql = (
+        "/* \U0001F600 '$.item_id' */\r\n"
+        "WITH src AS (SELECT e.payload AS j FROM demo.events e)\r\n"
+        "SELECT get_json_object(s.j, /* '$.item_id' */ '$.item_id') AS item_id,\r\n"
+        "       get_json_object(s.j, '$.item_id') AS again FROM src s"
+    )
+    result = _request(sql)
+    raw, item, again = result["uses"]
+    assert raw["kind"] == "WHOLE_RAW" and "json_path_position" not in raw
+    mappings = {m["output"]: m for m in result["mappings"]}
+    for use, output, fn_span, path_span in (
+        (item, "item_id", _position(84, 99, 3, 22), _position(123, 134, 3, 57)),
+        (again, "again", _position(156, 171, 4, 22), _position(177, 188, 4, 39)),
+    ):
+        assert use["kind"] == "EXTRACT"
+        assert use["position"] == fn_span
+        assert use["json_path_position"] == path_span
+        assert sql[path_span["start"]:path_span["end"]] == "'$.item_id'"
+        [read] = mappings[output]["port_reads"]
+        assert read["json_path_position"] == path_span
+    assessments = result["review"]["candidate_assessment"]["entries"]
+    assert [(entry["key"], entry["status"]) for entry in assessments] == [
+        ("item_id", "OBSERVED"), ("absent", "NOT_OBSERVED_NEEDS_VALIDATION"),
+    ]
+
+
+def test_unverified_literal_position_keeps_function_span(monkeypatch):
+    monkeypatch.setattr(sqlglot, "__version__", "unverified")
+    item, shop = _request(SQL_A)["uses"]
+    assert item["position"] == _position(7, 22, 1, 22)
+    assert shop["position"] == _position(66, 81, 2, 22)
+    for use in (item, shop):
+        assert use["kind"] == "EXTRACT"
+        assert "json_path_position" not in use
