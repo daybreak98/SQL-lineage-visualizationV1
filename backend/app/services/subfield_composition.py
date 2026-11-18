@@ -35,7 +35,7 @@ def _case_parts(case):
                 yield {"case_id": case["id"], "arm_slot": arm["slot"], "part": kind.upper()}, arm[kind]
 
 
-def build_snapshot(sql, snapshot_id, dialect="hive", source_context=None):
+def build_snapshot(sql, snapshot_id, dialect="hive", source_context=None, *, on_query=None):
     """Build occurrence edges from an explicit, unchanged SQL input.
 
     source_context is provenance only: it never supplies binding candidates.
@@ -80,6 +80,8 @@ def build_snapshot(sql, snapshot_id, dialect="hive", source_context=None):
                     if part_key not in case_occurrences[key]:
                         case_occurrences[key].append(part_key)
     for context in queries:
+        if on_query is not None:
+            on_query(context)  # Internal review needs the exact projection AST from this snapshot.
         statement, tree, query = (context[k] for k in ("statement", "tree", "query"))
         ids = context["scope_ids"]
         scopes = ids.keys()

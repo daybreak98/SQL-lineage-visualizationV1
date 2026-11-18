@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { analyzeSubfieldSql } from '../api/client';
 import type { Position, RecordRow } from './contract';
@@ -49,4 +49,72 @@ it('locates the original call when the API literal is missing or out of bounds',
   await analyze([first, { ...second, json_path_position: { start: 177, end: 9999 } }]);
   fireEvent.click(screen.getByRole('button', { name: '定位读取调用' }));
   expect(await screen.findByTestId('editor-selection')).toHaveTextContent('3:8 get_json_object');
+});
+
+const receiptSql = "SELECT get_json_object(t.other, '$.a') AS original, get_json_object(t.j, '$.a.x') AS x, get_json_object(t.j, '$.a.y') AS y FROM demo.events t";
+const read = (column: string, path: string, located = true) => {
+  const literal = `'${path}'`;
+  const start = receiptSql.indexOf(literal);
+  return { source: 'demo.events', column, path, kind: 'EXTRACT', role: 'VALUE',
+    path_tokens: path.slice(2).split('.').map(value => ({ kind: 'key', value })),
+    ...(located ? { json_path_position: { start, end: start + literal.length } } : {}) };
+};
+const original = read('other', '$.a'), x = read('j', '$.a.x'), y = read('j', '$.a.y');
+
+async function checkReceipt(uses: RecordRow[], status = 'OBSERVED') {
+  const mock = vi.mocked(analyzeSubfieldSql).mockImplementation(async request => ({
+    uses, unknowns: [], mappings: [{ statement: 1, scope: '1:1', slot: 1, root: true, output: 'x', inputs: [x] },
+      { statement: 1, scope: '1:1', slot: 2, root: true, output: 'original', inputs: [original] }],
+    ...(request.candidate_keys ? { review: { candidate_assessment: { entries: [
+      { source: 'demo.events', column: 'j', key: 'a', status },
+    ] } } } : {}),
+  }));
+  render(<SubfieldWorkbench />);
+  fireEvent.click(screen.getByRole('button', { name: '编辑 SQL 原文' }));
+  fireEvent.change(await screen.findByRole('textbox', { name: '输入 SQL' }), { target: { value: receiptSql } });
+  fireEvent.click(screen.getByRole('button', { name: '分析 SQL' }));
+  await screen.findByText(/服务结果 ·/);
+  fireEvent.change(screen.getByRole('combobox', { name: 'JSON 列' }), { target: { value: 'j' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'JSON 路径' }), { target: { value: '$.a' } });
+  fireEvent.click(screen.getByRole('button', { name: '检查键' }));
+  return { mock, receipt: within(await screen.findByRole('region', { name: '键检查回执' })) };
+}
+
+it('opens the one matching source/column read in one click and invalidates the receipt on key edit', async () => {
+  const { receipt, mock } = await checkReceipt([original, x]);
+  expect(receipt.getByText(/右侧当前显示其他分支/)).toBeVisible();
+  fireEvent.click(receipt.getByRole('button', { name: '查看此键的读取证据' }));
+  expect(await screen.findByTestId('editor-selection')).toHaveTextContent("'$.a.x'");
+  expect(screen.getByRole('heading', { name: 'demo.events · j · $.a.x' })).toBeVisible();
+  expect(receipt.getByText(/全部 2 个输出/)).toBeVisible();
+  expect(mock).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByText('分析来源与证据下载'));
+  expect(screen.getByText(/将下载：键检查证据 · demo.events · j · a · 检查范围/)).toBeVisible();
+  fireEvent.click(screen.getByText('高级核查记录'));
+  expect(screen.getByText('服务键检查记录')).toBeVisible();
+  fireEvent.change(screen.getByRole('textbox', { name: 'JSON 路径' }), { target: { value: 'b' } });
+  expect(screen.queryByRole('region', { name: '键检查回执' })).not.toBeInTheDocument();
+  expect(screen.queryByTestId('editor-selection')).not.toBeInTheDocument();
+  expect(screen.getByText('尚未执行高级核查。')).toBeVisible();
+  expect(screen.getByText(/将下载：分析证据/)).toBeVisible();
+});
+
+it('lets the user choose among distinct read sites and marks unknown output flow', async () => {
+  const call = receiptSql.indexOf('get_json_object(t.j,');
+  const secondX = { ...x, json_path_position: undefined, position: { start: call, end: call + 'get_json_object'.length } };
+  const { receipt } = await checkReceipt([original, x, x, secondX, y]);
+  expect(screen.queryByTestId('editor-selection')).not.toBeInTheDocument();
+  expect(receipt.getAllByRole('button', { name: /j · \$\.a\.x/ })).toHaveLength(2);
+  const choose = receipt.getByRole('button', { name: /j · \$\.a\.y.*输出流向待确认/ });
+  fireEvent.click(choose);
+  expect(await screen.findByTestId('editor-selection')).toHaveTextContent("'$.a.y'");
+  expect(screen.getByRole('heading', { name: 'demo.events · j · $.a.y' })).toBeVisible();
+});
+
+it('explains why a matching path cannot be located and never offers a different column as evidence', async () => {
+  const { receipt } = await checkReceipt([original, read('j', '$.a.x', false)], 'UNKNOWN');
+  expect(receipt.getByText(/本次没有可定位的读取证据.*没有有效的 SQL 位置/)).toBeVisible();
+  expect(receipt.queryByRole('button', { name: /读取证据/ })).not.toBeInTheDocument();
+  expect(receipt.getByText('暂不能判断')).toBeVisible();
+  expect(screen.queryByTestId('editor-selection')).not.toBeInTheDocument();
 });
