@@ -1,5 +1,6 @@
 """Read-only analysis of JSON paths for the subfield workbench."""
 
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -36,6 +37,7 @@ class SubfieldRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=MAX_SQL_CHARS)
     dialect: Literal["hive", "spark"] = "spark"
     source_schemas: dict[str, SourceSchema] | None = None
+    include_two_step_evidence: bool = False
     protected_outputs: list[ProtectedOutput] | None = None
     candidate_keys: list[CandidateKeys] | None = Field(default=None, max_length=25)
 
@@ -51,7 +53,8 @@ def analyze_subfield_lineage(request: SubfieldRequest | CompositionRequest, http
                for relation, schema in (request.source_schemas or {}).items()}
     reviewing = request.protected_outputs is not None or request.candidate_keys is not None
     key = fact_key(http_request, request.sql, request.dialect, schemas, analyze_subfields)
-    result = read_facts(key) if reviewing else None
+    result = read_facts(key)
+    retained = result.pop("_two_step_v1", None) if result is not None else None
     if result is None:
         try:
             result = analyze_subfields(request.sql, request.dialect, schemas)
@@ -79,4 +82,19 @@ def analyze_subfield_lineage(request: SubfieldRequest | CompositionRequest, http
             branch_review = build_branch_review(result, ports)
             if branch_review.get("by_protected_output"):
                 result["review"]["observed_branch_demands"] = branch_review
+        if (request.include_two_step_evidence and len(ports) == 1 and request.source_schemas is None
+                and "dialect" in request.model_fields_set):
+            try:
+                from app.services.subfield_static_evidence import static_extraction_evidence
+
+                def publish(blocks):
+                    facts = {k: v for k, v in result.items() if k != "review"}
+                    propose_facts(http_request, key, {**facts, "_two_step_v1": blocks})
+
+                evidence = static_extraction_evidence(request.sql, request.dialect, ports[0], result,
+                                                      retained=retained, publish=publish if key is not None else None)
+                if evidence is not None:
+                    result["review"]["static_extraction_evidence"] = evidence
+            except Exception:
+                logging.getLogger(__name__).debug("Optional two-step evidence unavailable", exc_info=True)
     return result

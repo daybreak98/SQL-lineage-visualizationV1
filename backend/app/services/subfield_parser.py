@@ -6,11 +6,36 @@ from sqlglot.dialects import Dialect
 from sqlglot.tokens import TokenType
 
 
+def _null_position_parser(parser_type):
+    original = parser_type.PRIMARY_PARSERS[TokenType.NULL]
+
+    def positioned_null(parser, token):
+        node = original(parser, token)
+        if token.token_type == TokenType.NULL and type(node) is exp.Null:
+            # Private span: unrelated NULL facts retain their previous evidence.
+            node.meta["null_token_position"] = {"start": token.start, "end": token.end + 1,
+                                                "line": token.line, "column_end": token.col}
+        return node
+
+    class NullPositionParser(parser_type):
+        PRIMARY_PARSERS = {**parser_type.PRIMARY_PARSERS, TokenType.NULL: positioned_null}
+
+    return NullPositionParser
+
+
+def parse_one_slice(sql, dialect_name):
+    if sqlglot.__version__ != "30.31.0" or dialect_name not in {"hive", "spark"}:
+        return sqlglot.parse_one(sql, read=dialect_name)
+    dialect = Dialect.get_or_raise(dialect_name)
+    dialect.parser_class = _null_position_parser(dialect.parser_class)
+    return sqlglot.parse_one(sql, read=dialect)
+
+
 def parse_with_json_path_positions(sql, dialect_name):
     """Parse once, preserving verified original path literals before conversion.
 
     Only whole-input parsing uses this helper. Recovery and macro slices keep
-    their existing parser, so no relative span is mistaken for an absolute one.
+    their JSON path behavior; parse_at rebases their NULL token independently.
     """
     if sqlglot.__version__ != "30.31.0" or dialect_name not in {"hive", "spark"}:
         return sqlglot.parse(sql, read=dialect_name)
@@ -39,7 +64,7 @@ def parse_with_json_path_positions(sql, dialect_name):
                     }
         return result
 
-    class PositionedParser(parser_type):
+    class PositionedParser(_null_position_parser(parser_type)):
         FUNCTIONS = {**parser_type.FUNCTIONS, "GET_JSON_OBJECT": build}
 
     return PositionedParser(dialect=dialect).parse(tokens, sql)

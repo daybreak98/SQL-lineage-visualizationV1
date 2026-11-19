@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { editor } from 'monaco-editor';
+import type { editor, IRange } from 'monaco-editor';
 import { SqlEditorPanel } from '../components/SqlEditorPanel';
 import { applySqlDraftChange, initialWorkbenchState } from '../workbench/state';
 import type { Position } from './contract';
@@ -13,6 +13,7 @@ export default function SubfieldEditor({ sql, setSql, dialect, busy, locate, run
 }) {
   const [active, setActive] = useState<editor.IStandaloneCodeEditor | null>(null);
   const runRef = useRef(run);
+  const lastEvidence = useRef<{ instance: editor.IStandaloneCodeEditor; range: IRange } | null>(null);
   runRef.current = run;
   const state = useMemo(() => applySqlDraftChange(initialWorkbenchState, sql), [sql]);
   const onMount = useCallback((instance: editor.IStandaloneCodeEditor) => setActive(instance), []);
@@ -28,15 +29,27 @@ export default function SubfieldEditor({ sql, setSql, dialect, busy, locate, run
     return () => keyboard.dispose();
   }, [active, busy]);
   useEffect(() => {
-    if (!locate || !active || !positionIndex?.valid(locate)) return;
+    if (!active) return;
+    if (!locate) {
+      const selection = active.getSelection();
+      const last = lastEvidence.current;
+      if (last?.instance === active && selection?.equalsRange(last.range)) {
+        active.setPosition(selection.getPosition());
+      }
+      lastEvidence.current = null;
+      return;
+    }
+    if (!positionIndex?.valid(locate)) return;
     const frame = requestAnimationFrame(() => {
       const model = active.getModel();
       if (!model || model.getValue().replace(/\r\n/g, '\n') !== sql.replace(/\r\n/g, '\n')) return;
       const from = positionIndex.editorPosition(locate.start);
       const to = positionIndex.editorPosition(locate.end);
       if (!from || !to) return;
-      active.setSelection({ startLineNumber: from.lineNumber, startColumn: from.column,
-        endLineNumber: to.lineNumber, endColumn: to.column });
+      const range = { startLineNumber: from.lineNumber, startColumn: from.column,
+        endLineNumber: to.lineNumber, endColumn: to.column };
+      active.setSelection(range);
+      lastEvidence.current = { instance: active, range };
       active.revealLineInCenter(from.lineNumber);
       active.focus();
     });

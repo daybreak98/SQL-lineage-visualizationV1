@@ -36,3 +36,34 @@ Invoke-RestMethod http://127.0.0.1:8000/api/sql/subfield-lineage -Method Post -C
 ```
 
 `uses` 记录使用证据，`mappings` 记录输出映射，`unknowns` 与 `coverage` 记录未决和解析范围。部分恢复不算完整解析；完整解析也不表示血缘或行集已验证。可选 `source_schemas` 是调用方声明，并不认证实际生产目录。
+### 两跳证据复用（独立候选，默认缓存关闭）
+
+`SUBFIELD_FACT_CACHE=1` 下，本地、无凭据且使用标准 30 秒请求保护的路由复用同进程事实。分析函数身份、sqlglot 版本、规则命名空间 `facts-v2:two-step-v1`、精确 SQL、方言和 schema 描述组成键；更改规则后重启进程。根和候选键不进入缓存键。普通分析可以预热事实，也可以直接从冷评审开始。首次合格评审为最多八个候选根共建一张图，按完整端口保存核验过的证据。空字典表示本次核验无根出证。仅保留 JSON 字节，不保存 AST、全图或请求的 review。每次仍按所选根与候选键计算原评审。
+
+负筛先查看现役事实中的 `parse/json` 分界，不用扁平路径作为正证。额外上限为 16,384 SQL 字符、64 项映射、8 个候选根，映射可见作用域须为同一语句的 2–8 个；融合、位置、绑定和未知项仍须通过原门槛。可选层故障只去掉附加块。复用沿用原缓存：30 秒 TTL、最多 2 项、每项 128 KiB、总共 256 KiB，描述符最多 16 KiB，仅在成功且请求用时不超过 250 ms 时发布。250 ms 是写缓存门槛，不是性能承诺。禁用、过期、驱逐、超限或多进程时不保证跨请求复用；同时到达的冷请求没有合并。在冷请求上仍有一次额外的结构解析。
+
+针对性复跑：从 backend 目录运行 `python -B -m pytest -q -s tests/test_static_extraction_evidence.py tests/test_subfield_fact_cache.py`。首次运行若 `.pytest_cache` 尚不存在，先创建该目录供仓库测试 SQLite 数据库使用。打印值分别为累计基础分析、结构分析和快照构建调用次数，以及本机单次 HTTP 耗时。
+
+### ALG-P3 · 本机前端接入合同
+
+沿用 `POST /api/sql/subfield-lineage`（analyze）。客户端本机试用配置默认关闭；关闭时不发详情请求。开启后，用户点击某一输出时才在该次请求体设置 `include_two_step_evidence: true`。省略或 false 均不计算或返回附加块。此字段控制取证，不是权限凭据。服务仍依赖原有本地访问保护；`SUBFIELD_FACT_CACHE=1` / `-EnableSubfieldFactCache` 只控制跨请求复用，关缓存也能出证。P3 未实现 UI 设置或新增服务能力发现接口；使用已确认版本的后端，不能用 HTTP 200 推断支持该功能。
+
+**双输出示例：原查键请求（原样保存供展示/下载）**
+
+```json
+{"sql":"WITH c AS (SELECT get_json_object(s.j,'$.a') AS x FROM src s) SELECT get_json_object(c.x,'$.b') AS hit, get_json_object(c.x,'$.z') AS alt FROM c","dialect":"spark","protected_outputs":[{"statement":1,"scope":"1:2","slot":1},{"statement":1,"scope":"1:2","slot":2}],"candidate_keys":[{"source":"src","column":"j","keys":["a"]}]}
+```
+
+原响应中的 `review.candidate_assessment` 为 `{"status":"UNKNOWN","reason":"PROTECTED_PATH_UNVERIFIED","entries":[]}`，无两跳块。查看 alt 时复制原请求，仅把 `protected_outputs` 改为 `[{"statement":1,"scope":"1:2","slot":2}]` 并增加 `"include_two_step_evidence":true`。保留 SQL 原文、显式方言及来源声明；不得为了出证忽略 `source_schemas`。当前有非 null 声明（包括 `{}`）不出证。多根即使传 true，仍原样返回原评审。
+
+alt 详情响应片段（`review.static_extraction_evidence` 的字段节选）：
+
+```json
+{"status":"REVIEW_ONLY","rowset_verified":false,"pruning_authorized":false,"protected_output":{"snapshot":"local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3","sql_sha256":"1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3","statement":1,"scope":"1:2","slot":2},"projection_position":{"start":134,"end":137,"line":1,"column_end":137}}
+```
+
+接收时先检查详情请求仍是当前一次，SQL 原字节、显式方言、schema 状态和完整槽一致；核对 coverage 的 SQL 摘要/方言、protected_output 的 `local:<摘要>`/摘要/槽、首条 witness 的 consumer 及投影位置。witness 从根向源排列，显示先后顺序则从源向根读取 EXTRACT 操作：alt 为 a→z，hit 为 a→b，而非源 JSON 的 `$.a.z` 或 `$.a.b`。`projection_position` 指别名；各边 `evidence.position` 指原文列引用标记，不代表整段表达式范围。位置为零基起点、右端不含，基于 Python Unicode 码点；对接使用 UTF-16 的编辑器时应换算。只更新当前输出详情，不能覆盖原多根回包或下载快照。
+
+HTTP 200 可能没有 `review.static_extraction_evidence`；只表达“本次未提供该输出的两步读取证据，这不表示未读取”，不推断缺块原因。身份不匹配、请求过时则丢弃；不能回退上一根，缺可信坐标不提供定位。来源为 SQL 中声明的列，物理存在、行集和修改影响未验证。
+
+定向验证：在候选 backend 目录先创建 `.pytest_cache`，执行 `python -B -m pytest -q tests/test_static_extraction_evidence.py -k two_output_detail_contract`；仅使用进程内 HTTP TestClient，不启动服务。

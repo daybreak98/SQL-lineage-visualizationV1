@@ -1,0 +1,337 @@
+{
+  "sql": "WITH c AS (SELECT get_json_object(s.j,'$.a') AS x FROM src s) SELECT get_json_object(c.x,'$.b') AS hit, get_json_object(c.x,'$.z') AS alt FROM c",
+  "analysis": {
+    "uses": [
+      {
+        "source": "src",
+        "column": "j",
+        "path": "$.a",
+        "path_tokens": [
+          { "kind": "key", "value": "a" }
+        ],
+        "role": "VALUE",
+        "kind": "EXTRACT",
+        "statement": 1,
+        "position": { "start": 18, "end": 33, "line": 1, "column_end": 33 }
+      },
+      {
+        "source": "src",
+        "column": "j",
+        "path": "$.a::json.b",
+        "path_tokens": [
+          { "kind": "key", "value": "a" },
+          { "kind": "parse", "value": "json" },
+          { "kind": "key", "value": "b" }
+        ],
+        "role": "VALUE",
+        "kind": "EXTRACT",
+        "statement": 1,
+        "position": { "start": 69, "end": 84, "line": 1, "column_end": 84 }
+      },
+      {
+        "source": "src",
+        "column": "j",
+        "path": "$.a::json.z",
+        "path_tokens": [
+          { "kind": "key", "value": "a" },
+          { "kind": "parse", "value": "json" },
+          { "kind": "key", "value": "z" }
+        ],
+        "role": "VALUE",
+        "kind": "EXTRACT",
+        "statement": 1,
+        "position": { "start": 104, "end": 119, "line": 1, "column_end": 119 }
+      }
+    ],
+    "mappings": [
+      {
+        "scope": "1:1",
+        "root": false,
+        "slot": 1,
+        "output": "x",
+        "kind": "EXTRACT",
+        "inputs": [
+          {
+            "source": "src",
+            "column": "j",
+            "path": "$.a",
+            "path_tokens": [
+              { "kind": "key", "value": "a" }
+            ]
+          }
+        ],
+        "statement": 1,
+        "position": { "start": 48, "end": 49, "line": 1, "column_end": 49 }
+      },
+      {
+        "scope": "1:2",
+        "root": true,
+        "slot": 1,
+        "output": "hit",
+        "kind": "EXTRACT",
+        "inputs": [
+          {
+            "source": "src",
+            "column": "j",
+            "path": "$.a::json.b",
+            "path_tokens": [
+              { "kind": "key", "value": "a" },
+              { "kind": "parse", "value": "json" },
+              { "kind": "key", "value": "b" }
+            ]
+          }
+        ],
+        "statement": 1,
+        "position": { "start": 99, "end": 102, "line": 1, "column_end": 102 }
+      },
+      {
+        "scope": "1:2",
+        "root": true,
+        "slot": 2,
+        "output": "alt",
+        "kind": "EXTRACT",
+        "inputs": [
+          {
+            "source": "src",
+            "column": "j",
+            "path": "$.a::json.z",
+            "path_tokens": [
+              { "kind": "key", "value": "a" },
+              { "kind": "parse", "value": "json" },
+              { "kind": "key", "value": "z" }
+            ]
+          }
+        ],
+        "statement": 1,
+        "position": { "start": 134, "end": 137, "line": 1, "column_end": 137 }
+      }
+    ],
+    "unknowns": [],
+    "coverage": {
+      "parsed": true,
+      "partial": false,
+      "recovered": 0,
+      "complete": false,
+      "locally_reviewable_projection_only": true,
+      "fragment_supported": true,
+      "source_boundary": "SQL_NAMED_RELATIONS",
+      "catalog_verified": false,
+      "engine_semantics_verified": false,
+      "source_schema_binding": {
+        "basis": "CALLER_DECLARATION",
+        "applied": {},
+        "ignored": {},
+        "not_applied": []
+      },
+      "dialect": "spark",
+      "sqlglot": "30.31.0",
+      "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3"
+    }
+  },
+  "hit": {
+    "coverage": {
+      "parsed": true,
+      "partial": false,
+      "recovered": 0,
+      "complete": false,
+      "locally_reviewable_projection_only": true,
+      "fragment_supported": true,
+      "source_boundary": "SQL_NAMED_RELATIONS",
+      "catalog_verified": false,
+      "engine_semantics_verified": false,
+      "source_schema_binding": {
+        "basis": "CALLER_DECLARATION",
+        "applied": {},
+        "ignored": {},
+        "not_applied": []
+      },
+      "dialect": "spark",
+      "sqlglot": "30.31.0",
+      "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3"
+    },
+    "review": {
+      "static_extraction_evidence": {
+        "status": "REVIEW_ONLY",
+        "rowset_verified": false,
+        "pruning_authorized": false,
+        "protected_output": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:2", "slot": 1 },
+        "projection_position": { "start": 99, "end": 102, "line": 1, "column_end": 102 },
+        "source_demand": {
+          "kind": "VALUE_PATH",
+          "path_tokens": [
+            { "kind": "key", "value": "a" }
+          ],
+          "operation_chain": [
+            {
+              "kind": "EXTRACT",
+              "path_tokens": [
+                { "kind": "key", "value": "a" }
+              ]
+            }
+          ],
+          "downstream_demand": {
+            "kind": "VALUE_PATH",
+            "path_tokens": [
+              { "kind": "key", "value": "b" }
+            ],
+            "operation_chain": [
+              {
+                "kind": "EXTRACT",
+                "path_tokens": [
+                  { "kind": "key", "value": "b" }
+                ]
+              }
+            ],
+            "downstream_demand": { "kind": "WHOLE_VALUE" },
+            "role": "VALUE"
+          },
+          "role": "VALUE",
+          "source": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "relation": "src", "column": "j", "binding": "SQL_NAMED_RELATION_COLUMN" },
+          "witness": [
+            {
+              "consumer": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:2", "slot": 1 },
+              "producer": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "slot": 1 },
+              "role": "VALUE",
+              "clause": "SELECT",
+              "operations": [
+                {
+                  "kind": "EXTRACT",
+                  "path_tokens": [
+                    { "kind": "key", "value": "b" }
+                  ]
+                }
+              ],
+              "evidence": {
+                "position": { "start": 87, "end": 88, "line": 1, "column_end": 88 },
+                "expression": "GET_JSON_OBJECT(c.x, '$.b') AS hit",
+                "origin": "AST_SCOPE_OCCURRENCE"
+              }
+            },
+            {
+              "consumer": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "slot": 1 },
+              "source": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "relation": "src", "column": "j", "binding": "SQL_NAMED_RELATION_COLUMN" },
+              "role": "VALUE",
+              "clause": "SELECT",
+              "operations": [
+                {
+                  "kind": "EXTRACT",
+                  "path_tokens": [
+                    { "kind": "key", "value": "a" }
+                  ]
+                }
+              ],
+              "evidence": {
+                "position": { "start": 36, "end": 37, "line": 1, "column_end": 37 },
+                "expression": "GET_JSON_OBJECT(s.j, '$.a') AS x",
+                "origin": "AST_SCOPE_OCCURRENCE"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "alt": {
+    "coverage": {
+      "parsed": true,
+      "partial": false,
+      "recovered": 0,
+      "complete": false,
+      "locally_reviewable_projection_only": true,
+      "fragment_supported": true,
+      "source_boundary": "SQL_NAMED_RELATIONS",
+      "catalog_verified": false,
+      "engine_semantics_verified": false,
+      "source_schema_binding": {
+        "basis": "CALLER_DECLARATION",
+        "applied": {},
+        "ignored": {},
+        "not_applied": []
+      },
+      "dialect": "spark",
+      "sqlglot": "30.31.0",
+      "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3"
+    },
+    "review": {
+      "static_extraction_evidence": {
+        "status": "REVIEW_ONLY",
+        "rowset_verified": false,
+        "pruning_authorized": false,
+        "protected_output": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:2", "slot": 2 },
+        "projection_position": { "start": 134, "end": 137, "line": 1, "column_end": 137 },
+        "source_demand": {
+          "kind": "VALUE_PATH",
+          "path_tokens": [
+            { "kind": "key", "value": "a" }
+          ],
+          "operation_chain": [
+            {
+              "kind": "EXTRACT",
+              "path_tokens": [
+                { "kind": "key", "value": "a" }
+              ]
+            }
+          ],
+          "downstream_demand": {
+            "kind": "VALUE_PATH",
+            "path_tokens": [
+              { "kind": "key", "value": "z" }
+            ],
+            "operation_chain": [
+              {
+                "kind": "EXTRACT",
+                "path_tokens": [
+                  { "kind": "key", "value": "z" }
+                ]
+              }
+            ],
+            "downstream_demand": { "kind": "WHOLE_VALUE" },
+            "role": "VALUE"
+          },
+          "role": "VALUE",
+          "source": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "relation": "src", "column": "j", "binding": "SQL_NAMED_RELATION_COLUMN" },
+          "witness": [
+            {
+              "consumer": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:2", "slot": 2 },
+              "producer": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "slot": 1 },
+              "role": "VALUE",
+              "clause": "SELECT",
+              "operations": [
+                {
+                  "kind": "EXTRACT",
+                  "path_tokens": [
+                    { "kind": "key", "value": "z" }
+                  ]
+                }
+              ],
+              "evidence": {
+                "position": { "start": 122, "end": 123, "line": 1, "column_end": 123 },
+                "expression": "GET_JSON_OBJECT(c.x, '$.z') AS alt",
+                "origin": "AST_SCOPE_OCCURRENCE"
+              }
+            },
+            {
+              "consumer": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "slot": 1 },
+              "source": { "snapshot": "local:1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "sql_sha256": "1303366d1891925183124786adb2567a62ce227ad4049b8f4021a3f5bed298e3", "statement": 1, "scope": "1:1", "relation": "src", "column": "j", "binding": "SQL_NAMED_RELATION_COLUMN" },
+              "role": "VALUE",
+              "clause": "SELECT",
+              "operations": [
+                {
+                  "kind": "EXTRACT",
+                  "path_tokens": [
+                    { "kind": "key", "value": "a" }
+                  ]
+                }
+              ],
+              "evidence": {
+                "position": { "start": 36, "end": 37, "line": 1, "column_end": 37 },
+                "expression": "GET_JSON_OBJECT(s.j, '$.a') AS x",
+                "origin": "AST_SCOPE_OCCURRENCE"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -10,10 +10,12 @@ export interface Result {
   uses: RecordRow[];
   mappings: RecordRow[];
   unknowns?: RecordRow[];
-  coverage?: { parsed?: boolean; partial?: boolean; recovered?: number; complete?: boolean };
+  coverage?: { analysis_status?: unknown; sql_sha256?: unknown; dialect?: unknown; parsed?: boolean; partial?: boolean; recovered?: number; complete?: boolean };
   generators?: unknown;
   windows?: unknown;
   row_selections?: unknown;
+  opaque_call_arguments?: unknown;
+  union_output_reads?: unknown;
   review?: unknown;
 }
 export interface PathItem {

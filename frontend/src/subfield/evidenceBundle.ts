@@ -1,4 +1,5 @@
 import type { analyzeSubfieldSql } from '../api/client';
+import { isUnverifiedPhysicalRead } from './unverifiedUnion';
 
 type Request = Parameters<typeof analyzeSubfieldSql>[0];
 type JsonRecord = Record<string, unknown>;
@@ -39,6 +40,8 @@ async function sha256(bytes: Uint8Array) {
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+export const submittedSqlHash = (sql: string) => sha256(encoder.encode(sql));
+
 function range(value: unknown, limit: number): Range | null {
   if (!record(value)) return null;
   const { start, end } = value;
@@ -65,7 +68,7 @@ function resolveOrigin(origin: EvidenceOrigin, sqlHash: string) {
 }
 
 const pointerToken = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~1');
-const evidenceArrays = ['uses', 'mappings', 'unknowns', 'windows', 'row_selections', 'generators'];
+const evidenceArrays = ['uses', 'mappings', 'unknowns', 'windows', 'row_selections', 'generators', 'union_output_reads'];
 const positionalArrays = new Set([...evidenceArrays,
   'keys', 'port_reads', 'protected_outputs', 'unmatched_protected_outputs', 'by_protected_output', 'unresolved']);
 
@@ -84,6 +87,8 @@ function evidenceLocations(response: JsonRecord, sql: string, originalReason: st
     if (Array.isArray(value)) {
       value.forEach((entry, index) => visit(entry, `${pointer}/${index}`, field));
     } else if (record(value)) {
+      // Keep the raw diagnostic, but do not index it as an evidence location.
+      if (isUnverifiedPhysicalRead(value)) return;
       if ('position' in value || positionalArrays.has(field) || field === 'protected_output') {
         locations.push(locate(pointer, value.position));
       }
@@ -106,7 +111,7 @@ EvidenceSnapshot) {
   const declared = structuredClone(origin);
   if (!record(response) || !record(response.coverage)) throw new Error('服务响应未提供 SQL 核验信息。');
   const coverage = response.coverage;
-  const sqlHash = await sha256(encoder.encode(submitted.sql));
+  const sqlHash = await submittedSqlHash(submitted.sql);
   if (coverage.sql_sha256 !== sqlHash || coverage.dialect !== submitted.dialect) {
     throw new Error('提交 SQL 或方言与服务响应不匹配，无法导出证据。');
   }

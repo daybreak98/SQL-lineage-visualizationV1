@@ -30,6 +30,7 @@ export function createSQLPositionIndex(sql: string) {
 
   return {
     valid,
+    utf16Offset(offset: number) { return hasOffset(offset) ? utf16Offsets[offset] : null; },
     excerpt(position?: Position | null) {
       if (!valid(position)) return null;
       const { start, end } = position;

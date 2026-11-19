@@ -20,10 +20,10 @@ beforeEach(() => {
 });
 
 describe('API Client', () => {
-  it('sends subfield review through the shared client and exposes validation detail', async () => {
-    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ msg: '无效的保护槽' }] }), { status: 422 }));
+  it('sends subfield review through the shared client and gives safe field-level validation guidance', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ loc: ['body', 'protected_outputs'], type: 'list_type', msg: '无效的保护槽' }] }), { status: 422 }));
     const payload = { sql: ' SELECT 1 ', dialect: 'Spark', protected_outputs: [{ statement: 1, scope: '1:1', slot: 1 }] };
-    await expect(analyzeSubfieldSql(payload)).rejects.toThrow('无效的保护槽');
+    await expect(analyzeSubfieldSql(payload)).rejects.toThrow('输出槽位无效');
     expect(mockFetch).toHaveBeenCalledWith('/api/sql/subfield-lineage', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ ...payload, dialect: 'spark' }),
     }));

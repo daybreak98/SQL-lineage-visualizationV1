@@ -66,7 +66,7 @@ def test_two_arm_union_join_port_is_independent_of_value_certainty(left, ambiguo
     assert any(d['code'] == 'UNION_ALL_TYPE_COERCION_UNVERIFIED' for d in local['facts']['unknowns'])
 
 
-def test_seven_union_arms_keep_condition_paths_and_constant_branch():
+def test_multi_arm_union_keeps_members_but_does_not_project_condition_path_to_sources():
     result = analyze_local_bindings(
         "SELECT CASE WHEN get_json_object(u.j, '$.x') = 'yes' "
         f"THEN 1 ELSE 0 END AS out FROM ({seven_arm_union()}) u")
@@ -75,7 +75,10 @@ def test_seven_union_arms_keep_condition_paths_and_constant_branch():
     observed = [u for u in facts["uses"]
                 if u["clause"] == "SELECT" and u["role"] == "CONDITION"
                 and u["path_tokens"] == [{"kind": "key", "value": "x"}]]
-    assert {u["source"] for u in observed} == {f"src_{i}" for i in range(6)}
+    assert observed == []
+    [unknown] = [u for u in facts["unknowns"] if u["code"] == "UNKNOWN_JSON_INPUT"]
+    assert {i["source"] for i in unknown["inputs"]} == {f"src_{i}" for i in range(6)}
+    assert all(i["path_tokens"] == [] for i in unknown["inputs"])
     unions = [m for m in facts["mappings"] if len(m.get("union_branches", [])) == 7]
     assert unions
     assert all([b["branch_slot"] for b in m["union_branches"]] == list(range(1, 8))

@@ -131,6 +131,12 @@
 .subfield-app .inspector{background:var(--panel);overflow-wrap:anywhere}
 .subfield-app .ins-head{flex:none}
 .subfield-app .subfield-detail-body{display:block;min-width:0;padding:10px 12px}
+.subfield-app .j-long-sql{display:block;max-width:1040px;margin:0 auto;padding:16px}
+.subfield-app .j-long-preview{display:grid;gap:6px;margin:10px 0}
+.subfield-app .j-long-preview textarea{width:100%;min-width:0;line-height:1.5;font-family:monospace;resize:vertical}
+.subfield-app .j-two-step{margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.subfield-app .j-two-step-picker{display:grid;gap:4px}
+.subfield-app .j-two-step-picker select{width:100%;min-width:0}
 .subfield-app :is(.subfield-detail-body,.ins-scroll) :is(pre,code){white-space:pre-wrap;overflow-wrap:anywhere}
 .subfield-app .evidence-download{padding:8px 12px;border-top:1px solid var(--line)}
 .subfield-app .evidence-download-body{display:grid;gap:6px;padding-top:7px;justify-items:start}

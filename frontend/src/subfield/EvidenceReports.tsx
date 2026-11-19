@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { RecordRow, Result } from './contract';
+import { isUnverifiedPhysicalRead } from './unverifiedUnion';
 import { isTextMapEvidence, textMapTitle } from './textMapEvidence';
 
 type PickEvidence = (title: string, rows: RecordRow[]) => void;
@@ -112,7 +113,7 @@ export function ReviewSummary({ value, pick, preview }: { value: unknown; pick: 
       title: `${sourceLabel(row)} · ${pathLabel(row.path_tokens)} → ${portLabel(row.protected_output)}`,
       evidence: [...(records(row.port_reads) ?? []), row],
     })} />
-    <Report title="过程依赖（含原始表示）" rows={records(review.observed_control_uses)} pick={pick} describe={row => ({
+    <Report title="过程依赖（含原始表示）" rows={records(review.observed_control_uses)?.filter(row => !isUnverifiedPhysicalRead(row))} pick={pick} describe={row => ({
       title: `${name(roleLabels, row.role)} · ${sourceLabel(row)} · ${text(row.path ?? row.expression, '范围未提供')}`,
     })} />
     <Report title="评审未决项" rows={records(review.unknowns)} describe={unknown} pick={pick} />

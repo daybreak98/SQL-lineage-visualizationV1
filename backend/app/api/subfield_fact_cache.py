@@ -118,7 +118,7 @@ def fact_key(request, sql, dialect, schemas, analyzer):
         return None
     try:
         # No sorting/folding/SQL normalization; JSON lists and dict order stay.
-        raw = json.dumps(["facts-v1", sql, dialect, schemas], ensure_ascii=False,
+        raw = json.dumps(["facts-v2:two-step-v1", sql, dialect, schemas], ensure_ascii=False,
                          separators=(",", ":"), allow_nan=False).encode("utf-8")
         return (analyzer, sqlglot.__version__, raw) if len(raw) <= MAX_DESCRIPTOR_BYTES else None
     except Exception:

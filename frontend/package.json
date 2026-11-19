@@ -1,9 +1,9 @@
 {
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
+    "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0",
+    "preview": "vite preview",
     "smoke:browser": "python e2e/lineage_browser_smoke.py",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -13,7 +13,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.scope import Scope, traverse_scope
 from sqlglot.tokens import TokenType
 
-from app.services.subfield_parser import parse_with_json_path_positions
+from app.services.subfield_parser import parse_one_slice, parse_with_json_path_positions
 
 
 @dataclass(frozen=True)
@@ -235,8 +235,15 @@ def statement_parts(sql, dialect="hive", *, reliable=False):
 
 
 def parse_at(sql, start, end, dialect):
-    node = sqlglot.parse_one(sql[start:end], read=dialect)
+    node = parse_one_slice(sql[start:end], dialect)
     for child in node.walk():
+        literal = child.meta.get("null_token_position")
+        if literal:
+            literal["start"] += start
+            literal["end"] += start
+            last = literal["end"] - 1
+            literal["line"] = sql.count("\n", 0, last) + 1
+            literal["column_end"] = last - sql.rfind("\n", 0, last)
         if "start" in child.meta and "end" in child.meta:
             meta = child.meta
             meta["start"] += start
@@ -313,6 +320,7 @@ class Analysis:
         self.sql = sql
         self.dialect = dialect
         self.uses = []
+        self.union_output_reads = []
         self.mappings = []
         self.generators = []
         self.on_query = None
@@ -322,10 +330,14 @@ class Analysis:
         self.windows = []
         self.row_selections = []
         self.locally_reviewable_projection_only = False
+        self.projection_slot_counts = None
+        self.no_json_projection = False
+        self.has_unverified_root_projection = False
         self.allow_text_map_evidence = False
         self.allow_fixed_map_evidence = False
         self.fixed_map_overridden = False
         self.allow_multi_coalesce = False
+        self.allow_literal_concat_path = False
         self.source_string_tokens = None
         self.call_closers = None
         self.opaque_call_arguments = []
@@ -447,6 +459,30 @@ class Analysis:
         meta = node.meta
         return ("start" in meta and "end" in meta and not isinstance(node.parent, exp.Dot)
                 and self.sql[meta["start"]:meta["end"] + 1].lower() == name)
+
+    def json_extraction_tokens(self, path):
+        literal_tokens = path_tokens(path)
+        if literal_tokens is not None:
+            return literal_tokens
+        if (not self.allow_literal_concat_path or type(path) is not exp.Concat
+                or not self.is_unqualified_builtin(path, "concat")
+                or not only_projection_args(path, {"expressions", "safe", "coalesce"})
+                or path.args.get("safe") is not True or path.args.get("coalesce") is not False
+                or len(path.expressions) < 2):
+            return None
+        fragments = []
+        for arg in path.expressions:
+            if type(arg) is not exp.Literal or not arg.is_string:
+                return None
+            start, end = arg.meta.get("start"), arg.meta.get("end")
+            if (type(start) is not int or type(end) is not int
+                    or not 0 <= start <= end < len(self.sql)
+                    or self.sql[start:end + 1] != "'" + arg.this + "'"):
+                return None
+            fragments.append(arg.this)
+        # Only a simple single object key, with no escaping or coercion.
+        match = re.fullmatch(r"\$\.([A-Za-z_][A-Za-z0-9_]*)", "".join(fragments))
+        return (("key", match[1]),) if match else None
 
     def located_evidence(self, node):
         evidence = self.evidence(node)
@@ -572,6 +608,13 @@ class Analysis:
             if node.table and not self.table_may_have_column(src, name):
                 self.unknown("UNBOUND_COLUMN", node, clause)
                 return Value(kind="UNKNOWN")
+            # Keep the exact selected Table for a direct JSON argument only. A
+            # Scope/CTE result can carry the same Origin but is not this binding.
+            parent = node.parent
+            while type(parent) is exp.Paren:
+                parent = parent.parent
+            if type(parent) in (exp.JSONExtractScalar, exp.JSONExtract):
+                self.direct_json_relations[id(node)] = (scope, src)
             origin = Origin(".".join(p.name for p in src.parts), node.name)
             self.on_column_binding(node, scope, clause, {
                 "kind": "NAMED_SOURCE", "source": origin.source, "column": origin.column})
@@ -595,7 +638,249 @@ class Analysis:
                         "slot": names.index(name) + 1}
             if any(all(mapping.get(k) == v for k, v in producer.items()) for mapping in self.mappings):
                 self.on_column_binding(node, scope, clause, {"kind": "PROJECTION", "producer": producer})
+                relay = self.union_relays.get((src, producer["slot"]))
+                direct_union = type(src.expression) is exp.Union
+                if (direct_union or relay) and (node.table or self.unqualified_union_column(
+                    node, scope, joined_binding=(candidates[0], outputs)
+                )):
+                    self.union_occurrence_producers[id(node)] = (
+                        relay["producer"] if relay else producer,
+                        relay is not None or (src, producer["slot"]) in self.union_readable_slots,
+                        candidates[0], relay,
+                    )
         return value
+
+    def unqualified_union_column(self, node, scope, own_projection=None, *, joined_binding=None):
+        # The resolver already chose the unique input. Do not use bare names
+        # when another relation's output names or a local alias are in doubt.
+        select = scope.expression
+        from_clause = select.args.get("from_")
+        if (type(select) is not exp.Select or type(from_clause) is not exp.From
+                or type(from_clause.this) not in {exp.Table, exp.Subquery}
+                or select.args.get("laterals")):
+            return False
+        if select.args.get("joins"):
+            if joined_binding is None or not self.union_join_inputs_verified(node, scope, *joined_binding):
+                return False
+        elif len(scope.selected_sources) != 1:
+            return False
+        aliases = self.union_projection_aliases.get(scope)
+        if aliases is None:
+            aliases = {}
+            for item in select.expressions:
+                if type(item) is exp.Alias:
+                    aliases.setdefault(item.alias.lower(), []).append(item)
+            self.union_projection_aliases[scope] = aliases
+        matches = aliases.get(node.name.lower(), ())
+        return not matches or (len(matches) == 1 and matches[0] is own_projection)
+
+    def union_join_inputs_verified(self, node, scope, selected_alias, outputs):
+        joins = scope.expression.args["joins"]
+        sources = scope.selected_sources
+        if len(sources) != len(joins) + 1:
+            return False
+        for join in joins:
+            if (join.kind not in {"", "INNER", "OUTER", "CROSS"}
+                    or join.side not in {"", "LEFT", "RIGHT", "FULL"}
+                    or not only_projection_args(join, {"this", "kind", "side", "on"})
+                    or (join.kind != "CROSS" and join.args.get("on") is None)):
+                return False
+        name = node.name.lower()
+        for alias, (relation, source) in sources.items():
+            if type(relation) is exp.Table:
+                allowed = {"this", "db", "catalog", "alias"}
+            elif type(relation) is exp.Subquery:
+                allowed = {"this", "alias"}
+            else:
+                # SQLGlot uses the inner SELECT/UNION as the occurrence for
+                # a derived table. Check the enclosing FROM/JOIN expression.
+                relation = relation.parent
+                if type(relation) is not exp.Subquery:
+                    return False
+                allowed = {"this", "alias"}
+            if not only_projection_args(relation, allowed) or relation.alias_column_names:
+                return False
+            if alias == selected_alias:
+                continue
+            if type(source) is exp.Table:
+                columns = self.declared_columns(source)
+                if columns is None or name in columns:
+                    return False
+            elif (not isinstance(source, Scope) or type(source.expression) is not exp.Select
+                  or source in self.open_scopes or source.outer_columns):
+                return False
+            else:
+                items = source.expression.selects
+                names = [item.alias_or_name.lower() for item in items]
+                if (any(not n or item.is_star for n, item in zip(names, items))
+                        or len(set(names)) != len(names) or set(names) != set(outputs.get(source, {}))
+                        or name in names):
+                    return False
+        return True
+
+    def remember_union_relay(self, scope, item, port):
+        column = item.this if type(item) is exp.Alias else item
+        if type(column) is not exp.Column:
+            return
+        evidence = self.union_occurrence_producers.get(id(column))
+        if evidence is None or not evidence[1] or evidence[3] is not None:
+            return  # Only one ordinary CTE projection may be crossed.
+        endpoint, _, _, _ = evidence
+        position = self.identifier_anchor(column.this, column.name)
+        output = item.args.get("alias") if type(item) is exp.Alias else column.this
+        if (position and type(output) is exp.Identifier and not output.quoted
+                and self.identifier_anchor(output, output.name)):
+            self.union_relays[scope, port["slot"]] = {
+                "producer": endpoint, "consumer": port, "position": position,
+            }
+
+    def union_case_guard_context(self, node, scope):
+        parts = []
+        current = node
+        while (parent := current.parent) is not None:
+            if isinstance(parent, exp.Query):
+                if (parent is scope.expression and type(parent) is exp.Select
+                        and any(p["part"] == "GUARD" for p in parts)):
+                    for slot, item in enumerate(parent.expressions, 1):
+                        if item is current and item.alias_or_name:
+                            return {"projection": {"statement": self.statement,
+                                 "scope": self.scope_ids[scope], "slot": slot},
+                                "parts": list(reversed(parts))}
+                return None
+            if type(parent) is exp.If and parent.arg_key == "ifs" and type(parent.parent) is exp.Case:
+                arms = parent.parent.args["ifs"]
+                if current is parent.this or current is parent.args.get("true"):
+                    slot = next((i for i, arm in enumerate(arms, 1) if arm is parent), None)
+                    if slot is not None:
+                        parts.append({"part": "GUARD" if current is parent.this else "VALUE",
+                                      "arm_slot": slot})
+            elif type(parent) is exp.Case:
+                if current is parent.this:
+                    parts.append({"part": "OPERAND"})
+                elif current is parent.args.get("default"):
+                    parts.append({"part": "VALUE", "arm_slot": len(parent.args["ifs"]) + 1})
+            current = parent
+        return None
+
+    @staticmethod
+    def join_input_visible(call, scope, table):
+        """Check the resolved Table by identity in this ON's input prefix."""
+        query = scope.expression
+        child = call
+        while child.parent is not None and child.parent is not query:
+            parent = child.parent
+            if isinstance(parent, exp.Query):
+                return False  # A nested query has its own name-resolution boundary.
+            if isinstance(parent, exp.Join):
+                if parent.args.get("on") is not child or parent.parent is not query:
+                    return False
+                from_ = query.args.get("from_")
+                if from_ is None:
+                    return False
+                visible = [from_.this]
+                for join in query.args.get("joins") or ():
+                    if join is parent:
+                        return join.this is table or any(src is table for src in visible)
+                    # Do not model retained inputs of semi/anti or exotic joins.
+                    if join.kind not in ("", "INNER", "OUTER", "CROSS"):
+                        return False
+                    visible.append(join.this)
+                return False
+            child = parent
+        return False
+
+    def named_json_read_binding(self, call, column, scope):
+        resolved = self.direct_json_relations.get(id(column))
+        if resolved is None or resolved[0] is not scope or self.macro_context is not None:
+            return None
+        table = resolved[1]
+        if (call.find_ancestor(exp.Query) is not scope.expression
+                or table.find_ancestor(exp.Query) is not scope.expression):
+            return None
+
+        def anchor(identifier):
+            if type(identifier) is not exp.Identifier:
+                return None
+            pos = self.evidence(identifier)["position"]
+            if pos:
+                raw = self.sql[pos["start"]:pos["end"]]
+                if (raw == identifier.name or (identifier.quoted and raw[:1] == raw[-1:] == "`"
+                        and raw[1:-1].replace("``", "`") == identifier.name)):
+                    return pos
+            return None
+
+        parts = [anchor(part) for part in table.parts]
+        alias = table.args.get("alias")
+        declaration = anchor(alias.this) if alias else parts[-1]
+        reference = anchor(column.this)
+        qualifier = anchor(column.args.get("table")) if column.table else None
+        call_pos = self.evidence(call)["position"]
+        if (not all(parts) or not declaration or not reference or (column.table and not qualifier)
+                or not call_pos or self.sql[call_pos["start"]:call_pos["end"]].lower() != "get_json_object"):
+            return None
+        scope_id = self.scope_ids[scope]
+        return {"kind": "SQL_NAMED_RELATION_COLUMN", "scope": scope_id, "column_position": reference,
+                "qualifier_position": qualifier, "relation_instance": {
+                    "statement": self.statement, "declaration_scope": scope_id, "name": table.alias_or_name,
+                    "declaration_position": declaration, "table_part_positions": parts}}
+
+    def union_path_site(self, call, column, scope, role, clause):
+        if self.macro_context is not None or type(column) is not exp.Column:
+            return None
+        binding = self.union_occurrence_producers.get(id(column))
+        if binding is None:
+            return None
+
+        select = scope.expression
+        parent = call.parent
+        consumer = None
+        case_context = None
+        if clause == "SELECT" and role == "VALUE":
+            item = parent if type(parent) is exp.Alias else call
+            slot = next((i for i, projection in enumerate(select.expressions, 1)
+                         if projection is item), None)
+            if slot is None or not item.alias_or_name:
+                return
+            consumer = {"statement": self.statement, "scope": self.scope_ids[scope], "slot": slot}
+        elif clause == "SELECT" and role == "CONDITION":
+            case_context = self.union_case_guard_context(call, scope)
+            if case_context is None:
+                return None
+        elif clause == "WHERE" and role == "CONDITION" and type(parent) is exp.EQ:
+            other = parent.expression if parent.this is call else parent.this
+            where = select.args.get("where")
+            if (type(other) is not exp.Literal or not other.is_string
+                    or type(where) is not exp.Where or where.this is not parent):
+                return
+        else:
+            return
+
+        return binding, consumer, case_context
+
+    def observe_union_path_argument(self, call, column, scope, role, clause, tokens, site):
+        (producer, verified_slot, relation_alias, relay), consumer, case_context = site
+        if not verified_slot or not tokens or len(tokens) != 1 or tokens[0][0] != "key":
+            return
+        position = self.identifier_anchor(column.this, column.name)
+        call_position = self.evidence(call)["position"]
+        path_position = call.expression.meta.get("json_path_position")
+        if (not position or not call_position or not path_position
+                or not (call_position["end"] <= position["start"] < position["end"]
+                        <= path_position["start"] < path_position["end"] <= len(self.sql))):
+            return
+        self.union_output_reads.append({
+            "statement": self.statement, "scope": self.scope_ids[scope],
+            "producer": producer, "consumer": consumer, "clause": clause, "role": role,
+            "relation_alias": relation_alias, "column": column.name,
+            **({"qualification": "UNQUALIFIED"} if not column.table else {}),
+            **({"via": [relay]} if relay else {}),
+            **({"select_case": case_context} if case_context else {}),
+            "position": position, "call_position": call_position,
+            "json_path_position": dict(path_position),
+            "operation": "JSON_PATH_ON_UNION_SLOT",
+            "path_tokens": [{"kind": kind, "value": value} for kind, value in tokens],
+            "value_semantics": "UNVERIFIED", "rowset_verified": False,
+        })
 
     def on_column_binding(self, node, scope, clause, binding):
         """Extension hook reached only after the existing resolver accepts a binding."""
@@ -650,7 +935,7 @@ class Analysis:
                     and type(path_expression) is exp.Column and not path_expression.table
                     and path_expression.name.lower() == self.macro_context[0].path_parameter):
                 path_expression = Dialect.get_or_raise(self.dialect).to_json_path(self.macro_path_argument)
-            tokens = path_tokens(path_expression)
+            tokens = self.json_extraction_tokens(path_expression)
             builtin = self.is_unqualified_builtin(node, "get_json_object")
             candidate = None
             if (tokens is None and builtin and self.dialect == "spark" and body.exact is not None
@@ -662,14 +947,12 @@ class Analysis:
                 extra = (read(node.expression) if node.expression is not None
                          and not isinstance(node.expression, exp.JSONPath) else Value())
                 return combine((body, extra), "UNKNOWN")
-            if body.kind == "UNION_VALUE" and builtin and tokens is not None:
-                origins = tuple(Origin(o.source, o.column, o.tokens + (
-                    (("parse", "json"),) if o.tokens else ()) + tokens) for o in body.inputs)
-                if record:
-                    for origin in origins:
-                        self.use(origin, role, clause, "EXTRACT", node,
-                                 conversion_semantics="UNION_COERCION_UNVERIFIED")
-                return Value(origins, body.slots, "DERIVED", generator_ports=body.generator_ports)
+            if record:
+                site = self.union_path_site(node, base_node, scope, role, clause)
+                if site is not None:
+                    self.observe_union_path_argument(node, base_node, scope, role, clause, tokens, site)
+            # A UNION layout cannot prove that the path applies to the
+            # physical inputs before the unknown set conversion.
             if body.exact is None:
                 self.unknown("UNKNOWN_JSON_INPUT", node, clause, body.inputs)
                 return combine((body,), "UNKNOWN")
@@ -692,7 +975,16 @@ class Analysis:
                                "FINITE_PATH_CANDIDATES")
             origin = Origin(base.source, base.column, base.tokens + hops + tokens)
             if record:
-                self.use(origin, role, clause, "EXTRACT", node)
+                resolved = self.direct_json_relations.get(id(base_node))
+                if (clause == "JOIN" and self.macro_context is None and resolved is not None
+                        and resolved[0] is scope and not self.join_input_visible(node, scope, resolved[1])):
+                    reason = "JOIN_INPUT_VISIBILITY_UNVERIFIED"
+                    self.unknown(reason, base_node, clause)
+                    # Keep the historical syntactic read, not a verified source identity.
+                    self.use(origin, role, clause, "EXTRACT", node, binding_status=reason)
+                else:
+                    binding = self.named_json_read_binding(node, base_node, scope)
+                    self.use(origin, role, clause, "EXTRACT", node, **({"named_source_binding": binding} if binding else {}))
             return Value((origin,), body.slots, "EXTRACT", origin, body.generator_ports, body.source_binding_status)
         if isinstance(node, exp.If):
             branches = [read(node.this, "CONDITION")]
@@ -980,7 +1272,7 @@ class Analysis:
                 "predicate": predicate.sql(dialect=self.dialect),
             })
 
-    def select(self, scope, outputs, scope_id, root, target):
+    def select(self, scope, outputs, scope_id, root, target, *, anonymous_root_label=None):
         node = scope.expression
         slots = {}
         projections = {}
@@ -1022,12 +1314,18 @@ class Analysis:
                 star_names.update(columns)
         blocked = (seen_names if star_unverified else star_names) & (seen_names - {'*'})
         self.unresolved_star_outputs[scope] = blocked
+        relay_candidate = (scope.is_cte and not aliases
+                           and only_projection_args(node, {"expressions", "from_"})
+                           and len(scope.selected_sources) == 1
+                           and not any(item.is_star for item in node.selects))
         for index, item in enumerate(node.selects):
             port = {"statement": self.statement, "scope": scope_id, "slot": index + 1}
             rank = self.row_number_projection(item, scope, outputs, port)
             value = rank if rank is not None else self.expression(item, scope, outputs, "VALUE", "SELECT")
-            name = aliases[index] if aliases else item.alias_or_name
+            name = aliases[index] if aliases else item.alias_or_name or anonymous_root_label
             if not name or item.is_star:
+                if root:
+                    self.has_unverified_root_projection = True
                 if item.is_star:
                     self.open_scopes.add(scope)
                 continue
@@ -1050,6 +1348,10 @@ class Analysis:
                 port_read = self.cte_port_read(item, scope, outputs, value)
                 if port_read is not None:
                     port_reads.append(port_read)
+            # A source-text label identifies an ordinal, not a proven CTE edge.
+            # Keep that mapping and its uses even when the nested read is unresolved.
+            if anonymous_root_label and any(isinstance(src, Scope) for src in self.relations(scope).values()) and not port_reads:
+                self.has_unverified_root_projection = True
             port_model = None
             argument_count = None
             coalesce_args = self.coalesce_args(item) if root else None
@@ -1062,6 +1364,8 @@ class Analysis:
                                 if folded not in duplicate_names and folded not in blocked else None)
             self.mapping(scope_id, root, target, index + 1, name, item, value,
                          port_reads, terminal_binding, port_model, argument_count, projection_site=True)
+            if relay_candidate and folded not in duplicate_names and folded not in blocked:
+                self.remember_union_relay(scope, item, port)
             if root:
                 self.active.update(value.slots)
         for key, clause, role in (
@@ -1119,12 +1423,15 @@ class Analysis:
             self.active.update(self.expression(expr, scope, outputs, role, clause).slots)
             if key == "where":
                 self.rank_filter(expr, scope, outputs, scope_id)
-        for join in node.args.get("joins") or []:
+        for ordinal, join in enumerate(node.args.get("joins") or [], 1):
             if join.args.get("using") or join.args.get("method") == "NATURAL":
                 self.unknown("UNSUPPORTED_JOIN_BINDING", join, "JOIN")
             if join.args.get("on") is not None:
+                first_use = len(self.uses)
                 self.active.update(self.expression(join.args["on"], scope, outputs,
                                                    "RELATIONAL", "JOIN").slots)
+                if self.collect_join_sites:
+                    self.bind_join_sites(scope, outputs, join, ordinal, self.uses[first_use:])
         if node.args.get("distinct") is not None:
             self.active.update(combine(slots.values()).slots)
         for key in ("connect", "match", "distribute", "sort", "cluster"):
@@ -1132,6 +1439,82 @@ class Analysis:
                 self.unknown("UNSUPPORTED_RELATIONAL_CLAUSE", node.args[key], key.upper())
         self.rank_slots[scope] = ranks
         return slots
+
+    def bind_join_sites(self, scope, outputs, join, ordinal, uses):
+        """Attach consumers to two actual resolver uses; no value edges or row guarantees."""
+        predicate = join.args.get("on")
+        side, kind = join.side, join.kind
+        if (self.unknowns or len(uses) != 2 or type(predicate) is not exp.EQ
+                or (side, kind) not in {("", ""), ("", "INNER"), ("LEFT", ""), ("LEFT", "OUTER")}
+                or not only_projection_args(join, {"this", "side", "kind", "on"})
+                or not only_projection_args(predicate, {"this", "expression"})):
+            return
+        query = scope.expression
+        from_clause = query.args.get("from_")
+        if from_clause is None:
+            return
+        # All previous operands are on the accumulated left side. Never bind to
+        # a later JOIN, or resolve a self-join by its base table name alone.
+        visible = [from_clause.this, *(j.this for j in query.args["joins"][:ordinal])]
+        if any(type(n) not in (exp.Table, exp.Subquery) or not n.alias or n.alias_column_names for n in visible):
+            return
+        instances = {n.alias.lower(): n for n in visible}
+        if len(instances) != len(visible):
+            return
+        bound = []
+        for col in (predicate.this, predicate.expression):
+            if type(col) is not exp.Column or not col.table or col.db or col.catalog or col.is_star:
+                return
+            relation = instances.get(col.table.lower())
+            aliases = self.column_candidates(col, scope, outputs)
+            if relation is None or len(aliases) != 1:
+                return
+            source = self.relations(scope)[aliases[0]]
+            column_pos = self.identifier_anchor(col.this, col.name)
+            qualifier = self.identifier_anchor(col.args["table"], col.table)
+            alias_pos = self.identifier_anchor(relation.args["alias"].this, relation.alias)
+            if not (column_pos and qualifier and alias_pos):
+                return
+            matches = [u for u in uses if u["position"] == column_pos and u["statement"] == self.statement
+                       and (u["role"], u["clause"], u["kind"]) == ("RELATIONAL", "JOIN", "WHOLE_RAW")
+                       and u["path_tokens"] == []]
+            if len(matches) != 1:
+                return
+            use, = matches
+            if type(source) is exp.Table:
+                if (source is not relation or use["source"] != ".".join(part.name for part in source.parts)
+                        or use["column"] != col.name):
+                    return
+                binding = {"kind": "SQL_NAMED_RELATION_COLUMN"}
+            elif (isinstance(source, Scope) and type(relation) is exp.Subquery
+                  and relation.this is source.expression and type(source.expression) is exp.Select):
+                slots = [(i, item) for i, item in enumerate(source.expression.selects, 1)
+                         if item.alias_or_name.lower() == col.name.lower()]
+                if len(slots) != 1 or any(item.is_star for item in source.expression.selects):
+                    return
+                slot, item = slots[0]
+                if type(item.this if isinstance(item, exp.Alias) else item) is not exp.Column:
+                    return
+                terminal = outputs.get(source, {}).get(col.name.lower())
+                if (terminal is None or terminal.kind != "WHOLE_RAW" or terminal.exact is None
+                        or (terminal.exact.source, terminal.exact.column) != (use["source"], use["column"])):
+                    return
+                binding = {"kind": "DERIVED_COLUMN", "producer": {"statement": self.statement,
+                           "scope": self.scope_ids[source], "slot": slot}}
+            else:
+                return
+            bound.append((use, qualifier, {"alias": relation.alias, "alias_position": alias_pos,
+                         "column": col.name, "binding": binding,
+                         "join_side": "RIGHT" if relation is join.this else "LEFT"}))
+        if {info["join_side"] for _, _, info in bound} != {"LEFT", "RIGHT"}:
+            return
+        consumer = {"kind": "JOIN", "statement": self.statement, "scope": self.scope_ids[scope],
+                    "ordinal": ordinal, "join_type": side or "INNER",
+                    "predicate_span": {"start": bound[0][1]["start"], "end": bound[1][0]["position"]["end"]},
+                    "rowset_effect": "POSSIBLE", "rowset_verified": False, "pruning_authorized": False}
+        for use, qualifier, info in bound:
+            use.update(scope=self.scope_ids[scope], consumer=dict(consumer), relation_instance=info,
+                       qualifier_position=qualifier)
 
     def cte_port_read(self, item, scope, outputs, value):
         # This evidence is adjacent to the real binding. Never reconstruct it
@@ -1147,7 +1530,7 @@ class Analysis:
         if type(node) in {exp.JSONExtractScalar, exp.JSONExtract}:
             if not self.is_unqualified_builtin(node, "get_json_object"):
                 return None
-            tokens = path_tokens(node.expression)
+            tokens = self.json_extraction_tokens(node.expression)
             if tokens is None:
                 return None
             kind = "EXTRACT"
@@ -1205,6 +1588,95 @@ class Analysis:
                 "path_tokens": [{"kind": token_kind, "value": token_value}
                                 for token_kind, token_value in tokens]}
 
+    def mark_direct_extracts(self, scope, slots, *, filter_site=None):
+        """Publish slot witnesses together, only for a closed direct-base projection."""
+        source = scope.expression.args["from_"].this
+        if (type(source) is not exp.Table or source.alias_column_names
+                or self.declarations or self.ignored_schemas or self.unknowns):
+            return
+        qualifier = source.alias_or_name
+        if not qualifier or self.relations(scope).get(qualifier) is not source:
+            return
+        items = scope.expression.selects
+        rows = self.mappings
+        if len(items) != len(rows) or len(slots) != len(items):
+            return
+        witnesses = []
+        for slot, (item, row) in enumerate(zip(items, rows), 1):
+            if row["slot"] != slot or not row["root"]:
+                return
+            call = item.this if type(item) is exp.Alias else item
+            if type(call) not in (exp.JSONExtractScalar, exp.JSONExtract):
+                return
+            col = call.this
+            value = slots[row["output"].lower()]
+            tokens = path_tokens(call.expression)
+            if (not self.is_unqualified_builtin(call, "get_json_object") or type(col) is not exp.Column
+                    or col.table.lower() != qualifier.lower() or col.db or col.catalog
+                    or value.kind != "EXTRACT" or value.source_binding_status != "SQL_NAMED_RELATION_COLUMN"
+                    or not tokens or any(kind != "key" for kind, _ in tokens) or value.exact is None
+                    or (filter_site is None and len(tokens) != 1)
+                    or value.exact.tokens != tokens or value.exact.column != col.name):
+                return
+            call_pos = self.evidence(call)["position"]
+            col_pos = self.identifier_anchor(col.this, col.name)
+            literal = call.expression.meta.get("json_path_position")  # verified literal in the original AST
+            close = self.call_closer(call_pos["end"]) if call_pos else None
+            if (not col_pos or not literal or not close or not
+                    (0 <= call_pos["start"] < call_pos["end"] <= col_pos["start"] < col_pos["end"] <=
+                     literal["start"] < literal["end"] <= close.start < len(self.sql))):
+                return
+            witnesses.append({"port": {k: row[k] for k in ("statement", "scope", "slot")},
+                              "projection_count": len(items), "source": value.exact.source,
+                              "column": col.name, "path_tokens": [{"kind": kind, "value": key} for kind, key in tokens],
+                              "binding": value.source_binding_status, "position": call_pos, "column_position": col_pos})
+            if not source.alias:
+                reference = self.identifier_anchor(col.args.get("table"), qualifier)
+                declaration = self.identifier_anchor(source.this, qualifier)
+                if (not reference or not declaration or
+                        value.exact.source != ".".join(part.name for part in source.parts)):
+                    return
+                witnesses[-1]["base_qualifier"] = {"name": qualifier, "reference_position": reference,
+                                                   "table_name_position": declaration}
+        for row, witness in zip(rows, witnesses):
+            if filter_site is None:
+                row["direct_extract_read"] = witness
+            elif witness["column"].casefold() != filter_site["column"].casefold() and witness["source"] == filter_site["source"]:
+                row["filtered_read_site"] = {"value": witness, "control": filter_site}
+
+    def scalar_filter_site(self, query, scopes):
+        """Describe a single bound column = literal; never infer control isolation from an empty use list."""
+        if (self.dialect != "spark" or len(scopes) != 1 or len(query.selects) != 1
+                or not query.args.get("where") or self.declarations or self.ignored_schemas
+                or not self.projection_only(query, scopes, filter_clause=True)):
+            return None
+        predicate = query.args["where"].this
+        if type(predicate) is not exp.EQ or not only_projection_args(predicate, {"this", "expression"}):
+            return None
+        col, literal = predicate.this, predicate.expression
+        if (type(col) is not exp.Column or not col.table or col.db or col.catalog or col.is_star
+                or type(literal) is not exp.Literal or not only_projection_args(literal, {"this", "is_string"})):
+            return None
+        scope = scopes[0]
+        candidates = self.column_candidates(col, scope, {})
+        if len(candidates) != 1:
+            return None
+        source = self.relations(scope)[candidates[0]]
+        if type(source) is not exp.Table or not source.alias or source.alias_column_names:
+            return None
+        position = self.identifier_anchor(col.this, col.name)
+        qualifier = self.identifier_anchor(col.args["table"], col.table)
+        rhs = self.evidence(literal)["position"]
+        alias = self.identifier_anchor(source.args["alias"].this, source.alias)
+        if not all((position, qualifier, rhs, alias)) or not qualifier["end"] <= position["start"] < position["end"] <= rhs["start"]:
+            return None
+        return {"statement": self.statement, "scope": self.scope_ids[scope], "role": "CONDITION", "clause": "WHERE",
+                "consumer": "ROW_FILTER", "operator": "EQ", "position": position,
+                "predicate_span": {"start": qualifier["start"], "end": rhs["end"]}, "literal_position": rhs,
+                "relation_alias": source.alias, "relation_alias_position": alias,
+                "source": ".".join(part.name for part in source.parts), "column": col.name}
+
+
     def terminal_column_binding(self, item, scope, outputs, value):
         if (value.kind != "WHOLE_RAW" or value.exact is None
                 or any(projection.is_star for projection in scope.expression.selects)):
@@ -1231,6 +1703,13 @@ class Analysis:
 
     def mapping_evidence(self, node, name, projection_site=False, anchor=None):
         evidence = self.evidence(node)
+        # The consumer needs the constant occurrence, not the output label.
+        if (projection_site and type(node) is exp.Alias and type(node.this) is exp.Null
+                and type(node.parent) is exp.Select and type(node.parent.parent) is exp.Union
+                and node.parent.parent.args.get("distinct") is False):
+            pos = node.this.meta.get("null_token_position")
+            evidence["position"] = pos if pos and self.sql[pos["start"]:pos["end"]].lower() == "null" else None
+            return evidence
         # Alias nodes may have no span. Anchor an actual projection to its
         # outer call name only when the original source verifies that token.
         if (projection_site and evidence['position'] is None and isinstance(node, exp.Alias)
@@ -1299,6 +1778,22 @@ class Analysis:
         if any(len(items) != len(left) for items in bound):
             return None
         merged = {}
+        # For logical reads require complete, identical original output names
+        # in every arm. Do not infer equivalence from a dialect's case folding
+        # or from the first branch's aliases.
+        def verified_names(arm):
+            identifiers = [item.args.get("alias") if type(item) is exp.Alias
+                           else item.this if type(item) is exp.Column else None
+                           for item in arm.expression.selects]
+            if any(type(identifier) is not exp.Identifier or identifier.quoted
+                   or not self.identifier_anchor(identifier, identifier.name)
+                   for identifier in identifiers):
+                return None
+            return tuple(identifier.name for identifier in identifiers)
+
+        names = verified_names(branches[0])
+        same_names = names is not None and all(verified_names(arm) == names for arm in branches[1:])
+        complete_bindings = all(value.kind != "UNKNOWN" for row in bound for _, value in row)
         supported = {"WHOLE_RAW", "EXTRACT", "ELEMENT_STRING", "CONSTANT"}
         for slot, (name, _) in enumerate(left, 1):
             # Do not combine unresolved slots or arbitrary computations that
@@ -1320,6 +1815,18 @@ class Analysis:
                  "position": self.mapping_evidence(branch.expression.selects[slot - 1],
                      bound[i - 1][slot - 1][0], projection_site=True)["position"]}
                 for i, branch in enumerate(branches, 1)]
+            if same_names and complete_bindings and any(value.kind == "WHOLE_RAW" for value in values):
+                projections = [arm.expression.selects[slot - 1] for arm in branches]
+                bare = [item.this if type(item) is exp.Alias else item for item in projections]
+                if all(
+                    (type(item) is exp.Column and not item.is_star
+                     and value.kind == "WHOLE_RAW"
+                     and value.source_binding_status == "SQL_NAMED_RELATION_COLUMN"
+                     and (item.table or self.unqualified_union_column(item, arm, projection)))
+                    or (type(item) is exp.Null and value.kind == "CONSTANT")
+                    for item, value, arm, projection in zip(bare, values, branches, projections, strict=True)
+                ):
+                    self.union_readable_slots.add((scope, slot))
         self.unknown("UNION_ALL_TYPE_COERCION_UNVERIFIED", node)
         return merged
 
@@ -1368,12 +1875,23 @@ class Analysis:
             self.unknowns.append({"code": "PARSE_ERROR", "statement": None, "position": None,
                                   "message": str(err)})
             statements = []
+        # SQLGlot can represent a comment following a separator as a Semicolon.
+        # A script containing only these markers has no executable statements.
+        if parsed and statements and all(isinstance(node, exp.Semicolon) for _, node, _ in statements):
+            statements = []
         # New N-ary evidence does not cross registration/declaration statements.
         # Keep the existing binary contract unchanged.
         if parsed and len(statements) == 1:
             _, only_statement, declaration = statements[0]
             self.allow_multi_coalesce = (
                 declaration is None and isinstance(only_statement, exp.Query)
+                and not any(w.args.get("udfs") for w in only_statement.find_all(exp.With))
+            )
+            # A single fully parsed Spark statement cannot register a preceding
+            # CONCAT override. Do not apply the rule to recovered SQL or scripts.
+            self.allow_literal_concat_path = (
+                self.dialect == "spark" and declaration is None
+                and isinstance(only_statement, (exp.Query, exp.Create, exp.Insert))
                 and not any(w.args.get("udfs") for w in only_statement.find_all(exp.With))
             )
         # A script prefix can change function registration. Do not infer a
@@ -1463,8 +1981,7 @@ class Analysis:
                                                  and not self.fixed_map_overridden)
                 mapping_start = len(self.mappings)
                 self.query(query, target, check_projection=(
-                    parsed and self.dialect == "spark" and len(statements) == 1
-                    and type(statement) is exp.Select
+                    parsed and len(statements) == 1 and type(statement) is exp.Select
                 ))
                 if self.on_query is not None:
                     by_id = {identity: scope for scope, identity in self.scope_ids.items()}
@@ -1485,13 +2002,30 @@ class Analysis:
                 use["active"] = True if i in self.active else (
                     None if None in gaps or use["statement"] in gaps else False
                 )
+        if parsed and not statements:
+            analysis_status = "NO_ANALYZABLE_SQL"
+        elif (not parsed or self.unknowns or self.has_unverified_root_projection
+              or not any(mapping["root"] for mapping in self.mappings)
+              or any(mapping["kind"] == "UNKNOWN" for mapping in self.mappings)):
+            analysis_status = "ANALYSIS_INCOMPLETE"
+        elif any(use["kind"] == "EXTRACT" or (use["kind"] == "TUPLE_REQUEST" and use["active"])
+                 for use in self.uses):
+            analysis_status = "JSON_USE_OBSERVED"
+        elif self.no_json_projection:
+            analysis_status = "NO_JSON_USE_IN_SCOPE"
+        else:
+            analysis_status = "ANALYSIS_INCOMPLETE"
         return {
             "uses": self.uses, "mappings": self.mappings, "unknowns": self.unknowns,
+            **({"union_output_reads": self.union_output_reads} if self.union_output_reads else {}),
             "generators": self.generators,
             "opaque_call_arguments": self.opaque_call_arguments,
             "windows": self.windows, "row_selections": self.row_selections,
             "coverage": {"parsed": parsed, "partial": not parsed and recovered > 0,
                          "recovered": recovered, "complete": False,
+                         "analysis_status": analysis_status,
+                         **({"projection_slot_counts": self.projection_slot_counts}
+                            if self.projection_slot_counts is not None else {}),
                          "locally_reviewable_projection_only": self.locally_reviewable_projection_only,
                          "fragment_supported": parsed and bool(self.mappings) and not self.unknowns,
                          "source_boundary": "SQL_NAMED_RELATIONS",
@@ -1506,7 +2040,7 @@ class Analysis:
                          "sql_sha256": hashlib.sha256(self.sql.encode("utf-8")).hexdigest()},
         }
 
-    def projection_only(self, query, scopes):
+    def projection_only(self, query, scopes, *, allow_json=True, filter_clause=False):
         def identifier(node):
             return (type(node) is exp.Identifier and bool(node.name)
                     and only_projection_args(node, {"this", "quoted"}))
@@ -1524,14 +2058,27 @@ class Analysis:
                     and qualifiers(node, ("table", "db", "catalog"))
                     and only_projection_args(node, {"this", "table", "db", "catalog"}))
 
-        def projection(node):
+        def projection_value(node):
             if type(node) is exp.Alias:
                 if (not identifier(node.args.get("alias"))
                         or not only_projection_args(node, {"this", "alias"})):
-                    return False
-                node = node.this
+                    return None
+                return node.this
+            return node
+
+        def scalar_literal(node):
+            if type(node) is exp.Literal:
+                return only_projection_args(node, {"this", "is_string"})
+            if type(node) in {exp.Boolean, exp.Null}:
+                return only_projection_args(node, {"this"})
+            return False
+
+        def projection(node):
+            node = projection_value(node)
             if column(node):
                 return True
+            if not allow_json:
+                return scalar_literal(node)
             if (type(node) not in {exp.JSONExtractScalar, exp.JSONExtract}
                     or not column(node.this) or not self.is_unqualified_builtin(node, "get_json_object")
                     or not only_projection_args(node, {"this", "expression"})):
@@ -1547,7 +2094,7 @@ class Analysis:
         for scope in scopes:
             select = scope.expression
             if (type(select) is not exp.Select
-                    or not only_projection_args(select, {"expressions", "from_", "with_"})
+                    or not only_projection_args(select, {"expressions", "from_", "where"} if filter_clause else {"expressions", "from_", "with_"})
                     or not select.expressions or not all(projection(e) for e in select.expressions)):
                 return False
             with_clause = select.args.get("with_")
@@ -1561,6 +2108,9 @@ class Analysis:
             ):
                 return False
             from_clause = select.args.get("from_")
+            if (not allow_json and from_clause is None
+                    and all(scalar_literal(projection_value(e)) for e in select.expressions)):
+                continue
             if (type(from_clause) is not exp.From or not only_projection_args(from_clause, {"this"})
                     or len(scope.selected_sources) != 1):
                 return False
@@ -1578,6 +2128,7 @@ class Analysis:
         return True
 
     def query(self, query, target, *, check_projection=False):
+        self.collect_join_sites = check_projection and self.dialect == "spark"
         scopes = traverse_scope(query)
         outputs = {}
         self.open_scopes = set()
@@ -1586,6 +2137,11 @@ class Analysis:
             self.unknown("NO_QUERY_SCOPE", query)
         scope_ids = {scope: f"{self.statement}:{idx}" for idx, scope in enumerate(scopes, 1)}
         self.scope_ids = scope_ids
+        self.union_readable_slots = set()
+        self.union_occurrence_producers = {}
+        self.direct_json_relations = {}
+        self.union_projection_aliases = {}
+        self.union_relays = {}
         self.cte_slots = {}
         self.rank_slots = {}
         self.coalesce_branch_evidence = type(query) is exp.Select and any(
@@ -1599,12 +2155,29 @@ class Analysis:
             and isinstance(query.this, exp.Select) and isinstance(query.expression, exp.Select)
             and not any(v for k, v in query.args.items() if k not in {"this", "expression", "distinct"})
         )
+        # An unnamed leaf SELECT still has a positional output. Use its exact
+        # original text only as a display label; do not invent an engine alias.
+        filter_site = self.scalar_filter_site(query, scopes) if check_projection else None
+        anonymous_label = None
+        if (check_projection and self.dialect == "spark" and len(query.selects) == 1 and len(scopes) <= 2
+                and not self.declarations and not self.ignored_schemas):
+            item = query.selects[0]
+            if (type(item) in (exp.JSONExtractScalar, exp.JSONExtract) and not item.alias_or_name
+                    and type(item.this) is exp.Column and item.this.table
+                    and (filter_site or self.projection_only(query, scopes))):
+                tokens = path_tokens(item.expression)
+                pos = self.evidence(item)["position"]
+                close = self.call_closer(pos["end"]) if pos else None
+                if (tokens and all(kind == "key" for kind, _ in tokens) and close
+                        and (len(tokens) == 1 or filter_site)):
+                    anonymous_label = self.sql[pos["start"]:close.end + 1]
         for scope, scope_id in scope_ids.items():
             self.current_scope_id = scope_id
             source = scope.expression
             root = source is query
             if isinstance(source, exp.Select):
-                outputs[scope] = self.select(scope, outputs, scope_id, root, target if root else None)
+                outputs[scope] = self.select(scope, outputs, scope_id, root, target if root else None,
+                                             anonymous_root_label=anonymous_label if root else None)
                 if scope.is_cte and scope not in self.open_scopes:
                     names = scope.outer_columns or [item.alias_or_name for item in source.selects]
                     self.cte_slots[scope] = {
@@ -1640,7 +2213,17 @@ class Analysis:
                              else "UNSUPPORTED_SCOPE", source)
                 self.open_scopes.add(scope)
         if check_projection:
-            self.locally_reviewable_projection_only = self.projection_only(query, scopes)
+            if self.dialect == "spark":
+                self.locally_reviewable_projection_only = self.projection_only(query, scopes)
+                if self.locally_reviewable_projection_only:
+                    # Independent inventory: an unnamed projection may have no mapping.
+                    self.projection_slot_counts = {scope_ids[s]: len(s.expression.selects) for s in scopes}
+                if self.locally_reviewable_projection_only and len(scopes) == 1 and not query.args.get("with_"):
+                    self.mark_direct_extracts(scopes[0], outputs[scopes[0]])
+                elif filter_site:
+                    self.mark_direct_extracts(scopes[0], outputs[scopes[0]], filter_site=filter_site)
+            if not self.unknowns:
+                self.no_json_projection = self.projection_only(query, scopes, allow_json=False)
 
 
 def analyze_subfields(sql: str, dialect: str = "spark", source_schemas: Mapping | None = None) -> dict:
