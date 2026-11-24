@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+from threading import Lock
+from time import monotonic
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -48,7 +50,7 @@ class LocalDeliveryGuardMiddleware(BaseHTTPMiddleware):
         self.sql_timeout_seconds = sql_timeout_seconds
         self.max_concurrent_sql_requests = max_concurrent_sql_requests
         self._active_sql_requests = 0
-        self._active_lock = asyncio.Lock()
+        self._active_lock = Lock()
 
     async def _with_bounded_sql_body(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope['type'] != 'http' or scope['method'] != 'POST' or HTTPConnection(scope).url.path not in _SQL_PATHS:
@@ -103,18 +105,36 @@ class LocalDeliveryGuardMiddleware(BaseHTTPMiddleware):
         if request.url.path not in _SQL_PATHS:
             return await call_next(request)
 
-        async with self._active_lock:
+        with self._active_lock:
             if self._active_sql_requests >= self.max_concurrent_sql_requests:
                 return JSONResponse({"detail": "SQL service is busy"}, status_code=429)
             self._active_sql_requests += 1
 
+        owns_slot = True
+
+        def release_normal_sql_slot():
+            # Both the post-serialization handoff and every unwind path use
+            # this request's lease, not a bare decrement of the shared count.
+            # No await/cancellation point between testing and giving it back.
+            nonlocal owns_slot
+            with self._active_lock:
+                if owns_slot:
+                    self._active_sql_requests -= 1
+                    owns_slot = False
+
         try:
+            request.state.release_normal_sql_slot = release_normal_sql_slot
+            request.state.sql_deadline = monotonic() + self.sql_timeout_seconds
             return await asyncio.wait_for(
                 call_next(request),
                 timeout=self.sql_timeout_seconds,
             )
         except asyncio.TimeoutError:
+            # Only the opt-in route can install this Response, and only after
+            # the ordinary endpoint has returned its serialized 200 JSON body.
+            ready = getattr(request.state, "sql_ready_fallback", None)
+            if isinstance(ready, Response):
+                return ready
             return JSONResponse({"detail": "SQL request timed out"}, status_code=504)
         finally:
-            async with self._active_lock:
-                self._active_sql_requests -= 1
+            release_normal_sql_slot()

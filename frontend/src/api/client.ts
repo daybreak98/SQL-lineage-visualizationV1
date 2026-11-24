@@ -55,12 +55,14 @@ async function request<T>(url: string, init?: RequestInit, validationMessage?: t
 }
 
 interface SubfieldAnalysisRequest {
+  mode?: 'analyze';
+  strict_read_site?: { sql_sha256: string; statement: number; call_position: { start: number; end: number } };
   sql: string;
   dialect: string;
   source_schemas?: Record<string, unknown>;
   protected_outputs?: { statement: number; scope: string; slot: number }[];
   include_two_step_evidence?: boolean;
-  candidate_keys?: { source: string; column: string; keys: string[] }[];
+  candidate_keys?: { source: string; column: string; keys: string[]; key_format?: 'literal_key' }[];
 }
 
 export function analyzeSubfieldSql(payload: SubfieldAnalysisRequest) {

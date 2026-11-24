@@ -1,0 +1,364 @@
+diff --git a/backend/app/api/subfield_controller.py b/backend/app/api/subfield_controller.py
+index b65f896..9567c63 100644
+--- a/backend/app/api/subfield_controller.py
++++ b/backend/app/api/subfield_controller.py
+@@ -2,6 +2,8 @@
+ 
+ import logging
+ import os
++import re
++from hashlib import sha256
+ from typing import Annotated, Literal
+ 
+ from fastapi import APIRouter, HTTPException, Request
+@@ -77,6 +79,39 @@ class SubfieldRequest(BaseModel):
+         return value
+ 
+ 
++def _local_constructed_target(request, http_request):
++    """A private cold selector, not a replacement for the user's review scope."""
++    if (os.environ.get("SUBFIELD_LOCAL_CONSTRUCTED_MEMBER_DEV") != "1"
++            or os.environ.get("SUBFIELD_STRICT_USE_DEV") == "1"
++            or os.environ.get(single_cte_cold.FLAG) == "1"
++            or http_request is None or http_request.client is None
++            or not is_loopback_client(http_request.client.host)
++            or not callable(getattr(http_request.state, "release_normal_sql_slot", None))
++            or any(h in http_request.headers for h in ("authorization", "cookie", "x-api-key"))
++            or "user" in http_request.scope or "session" in http_request.scope
++            or "protected_outputs" not in request.model_fields_set or not request.protected_outputs
++            or request.dialect != "spark" or "dialect" not in request.model_fields_set
++            or len(request.sql) > 16384 or request.include_two_step_evidence
++            or "strict_read_site" in request.model_fields_set):
++        return None
++    # Require the digest of the exact submitted UTF-8 SQL. A slot by itself is
++    # not authority to reuse a selection on another submission.
++    raw = http_request.headers.getlist("x-local-constructed-member-target")
++    if len(raw) != 1 or not (parsed := re.fullmatch(
++            r"1/(1:[1-9][0-9]{0,5})/([1-9][0-9]{0,5})/([0-9a-f]{64})", raw[0])):
++        return None
++    try:
++        digest = sha256(request.sql.encode("utf-8")).hexdigest()
++    except UnicodeEncodeError:
++        return None
++    if digest != parsed[3]:
++        return None
++    target = 1, parsed[1], int(parsed[2])
++    if not any((row.statement, row.scope, row.slot) == target for row in request.protected_outputs):
++        return None
++    return target
++
++
+ @router.post("/sql/subfield-lineage")
+ def analyze_subfield_lineage(request: SubfieldRequest | CompositionRequest, http_request: Request = None) -> dict:
+     if isinstance(request, CompositionRequest):
+@@ -100,14 +135,23 @@ def analyze_subfield_lineage(request: SubfieldRequest | CompositionRequest, http
+     key = None if cache_bypass else fact_key(http_request, request.sql, request.dialect, schemas, analyze_subfields)
+     result = None if cache_bypass else read_facts(key)
+     pack = hit = descriptor = generation = None
++    constructed = None
+     if dev:
+         descriptor, generation, hit = strict_identity_cache.lookup(http_request, request, schemas)
+         if hit is not None:
+             result = dict(hit.facts)
+     retained = result.pop("_two_step_v1", None) if result is not None else None
+     if result is None:
++        # This experiment may observe an existing cold analysis, never force
++        # one by skipping a warm fact snapshot.
++        local_target = _local_constructed_target(request, http_request)
+         try:
+-            if single_cte_cold.eligible(request, http_request):
++            if local_target is not None:
++                from experiments.local_constructed_member import analyze_local_constructed_key
++
++                result, constructed = analyze_local_constructed_key(
++                    request.sql, request.dialect, schemas, target=local_target)
++            elif single_cte_cold.eligible(request, http_request):
+                 from experiments.single_cte_name_cold import capture
+ 
+                 result, pack, extra = capture(request.sql, schemas, with_v2=dev)
+@@ -165,4 +209,7 @@ def analyze_subfield_lineage(request: SubfieldRequest | CompositionRequest, http
+     if dev and (pack is not None or hit is not None):
+         raw = {k: v for k, v in result.items() if k != "review"}
+         http_request.state.strict_identity_pending = (raw, pack, hit, descriptor, generation, result)
++    if constructed is not None:
++        # After legacy review; never in uses, V2, old review or cached facts.
++        return {**result, "local_constructed_member_evidence": {"version": 1, **constructed}}
+     return result
+diff --git a/backend/experiments/local_constructed_member.py b/backend/experiments/local_constructed_member.py
+new file mode 100644
+index 0000000..6f7be66
+--- /dev/null
++++ b/backend/experiments/local_constructed_member.py
+@@ -0,0 +1,271 @@
++"""Opt-in structural link between one literal constructed key and a native read."""
++import re
++
++from sqlglot import exp
++
++from app.services import subfield as core
++
++
++PORT = ("statement", "scope", "slot")
++CALLS = (exp.JSONExtract, exp.JSONExtractScalar)
++OPEN = re.compile(r"\s*\(\s*")
++CLOSE = re.compile(r"\s*\)")
++SEP = re.compile(r"\s*,\s*")
++KEY = re.compile(r"\s*('([A-Za-z_][A-Za-z0-9_]{0,63})')\s*,\s*")
++LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
++CONST = re.compile(r"(?:'[A-Za-z0-9_ -]{0,64}'|[0-9]+|NULL)\Z", re.I)
++
++
++def _one(items):
++    found = list(items)
++    return found[0] if len(found) == 1 else None
++
++
++def _pos(raw):
++    return (raw["start"], raw["end"]) if raw else None
++
++
++def _span(sql, node, text=None):
++    if node is None:
++        return None
++    start, end = node.meta.get("start"), node.meta.get("end")
++    if (type(start) is int and type(end) is int and 0 <= start <= end < len(sql)
++            and (text is None or sql[start:end + 1] == text)):
++        return start, end + 1
++    return None
++
++
++def _ident(sql, obj):
++    if type(obj) is exp.Identifier and not obj.quoted and LABEL.fullmatch(obj.name):
++        return _span(sql, obj, obj.name)
++
++
++def _relation(sql, ref):
++    if (type(ref) is not exp.Table or ref.alias_column_names
++            or not core.only_projection_args(ref, {"this", "db", "catalog", "alias"})):
++        return None
++    alias = ref.args.get("alias")
++    return _ident(sql, alias.this if alias else ref.this)
++
++
++def _source(scope, allowed):
++    q = scope.expression
++    if type(q) is exp.Select and core.only_projection_args(q, allowed) and not scope.outer_columns:
++        frm = q.args.get("from_")
++        if type(frm) is exp.From and len(scope.selected_sources) == 1:
++            return frm.this
++
++
++def _slot(sql, scope, slot, mapping):
++    items = scope.expression.selects
++    if (not 1 <= slot <= len(items) or any(item.is_star for item in items)
++            or type(item := items[slot - 1]) is not exp.Alias):
++        return None
++    alias = item.args.get("alias")
++    pos = _ident(sql, alias)
++    if (pos and alias.name == mapping["output"] and pos == _pos(mapping.get("position"))
++            and sum(i.alias_or_name.lower() == alias.name.lower() for i in items) == 1):
++        return item.this, pos
++
++
++class _Observer:
++    def __init__(self, analysis):
++        self.a = analysis
++        self.bindings, self.reads = [], []
++        self.lost = False
++        analysis.bound_occurrence_observer = self.bound
++        analysis.literal_read_observer = self.read
++
++    def _record(self, bucket, row):
++        if len(self.bindings) + len(self.reads) >= 512:
++            self.lost = True
++        if not self.lost:
++            bucket.append(row)
++
++    def bound(self, col, scope, clause, ref, source, producer):
++        self._record(self.bindings, (col, scope, clause, self.a.statement, ref, source, producer))
++
++    def read(self, call, tokens, scope, role, clause):
++        self._record(self.reads, (call, scope, role, clause, self.a.statement, tuple(tokens)))
++
++    def selection(self, column, scope):
++        hit = _one(row for row in self.bindings if row[0] is column and row[1] is scope
++                   and row[2:4] == ("SELECT", 1))
++        return hit[4:] if hit else None
++
++    def anchor_read(self, call, scope):
++        """Lexical checks only between already chosen AST anchors; no second parser."""
++        a, sql = self.a, self.a.sql
++        event = _one(row for row in self.reads if row[0] is call and row[1] is scope
++                     and row[2:5] == ("VALUE", "SELECT", 1))
++        if (not event or type(call) not in CALLS or not a.is_unqualified_builtin(call, "get_json_object")
++                or not core.only_projection_args(call, {"this", "expression"})
++                or type(col := call.this) is not exp.Column or col.db or col.catalog):
++            return None
++        call_pos = _span(sql, call)
++        qual, name = _ident(sql, col.args.get("table")), _ident(sql, col.this)
++        path = _pos(call.expression.meta.get("json_path_position"))
++        tokens = event[5]
++        if (not call_pos or not qual or not name or not path or not tokens
++                or any(kind != "key" or not LABEL.fullmatch(value) for kind, value in tokens)
++                or sql[slice(*path)] != "'$." + ".".join(v for _, v in tokens) + "'"
++                or not call_pos[1] <= qual[0] < qual[1] < name[0] < name[1] < path[0]
++                or not re.fullmatch(r"\s*\(\s*", sql[call_pos[1]:qual[0]])
++                or not re.fullmatch(r"\s*\.\s*", sql[qual[1]:name[0]])
++                or not re.fullmatch(r"\s*,\s*", sql[name[1]:path[0]])
++                or not (close := CLOSE.match(sql, path[1]))):
++            return None
++        return {"function_position": call_pos, "column_position": name, "qualifier_position": qual,
++                "path_position": path, "path_tokens": [{"kind": k, "value": v} for k, v in tokens],
++                "end": close.end()}
++
++    def native_read(self, call, scope, ref, facts):
++        sql = self.a.sql
++        hit = self.anchor_read(call, scope)
++        if not hit:
++            return None
++        actual = self.selection(call.this, scope)
++        decl = _relation(sql, ref)
++        if not decl:
++            return None
++        parts = [_ident(sql, part) for part in ref.parts]
++        if (not actual or actual[0] is not ref or actual[1] is not ref or actual[2] is not None
++                or not parts or not all(parts)):
++            return None
++        matches = [(i, row) for i, row in enumerate(facts["uses"])
++                   if row["statement"] == 1 and _pos(row.get("position")) == hit["function_position"]]
++        if len(matches) != 1:
++            return None
++        i, use = matches[0]
++        binding = use.get("named_source_binding") or {}
++        rel = binding.get("relation_instance") or {}
++        sc = self.a.scope_ids[scope]
++        if ((use["kind"], use["role"], use["clause"]) != ("EXTRACT", "VALUE", "SELECT")
++                or use.get("path_derivation") or use.get("binding_status")
++                or use["path_tokens"] != hit["path_tokens"] or _pos(use.get("json_path_position")) != hit["path_position"]
++                or use["source"] != ".".join(part.name for part in ref.parts) or use["column"] != call.this.name
++                or binding.get("kind") != "SQL_NAMED_RELATION_COLUMN" or binding.get("scope") != sc
++                or _pos(binding.get("column_position")) != hit["column_position"]
++                or _pos(binding.get("qualifier_position")) != hit["qualifier_position"]
++                or (rel.get("statement"), rel.get("declaration_scope"), rel.get("name")) != (1, sc, ref.alias_or_name)
++                or _pos(rel.get("declaration_position")) != decl
++                or [_pos(p) for p in rel.get("table_part_positions", ())] != parts):
++            return None
++        return i, hit
++
++    def construct(self, obj, alias_pos, scope, base, member, facts):
++        a, sql = self.a, self.a.sql
++        if (type(obj) is not exp.JSONFormat or not core.only_projection_args(obj, {"this"})
++                or type(struct := obj.this) is not exp.Struct
++                or not core.only_projection_args(struct, {"expressions"})
++                or not 1 <= len(struct.expressions) <= 8
++                or not a.is_unqualified_builtin(obj, "to_json")
++                or not a.is_unqualified_builtin(struct, "named_struct")):
++            return None
++        to_json, named = _span(sql, obj), _span(sql, struct)
++        if (not to_json or not named or not (wrapper := OPEN.match(sql, to_json[1]))
++                or wrapper.end() != named[0] or not (beg := OPEN.match(sql, named[1]))):
++            return None
++        cursor, names, chosen = beg.end(), set(), None
++        for ordinal, item in enumerate(struct.expressions, 1):
++            key = KEY.match(sql, cursor)
++            if (not key or type(item) is not exp.PropertyEQ
++                    or not core.only_projection_args(item, {"this", "expression"})
++                    or type(item.this) is not exp.Identifier or key[2] != item.this.name
++                    or key[2].lower() in names):
++                return None
++            names.add(key[2].lower())
++            value = item.expression
++            if type(value) in CALLS:
++                read = self.native_read(value, scope, base, facts)
++                if not read or key.end() != read[1]["function_position"][0]:
++                    return None
++                cursor = read[1]["end"]
++                if key[2] == member:
++                    chosen = ({"name": member, "ordinal": ordinal, "key_position": key.span(1)}, read)
++            elif type(value) in (exp.Literal, exp.Null):
++                pos = _span(sql, value)
++                if not pos or key.end() != pos[0] or not CONST.fullmatch(sql[slice(*pos)]):
++                    return None
++                cursor = pos[1]
++            else:
++                return None
++            if ordinal != len(struct.expressions):
++                sep = SEP.match(sql, cursor)
++                if not sep:
++                    return None
++                cursor = sep.end()
++        if chosen and re.fullmatch(r"\s*\)\s*\)\s+AS\s+", sql[cursor:alias_pos[0]], re.I):
++            return to_json, named, chosen
++        return None
++
++    def witness(self, facts, target):
++        a, sql = self.a, self.a.sql
++        coverage = facts["coverage"]
++        if (self.lost or not coverage["parsed"] or coverage["partial"]
++                or a.statement != 1 or len(getattr(a, "scope_ids", {})) != 2):
++            return None
++        consumer = dict(zip(PORT, target, strict=True))
++        root = _one(s for s, ident in a.scope_ids.items() if ident == target[1] and s.is_root)
++        if root is None or not (ref := _source(root, {"expressions", "from_", "with_"})):
++            return None
++        decl_pos = _relation(sql, ref)
++        with_ = root.expression.args.get("with_")
++        if (not decl_pos or type(with_) is not exp.With or not core.only_projection_args(with_, {"expressions"})
++                or len(with_.expressions) != 1):
++            return None
++        cte = with_.expressions[0]
++        if (type(cte) is not exp.CTE or not core.only_projection_args(cte, {"this", "alias"})
++                or cte.alias_column_names or not (cte_pos := _ident(sql, cte.args["alias"].this))):
++            return None
++        mappings = facts["mappings"]
++        outer = _one(row for row in mappings if row["root"] and row["target"] is None
++                     and all(row[key] == consumer[key] for key in PORT))
++        if (not outer or not (slot := _slot(sql, root, target[2], outer))
++                or not (read := self.anchor_read(slot[0], root)) or len(read["path_tokens"]) != 1):
++            return None
++        bound = self.selection(slot[0].this, root)
++        if (not bound or bound[0] is not ref or not bound[2] or not bound[1].is_cte
++                or bound[1].expression is not cte.this or ref.name.lower() != cte.alias.lower()):
++            return None
++        prod, producer = bound[1:]
++        if producer["statement"] != 1 or producer["scope"] != a.scope_ids[prod]:
++            return None
++        mapping = _one(row for row in mappings if not row["root"] and row["target"] is None
++                       and all(row[key] == producer[key] for key in PORT))
++        if (not mapping or mapping["output"].lower() != slot[0].this.name.lower()
++                or not (production := _slot(sql, prod, producer["slot"], mapping))
++                or not (base := _source(prod, {"expressions", "from_"}))):
++            return None
++        result = self.construct(*production, prod, base, read["path_tokens"][0]["value"], facts)
++        if not result:
++            return None
++        to_json, named, (member, (index, inner)) = result
++        return {"kind": "LOCAL_CONSTRUCTED_MEMBER_LINK", "status": "STRUCTURAL_ASSUMPTION",
++                "sql_sha256": coverage["sql_sha256"], "dialect": a.dialect,
++                "assumptions": ["BUILTIN_FUNCTION_BINDING_UNVERIFIED", "JSON_SERIALIZATION_UNVERIFIED"],
++                "consumer": consumer, "consumer_position": slot[1], "cte_declaration_position": cte_pos,
++                "producer": dict(producer), "producer_position": production[1],
++                "reference_declaration_position": decl_pos, "to_json_position": to_json,
++                "named_struct_position": named, "member": member,
++                "outer_read": {k: v for k, v in read.items() if k != "end"},
++                "existing_input_read": {"use_index": index, "statement": 1, "scope": producer["scope"],
++                                        "function_position": inner["function_position"], "path_position": inner["path_position"]},
++                "rowset_equivalence": "UNVERIFIED", "pruning_authorized": False}
++
++
++def analyze_local_constructed_key(sql, dialect, schemas=None, *, target=None):
++    """Return (unchanged ordinary facts, separate optional link); target opts in."""
++    if target is None or dialect != "spark" or len(sql) > 16384:
++        return core.analyze_subfields(sql, dialect, schemas), None
++    if (type(target) is not tuple or len(target) != 3 or type(target[0]) is not int or target[0] != 1
++            or type(target[1]) is not str or type(target[2]) is not int or target[2] < 1):
++        return core.analyze_subfields(sql, dialect, schemas), None
++    a = core.Analysis(sql, dialect, schemas)
++    observer = _Observer(a)
++    facts = a.run()
++    try:
++        return facts, observer.witness(facts, target)
++    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
++        # An unexpected optional proof shape never changes the primary facts.
++        return facts, None
+

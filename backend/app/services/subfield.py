@@ -324,6 +324,8 @@ class Analysis:
         self.mappings = []
         self.generators = []
         self.on_query = None
+        self.bound_occurrence_observer = None  # Offline event sinks never supply bindings or values.
+        self.literal_read_observer = None
         self.generator_outputs = {}
         self.tuple_overridden = False
         self.group_alias_gaps = set()
@@ -337,7 +339,7 @@ class Analysis:
         self.allow_fixed_map_evidence = False
         self.fixed_map_overridden = False
         self.allow_multi_coalesce = False
-        self.allow_literal_concat_path = False
+        self.diagnose_literal_concat_path = False
         self.source_string_tokens = None
         self.call_closers = None
         self.opaque_call_arguments = []
@@ -460,29 +462,26 @@ class Analysis:
         return ("start" in meta and "end" in meta and not isinstance(node.parent, exp.Dot)
                 and self.sql[meta["start"]:meta["end"] + 1].lower() == name)
 
-    def json_extraction_tokens(self, path):
-        literal_tokens = path_tokens(path)
-        if literal_tokens is not None:
-            return literal_tokens
-        if (not self.allow_literal_concat_path or type(path) is not exp.Concat
+    def unresolved_literal_concat_path(self, path):
+        """Recognize the old fold's shape for diagnostics, never return path tokens."""
+        if (not self.diagnose_literal_concat_path or type(path) is not exp.Concat
                 or not self.is_unqualified_builtin(path, "concat")
                 or not only_projection_args(path, {"expressions", "safe", "coalesce"})
                 or path.args.get("safe") is not True or path.args.get("coalesce") is not False
                 or len(path.expressions) < 2):
-            return None
+            return False
         fragments = []
         for arg in path.expressions:
             if type(arg) is not exp.Literal or not arg.is_string:
-                return None
+                return False
             start, end = arg.meta.get("start"), arg.meta.get("end")
             if (type(start) is not int or type(end) is not int
                     or not 0 <= start <= end < len(self.sql)
                     or self.sql[start:end + 1] != "'" + arg.this + "'"):
-                return None
+                return False
             fragments.append(arg.this)
         # Only a simple single object key, with no escaping or coercion.
-        match = re.fullmatch(r"\$\.([A-Za-z_][A-Za-z0-9_]*)", "".join(fragments))
-        return (("key", match[1]),) if match else None
+        return bool(re.fullmatch(r"\$\.[A-Za-z_][A-Za-z0-9_]*", "".join(fragments)))
 
     def located_evidence(self, node):
         evidence = self.evidence(node)
@@ -618,6 +617,9 @@ class Analysis:
             origin = Origin(".".join(p.name for p in src.parts), node.name)
             self.on_column_binding(node, scope, clause, {
                 "kind": "NAMED_SOURCE", "source": origin.source, "column": origin.column})
+            if self.bound_occurrence_observer is not None and not isinstance(scope.expression, exp.UDTF):
+                ref = scope.selected_sources[candidates[0]][0]
+                self.bound_occurrence_observer(node, scope, clause, ref, src, None)
             return passthrough(origin)
         if node.db or node.catalog:
             self.unknown("UNBOUND_COLUMN", node, clause)
@@ -638,6 +640,9 @@ class Analysis:
                         "slot": names.index(name) + 1}
             if any(all(mapping.get(k) == v for k, v in producer.items()) for mapping in self.mappings):
                 self.on_column_binding(node, scope, clause, {"kind": "PROJECTION", "producer": producer})
+                if self.bound_occurrence_observer is not None and not isinstance(scope.expression, exp.UDTF):
+                    ref = scope.selected_sources[candidates[0]][0]
+                    self.bound_occurrence_observer(node, scope, clause, ref, src, producer)
                 relay = self.union_relays.get((src, producer["slot"]))
                 direct_union = type(src.expression) is exp.Union
                 if (direct_union or relay) and (node.table or self.unqualified_union_column(
@@ -935,8 +940,14 @@ class Analysis:
                     and type(path_expression) is exp.Column and not path_expression.table
                     and path_expression.name.lower() == self.macro_context[0].path_parameter):
                 path_expression = Dialect.get_or_raise(self.dialect).to_json_path(self.macro_path_argument)
-            tokens = self.json_extraction_tokens(path_expression)
+            tokens = path_tokens(path_expression)
             builtin = self.is_unqualified_builtin(node, "get_json_object")
+            if builtin and tokens is None and self.unresolved_literal_concat_path(path_expression):
+                # Spark may resolve unqualified CONCAT to a session function.
+                # No session binding is carried by this input. Keep dependencies,
+                # but never construct a path-bearing Origin or a local extract hook.
+                self.unknown("CONCAT_FUNCTION_BINDING_UNVERIFIED", path_expression, clause, body.inputs)
+                return combine((body,), "UNKNOWN")
             candidate = None
             if (tokens is None and builtin and self.dialect == "spark" and body.exact is not None
                     and isinstance(node.expression, exp.Concat)
@@ -947,6 +958,8 @@ class Analysis:
                 extra = (read(node.expression) if node.expression is not None
                          and not isinstance(node.expression, exp.JSONPath) else Value())
                 return combine((body, extra), "UNKNOWN")
+            if self.literal_read_observer is not None and builtin and tokens is not None:
+                self.literal_read_observer(node, tokens, scope, role, clause)
             if record:
                 site = self.union_path_site(node, base_node, scope, role, clause)
                 if site is not None:
@@ -1530,7 +1543,7 @@ class Analysis:
         if type(node) in {exp.JSONExtractScalar, exp.JSONExtract}:
             if not self.is_unqualified_builtin(node, "get_json_object"):
                 return None
-            tokens = self.json_extraction_tokens(node.expression)
+            tokens = path_tokens(node.expression)
             if tokens is None:
                 return None
             kind = "EXTRACT"
@@ -1887,9 +1900,9 @@ class Analysis:
                 declaration is None and isinstance(only_statement, exp.Query)
                 and not any(w.args.get("udfs") for w in only_statement.find_all(exp.With))
             )
-            # A single fully parsed Spark statement cannot register a preceding
-            # CONCAT override. Do not apply the rule to recovered SQL or scripts.
-            self.allow_literal_concat_path = (
+            # Restrict the diagnostic to the formerly folded subset. A single
+            # statement still says nothing about an existing session registry.
+            self.diagnose_literal_concat_path = (
                 self.dialect == "spark" and declaration is None
                 and isinstance(only_statement, (exp.Query, exp.Create, exp.Insert))
                 and not any(w.args.get("udfs") for w in only_statement.find_all(exp.With))

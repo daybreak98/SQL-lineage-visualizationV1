@@ -1,12 +1,13 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { Graph, RecordRow } from './contract';
 
 const MIN_ZOOM = .75;
 const initialZoom = (available: number, graphWidth: number) => Math.max(MIN_ZOOM, Math.min(1, available / graphWidth));
 const roleNames = { relation: '源关系', column: '源列', path: 'JSON 路径', root: '根输出', slot: '投影端口', unknown: '未决记录' };
 
-export const ReactGraph = memo(function ReactGraph({ graph, emptyMessage, onPick }: {
-  graph: Graph | null; emptyMessage: string; onPick: (name: string, rows: RecordRow[]) => void;
+export const ReactGraph = memo(function ReactGraph({ graph, emptyState, onPick }: {
+  graph: Graph | null; emptyState: ReactNode; onPick: (name: string, rows: RecordRow[]) => void;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
@@ -43,7 +44,7 @@ export const ReactGraph = memo(function ReactGraph({ graph, emptyMessage, onPick
       }}>适配</button>
     </div>
     <div ref={viewport} id="lineage-canvas" tabIndex={0} aria-label="血缘画布，可滚动查看">
-      {!graph?.nodes.length ? <p className="canvas-note muted">{graph ? '没有可绘制的确认端口，请查看证据或未决记录。' : emptyMessage}</p> :
+      {!graph?.nodes.length ? <div className="canvas-note">{emptyState}</div> :
       <div className="canvas-world canvas-world-compact" style={{ width: layout.width, height: layout.height, zoom }}>
         {(graph.lanes ?? ['源关系', 'JSON 路径', '投影端口', '未决记录']).map((label, lane) =>
           <span className="canvas-lane" key={label} style={{ left: lane * 202 + 18 }}>{label}</span>)}

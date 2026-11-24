@@ -34,8 +34,8 @@ function pathLabel(value: unknown) {
 const sourceLabel = (row: RecordRow) => `${text(row.source, '来源未提供')} · ${text(row.column, '列未提供')}`;
 
 interface Entry { title: string; evidence?: RecordRow[] }
-function Report({ title, rows, describe, pick, preview }: {
-  title: string; rows: RecordRow[] | undefined; describe: (row: RecordRow) => Entry; pick: PickEvidence; preview?: PreviewEvidence;
+function Report({ title, rows, describe, pick, preview, id }: {
+  id?: string; title: string; rows: RecordRow[] | undefined; describe: (row: RecordRow) => Entry; pick: PickEvidence; preview?: PreviewEvidence;
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
@@ -43,7 +43,7 @@ function Report({ title, rows, describe, pick, preview }: {
   if (!rows.length) return <p>{title}：0 项（服务返回空列表）。</p>;
   const row = selected === null ? undefined : rows[selected];
   const current = open && preview && row ? describe(row) : undefined;
-  return <details onToggle={event => setOpen(event.currentTarget.open)}>
+  return <details id={id} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{title} · {rows.length} 项</summary>
     {open && <ul>{rows.map((row, i) => {
       const entry = describe(row);
@@ -90,7 +90,7 @@ export function AnalysisReports({ result, pick, preview }: { result: Result; pic
     <Report title="行选择" rows={records(result.row_selections)} pick={pick} describe={row => ({
       title: `${text(row.predicate, '谓词未提供')} · 读取 ${portLabel(row.producer)}`,
     })} />
-    <Report title="未决项" rows={result.unknowns} describe={unknown} pick={pick} />
+    <Report id="j-analysis-unknowns" title="未决项" rows={result.unknowns} describe={unknown} pick={pick} />
   </div>;
 }
 

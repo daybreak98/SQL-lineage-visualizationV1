@@ -129,6 +129,13 @@ def _group_demands(entries):
     ]
 
 
+def _ambiguous_legacy_key(key):
+    # Do not interpret or rewrite the string. These spellings need explicit
+    # literal intent before they can support an absence result.
+    return (not key or key[0].isspace() or key[-1].isspace() or key.startswith("$")
+            or any(char in key for char in (".", "[", "]", "*", "\\", "'", '"')))
+
+
 def _candidate_assessment(result, review, mappings, candidates, direct):
     def unknown(reason):
         return {"status": "UNKNOWN", "entries": [], "reason": reason}
@@ -233,6 +240,11 @@ def _candidate_assessment(result, review, mappings, candidates, direct):
     projection_scope_closed = bool(counts) and set(mappings) == {
         (1, scope, slot) for scope, size in counts.items() for slot in range(1, size + 1)
     }
+    explicit_literals = {
+        (candidate["source"], candidate["column"], key)
+        for candidate in candidates if candidate.get("key_format") == "literal_key"
+        for key in candidate["keys"] if isinstance(key, str)
+    }
     entries = []
     seen = set()
     for candidate in candidates:
@@ -251,10 +263,12 @@ def _candidate_assessment(result, review, mappings, candidates, direct):
             if identity in seen:
                 continue
             seen.add(identity)
-            if carrier not in closed:
-                status, reason = "UNKNOWN", carrier_reason
-            elif key in observed.get(carrier, ()):
+            if carrier in closed and key in observed.get(carrier, ()):
                 status, reason = "OBSERVED", "OVERLAPS_OBSERVED_PATH"
+            elif identity not in explicit_literals and _ambiguous_legacy_key(key):
+                status, reason = "UNKNOWN", "AMBIGUOUS_KEY_FORMAT"
+            elif carrier not in closed:
+                status, reason = "UNKNOWN", carrier_reason
             elif not projection_scope_closed:
                 status, reason = "UNKNOWN", "PROJECTION_SCOPE_NOT_CLOSED"
             else:

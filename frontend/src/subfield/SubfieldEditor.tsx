@@ -6,13 +6,15 @@ import type { Position } from './contract';
 import type { createSQLPositionIndex } from './sqlPositionIndex';
 import './repository-editor.css';
 
-export default function SubfieldEditor({ sql, setSql, dialect, busy, locate, run, positionIndex }: {
+export default function SubfieldEditor({ sql, setSql, dialect, busy, locate, run, positionIndex, focusRequest = 0 }: {
   sql: string; setSql: (sql: string) => void; dialect: string; busy: boolean;
+  focusRequest?: number;
   locate: Position | null; run: () => void;
   positionIndex: ReturnType<typeof createSQLPositionIndex> | null;
 }) {
   const [active, setActive] = useState<editor.IStandaloneCodeEditor | null>(null);
   const runRef = useRef(run);
+  const focusedRequest = useRef(0);
   const lastEvidence = useRef<{ instance: editor.IStandaloneCodeEditor; range: IRange } | null>(null);
   runRef.current = run;
   const state = useMemo(() => applySqlDraftChange(initialWorkbenchState, sql), [sql]);
@@ -28,6 +30,12 @@ export default function SubfieldEditor({ sql, setSql, dialect, busy, locate, run
     });
     return () => keyboard.dispose();
   }, [active, busy]);
+  useEffect(() => {
+    if (active && focusRequest && focusedRequest.current !== focusRequest) {
+      focusedRequest.current = focusRequest;
+      active.focus();
+    }
+  }, [active, focusRequest]);
   useEffect(() => {
     if (!active) return;
     if (!locate) {

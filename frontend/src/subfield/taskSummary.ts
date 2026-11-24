@@ -131,5 +131,11 @@ export function keyCheckReason(review: unknown, ports: Output[] = [], candidate?
     case 'CONTROL_OR_STRUCTURAL_USE': return 'SQL 对 JSON 列存在控制或结构用途，服务暂不能判断此键。';
     case 'UNSUPPORTED_PATH': return '服务无法核实当前 SQL 的路径表达式，暂不能判断此键。';
     case 'PROTECTED_OUTPUTS_UNSPECIFIED': return '服务未确认所检查的输出，请检查范围后重试。';
+    default: {
+      const entries = ((review as RecordRow).candidate_assessment as RecordRow | undefined)?.entries;
+      if (candidate && Array.isArray(entries) && !entry) {
+        return '服务未提供与当前源表、列和键唯一匹配的逐键结果，暂不能判断。';
+      }
+    }
   }
 }

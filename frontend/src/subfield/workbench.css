@@ -216,3 +216,21 @@
 @container (width < 1040px){
   .subfield-app .j-analysis-area>.splitter-zone{display:none}
 }
+
+/* J-only help/disclosure and direct, labeled evidence actions. */
+.subfield-app .j-inline-note{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0}
+.subfield-app .j-annotation{position:relative;display:inline-flex;align-items:center;max-width:100%;font-size:12px;font-weight:400}
+.subfield-app .j-icon-action{display:inline-grid;place-items:center;flex:none;min-width:28px;min-height:28px;padding:3px}
+.subfield-app .j-tooltip,.subfield-app .j-help-popover{background:var(--panel);color:var(--slate-900);border:1px solid var(--line);border-radius:6px;padding:6px 8px;overflow-wrap:anywhere}
+.subfield-app .j-tooltip{position:absolute;inset-inline-start:0;top:100%;z-index:9;width:max-content;max-inline-size:min(18rem,65vw)}
+.subfield-app .inspector .j-tooltip{position:static;width:auto;max-inline-size:13rem}
+.subfield-app .j-help-popover:not([hidden]){display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px 8px;max-inline-size:min(28rem,65vw)}
+.subfield-app .j-help-popover[hidden]{display:none}
+.subfield-app .j-key-field{display:grid;gap:4px;min-width:0}
+.subfield-app .j-path-list{overflow-wrap:anywhere}
+
+.subfield-app .j-compact-steps{list-style:decimal;padding-inline-start:1.65rem}
+
+.subfield-app .j-key-scope{align-items:flex-start;border-top:1px solid var(--line)}
+.subfield-app .j-key-scope .j-advanced-review{flex:1;border-top:0;padding:3px 0}
+.subfield-app .j-disclosure-icon{display:inline-block;vertical-align:text-bottom}
